@@ -1,6 +1,8 @@
 # Co-Work Connect
 
-A Flutter-based co-working space booking and management app with collaboration features for users and workspace owners.
+A co-working space platform with:
+- Flutter mobile app for users and workspace owners
+- React/Vite admin panel for platform administration
 
 ## Features
 
@@ -13,9 +15,9 @@ A Flutter-based co-working space booking and management app with collaboration f
 
 ## Tech Stack
 
-- Flutter
-- Dart
-- Supabase (configured through environment variables)
+- Mobile App: Flutter, Dart
+- Admin Panel: React, Vite
+- Backend: Supabase (configured through environment variables)
 
 ## Getting Started
 
@@ -33,16 +35,27 @@ A Flutter-based co-working space booking and management app with collaboration f
    git clone https://github.com/malik-faran/co-work-connect.git
    cd co-work-connect
    ```
-2. Install dependencies:
+2. Install mobile app dependencies:
    ```bash
    flutter pub get
    ```
-3. Create your local environment file:
+3. Install admin panel dependencies:
+   ```bash
+   cd admin-panel
+   npm install
+   cd ..
+   ```
+4. Create your local environment file:
    - Add a `.env` file in the project root.
    - Set your required Supabase keys/URLs.
-4. Run the app:
+5. Run the mobile app:
    ```bash
    flutter run
+   ```
+6. Run admin panel:
+   ```bash
+   cd admin-panel
+   npm run dev
    ```
 
 ## Project Structure
@@ -54,6 +67,10 @@ lib/
   services/      # API/business services
   utils/         # Constants, helpers, theme
   views/         # Screens and UI
+
+admin-panel/
+  src/           # React source code
+  package.json   # Admin dependencies/scripts
 ```
 
 ## Useful Commands
@@ -63,6 +80,7 @@ flutter pub get
 flutter analyze
 flutter test
 flutter clean
+cd admin-panel && npm run dev
 ```
 
 ## Security Notes
