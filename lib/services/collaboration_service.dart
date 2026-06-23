@@ -33,11 +33,12 @@ class CollaborationService {
     List<String>? skillsFilter,
   }) async {
     try {
-      // Build the base query
+      // Public discover feed — recruiting (or legacy "open") projects.
+      // Visibility is filtered client-side so older DB rows still appear.
       var query = _supabase
           .from('collaborations')
           .select()
-          .eq('status', 'open');
+          .inFilter('status', ['recruiting', 'open']);
 
       // Apply additional filters
       if (collaborationType != null) {
@@ -53,6 +54,7 @@ class CollaborationService {
 
       List<CollaborationModel> collaborations = rows
           .map((c) => CollaborationModel.fromCollaborationMap(c))
+          .where((c) => c.visibility != 'invite_only')
           .toList();
 
       // Filter by skills if provided
@@ -313,10 +315,26 @@ class CollaborationService {
     return _supabase
         .from('collaborations')
         .stream(primaryKey: ['id'])
-        .eq('status', 'open')
+        .eq('status', 'recruiting')
         .order('created_at', ascending: false)
         .map((data) => data
             .map((c) => CollaborationModel.fromCollaborationMap(c))
             .toList());
+  }
+
+  /// Publish a draft project (draft -> recruiting).
+  Future<void> publishCollaboration(String collaborationId) async {
+    await _supabase.from('collaborations').update({
+      'status': 'recruiting',
+      'updated_at': DateTime.now().toIso8601String(),
+    }).eq('id', collaborationId);
+  }
+
+  /// Cancel a project.
+  Future<void> cancelCollaboration(String collaborationId) async {
+    await _supabase.from('collaborations').update({
+      'status': 'cancelled',
+      'updated_at': DateTime.now().toIso8601String(),
+    }).eq('id', collaborationId);
   }
 }

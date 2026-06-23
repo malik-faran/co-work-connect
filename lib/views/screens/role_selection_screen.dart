@@ -18,11 +18,14 @@ class RoleSelectionScreen extends StatelessWidget {
             children: [
               const Spacer(flex: 2),
               Container(
-                width: 100,
-                height: 100,
+                constraints: const BoxConstraints(maxWidth: 200),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 12,
+                ),
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  shape: BoxShape.circle,
+                  borderRadius: BorderRadius.circular(24),
                   boxShadow: [
                     BoxShadow(
                       color: CAppTheme.primaryColor.withValues(alpha: 0.15),
@@ -31,13 +34,10 @@ class RoleSelectionScreen extends StatelessWidget {
                     ),
                   ],
                 ),
-                child: ClipOval(
-                  child: Image.asset(
-                    'assets/icons/cwl_logo.jpg',
-                    width: 80,
-                    height: 80,
-                    fit: BoxFit.cover,
-                  ),
+                child: Image.asset(
+                  'assets/logo/cowork-connect-app-logo.png',
+                  height: 88,
+                  fit: BoxFit.contain,
                 ),
               ),
               const SizedBox(height: 24),

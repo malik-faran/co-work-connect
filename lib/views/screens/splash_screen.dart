@@ -55,14 +55,12 @@ class _SplashScreenState extends State<SplashScreen>
     if (!mounted) return;
 
     Widget destination;
-    if (auth.isAuthenticated && auth.currentUser != null) {
+    if (auth.isAuthenticated && auth.currentUser != null && auth.isEmailVerified) {
       final user = auth.currentUser!;
-      if (user.role == AppConstants.roleOwner && user.ownerApproved == true) {
+      if (user.role == AppConstants.roleOwner) {
         destination = const OwnerHomeScreen();
-      } else if (user.role == AppConstants.roleUser) {
-        destination = const UserHomeScreen();
       } else {
-        destination = const RoleSelectionScreen();
+        destination = const UserHomeScreen();
       }
     } else {
       destination = const RoleSelectionScreen();
@@ -99,11 +97,14 @@ class _SplashScreenState extends State<SplashScreen>
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Container(
-                      width: 110,
-                      height: 110,
+                      constraints: const BoxConstraints(maxWidth: 220),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 14,
+                      ),
                       decoration: BoxDecoration(
                         color: Colors.white,
-                        shape: BoxShape.circle,
+                        borderRadius: BorderRadius.circular(28),
                         boxShadow: [
                           BoxShadow(
                             color: Colors.black.withValues(alpha: 0.15),
@@ -112,13 +113,10 @@ class _SplashScreenState extends State<SplashScreen>
                           ),
                         ],
                       ),
-                      child: ClipOval(
-                        child: Image.asset(
-                          'assets/icons/cwl_logo.jpg',
-                          width: 90,
-                          height: 90,
-                          fit: BoxFit.cover,
-                        ),
+                      child: Image.asset(
+                        'assets/logo/cowork-connect-app-logo.png',
+                        height: 96,
+                        fit: BoxFit.contain,
                       ),
                     ),
                     const SizedBox(height: 28),

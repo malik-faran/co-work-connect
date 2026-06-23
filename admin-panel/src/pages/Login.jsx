@@ -1,8 +1,5 @@
 import { useState } from 'react'
-
-// Admin credentials 
-const ADMIN_EMAIL = 'admin@cwc.com'
-const ADMIN_PASSWORD = 'Admin@123'
+import { supabase, fetchAdminProfile } from '../lib/supabase'
 
 const Login = ({ setUser }) => {
   const [email, setEmail] = useState('')
@@ -16,23 +13,24 @@ const Login = ({ setUser }) => {
     setError('')
 
     try {
-      if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
-       
-        const adminUser = {
-          id: 'admin-user-id',
-          email: ADMIN_EMAIL,
-          role: 'admin',
-          user_metadata: {
-            name: 'Admin User'
-          }
-        }
-        // Save to localStorage
-        localStorage.setItem('admin_user', JSON.stringify(adminUser))
-        setUser(adminUser)
-      } else {
-        throw new Error('Invalid email or password')
-      }
+      const { data, error: signInError } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      })
+
+      if (signInError) throw signInError
+      if (!data.user) throw new Error('Login failed. Please try again.')
+
+      const profile = await fetchAdminProfile(data.user.id)
+
+      setUser({
+        id: data.user.id,
+        email: data.user.email,
+        role: profile.role,
+        name: profile.name,
+      })
     } catch (err) {
+      await supabase.auth.signOut()
       setError(err.message || 'Login failed')
     } finally {
       setLoading(false)
@@ -88,15 +86,6 @@ const Login = ({ setUser }) => {
             position: 'relative'
           }}>
             <span style={{ fontSize: '40px' }}>🔐</span>
-            <div style={{
-              position: 'absolute',
-              inset: '-4px',
-              background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-              borderRadius: '24px',
-              opacity: 0.3,
-              zIndex: -1,
-              filter: 'blur(8px)'
-            }} />
           </div>
           <h1 style={{
             fontSize: '36px',
@@ -115,7 +104,7 @@ const Login = ({ setUser }) => {
             fontSize: '16px',
             fontWeight: '500'
           }}>
-            Sign in to manage your system
+            Sign in with your admin Supabase account
           </p>
         </div>
 
@@ -160,20 +149,10 @@ const Login = ({ setUser }) => {
                 borderRadius: '8px',
                 fontSize: '14px',
                 outline: 'none',
-                transition: 'all 0.2s',
-                backgroundColor: '#f8fafc'
+                backgroundColor: '#f8fafc',
+                boxSizing: 'border-box'
               }}
-              placeholder="Enter your email"
-              onFocus={(e) => {
-                e.target.style.borderColor = '#3b82f6'
-                e.target.style.backgroundColor = 'white'
-                e.target.style.boxShadow = '0 0 0 3px rgba(59, 130, 246, 0.1)'
-              }}
-              onBlur={(e) => {
-                e.target.style.borderColor = '#e2e8f0'
-                e.target.style.backgroundColor = '#f8fafc'
-                e.target.style.boxShadow = 'none'
-              }}
+              placeholder="admin@cwc.com"
             />
           </div>
 
@@ -199,20 +178,10 @@ const Login = ({ setUser }) => {
                 borderRadius: '8px',
                 fontSize: '14px',
                 outline: 'none',
-                transition: 'all 0.2s',
-                backgroundColor: '#f8fafc'
+                backgroundColor: '#f8fafc',
+                boxSizing: 'border-box'
               }}
               placeholder="Enter your password"
-              onFocus={(e) => {
-                e.target.style.borderColor = '#3b82f6'
-                e.target.style.backgroundColor = 'white'
-                e.target.style.boxShadow = '0 0 0 3px rgba(59, 130, 246, 0.1)'
-              }}
-              onBlur={(e) => {
-                e.target.style.borderColor = '#e2e8f0'
-                e.target.style.backgroundColor = '#f8fafc'
-                e.target.style.boxShadow = 'none'
-              }}
             />
           </div>
 
@@ -222,8 +191,8 @@ const Login = ({ setUser }) => {
             style={{
               width: '100%',
               padding: '16px',
-              background: loading 
-                ? 'linear-gradient(135deg, #94a3b8 0%, #64748b 100%)' 
+              background: loading
+                ? 'linear-gradient(135deg, #94a3b8 0%, #64748b 100%)'
                 : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
               color: 'white',
               border: 'none',
@@ -231,21 +200,7 @@ const Login = ({ setUser }) => {
               fontSize: '16px',
               fontWeight: '700',
               cursor: loading ? 'not-allowed' : 'pointer',
-              transition: 'all 0.3s',
               boxShadow: loading ? 'none' : '0 8px 24px rgba(102, 126, 234, 0.4)',
-              letterSpacing: '0.5px'
-            }}
-            onMouseEnter={(e) => {
-              if (!loading) {
-                e.target.style.transform = 'translateY(-2px)'
-                e.target.style.boxShadow = '0 12px 32px rgba(102, 126, 234, 0.5)'
-              }
-            }}
-            onMouseLeave={(e) => {
-              if (!loading) {
-                e.target.style.transform = 'translateY(0)'
-                e.target.style.boxShadow = '0 8px 24px rgba(102, 126, 234, 0.4)'
-              }
             }}
           >
             {loading ? 'Signing in...' : 'Sign In'}
@@ -257,4 +212,3 @@ const Login = ({ setUser }) => {
 }
 
 export default Login
-

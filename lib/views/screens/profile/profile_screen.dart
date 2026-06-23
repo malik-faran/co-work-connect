@@ -12,7 +12,9 @@ import 'package:cwc/utils/constants/app_constants.dart';
 import 'package:cwc/utils/helpers/model_helpers.dart';
 import 'package:cwc/utils/helpers/snackbar_helper.dart';
 import 'package:cwc/utils/helpers/error_handler.dart';
+import 'package:cwc/utils/validators/form_validators.dart';
 import 'package:cwc/views/screens/payment/payment_history_screen.dart';
+import 'package:cwc/views/screens/owner/owner_payment_accounts_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -195,12 +197,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               labelText: 'Full Name',
                               prefixIcon: Icon(Icons.person_outline_rounded),
                             ),
-                            validator: (value) {
-                              if (value == null || value.trim().isEmpty) {
-                                return 'Name is required';
-                              }
-                              return null;
-                            },
+                            validator: FormValidators.name,
                           ),
                           const SizedBox(height: 16),
                           TextFormField(
@@ -219,12 +216,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               labelText: 'Phone Number',
                               prefixIcon: Icon(Icons.phone_outlined),
                             ),
-                            validator: (value) {
-                              if (value == null || value.trim().isEmpty) {
-                                return 'Phone is required';
-                              }
-                              return null;
-                            },
+                            validator: FormValidators.phone,
                           ),
                           const SizedBox(height: 16),
                           DropdownButtonFormField<String>(
@@ -253,6 +245,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   labelText: 'Business Name',
                                   prefixIcon:
                                       Icon(Icons.business_center_outlined),
+                                ),
+                                validator: (v) => FormValidators.businessName(
+                                  v,
+                                  required: true,
                                 ),
                               ),
                             ],
@@ -383,15 +379,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                       labelText: 'New Password',
                                       prefixIcon: Icon(Icons.lock_rounded),
                                     ),
-                                    validator: (value) {
-                                      if (value == null || value.trim().isEmpty) {
-                                        return 'New password is required';
-                                      }
-                                      if (value.length < 6) {
-                                        return 'Password must be at least 6 characters';
-                                      }
-                                      return null;
-                                    },
+                                    validator: FormValidators.password,
                                   ),
                                   const SizedBox(height: 16),
                                   TextFormField(
@@ -401,15 +389,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                       labelText: 'Confirm New Password',
                                       prefixIcon: Icon(Icons.lock_clock),
                                     ),
-                                    validator: (value) {
-                                      if (value == null || value.trim().isEmpty) {
-                                        return 'Please confirm your password';
-                                      }
-                                      if (value != _newPasswordController.text) {
-                                        return 'Passwords do not match';
-                                      }
-                                      return null;
-                                    },
+                                    validator: (value) => FormValidators.confirmPassword(
+                                          value,
+                                          _newPasswordController.text,
+                                        ),
                                   ),
                                   const SizedBox(height: 24),
                                   SizedBox(
@@ -517,6 +500,70 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ),
                     ),
                   ),
+                  if (user.role == AppConstants.roleOwner) ...[
+                    const SizedBox(height: 16),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+                        boxShadow: CAppTheme.softShadow,
+                      ),
+                      child: InkWell(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const OwnerPaymentAccountsScreen(),
+                            ),
+                          );
+                        },
+                        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+                        child: Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: CAppTheme.primaryColor.withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                                ),
+                                child: const Icon(
+                                  Icons.account_balance_wallet_outlined,
+                                  color: CAppTheme.primaryColor,
+                                  size: 22,
+                                ),
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Payment Accounts',
+                                      style: GoogleFonts.poppins(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w600,
+                                        color: CAppTheme.textPrimary,
+                                      ),
+                                    ),
+                                    Text(
+                                      'Bank, EasyPaisa, JazzCash for bookings',
+                                      style: GoogleFonts.poppins(
+                                        fontSize: 12,
+                                        color: CAppTheme.textSecondary,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const Icon(Icons.chevron_right_rounded, color: CAppTheme.textTertiary),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 24),
                 ],
               ),

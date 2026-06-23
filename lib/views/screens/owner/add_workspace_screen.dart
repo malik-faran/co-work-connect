@@ -13,8 +13,12 @@ import 'package:cwc/controllers/workspace_controller.dart';
 import 'package:cwc/models/workspace_model.dart';
 import 'package:cwc/services/storage_service.dart';
 import 'package:cwc/utils/constants/app_constants.dart';
+import 'package:cwc/utils/constants/validation_constants.dart';
 import 'package:cwc/utils/helpers/snackbar_helper.dart';
 import 'package:cwc/utils/themes/theme.dart';
+import 'package:cwc/utils/validators/form_validators.dart';
+import 'package:cwc/models/location_pick_result.dart';
+import 'package:cwc/views/widgets/location_picker_map.dart';
 
 class AddWorkspaceScreen extends StatefulWidget {
   final WorkspaceModel? workspaceToEdit;
@@ -57,6 +61,9 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
   final _emailController = TextEditingController();
 
   String? _selectedCity;
+  double _latitude = 0.0;
+  double _longitude = 0.0;
+  bool _locationSet = false;
   List<String> _selectedAmenities = [];
   bool _isAvailable = true;
   bool _isLoading = false;
@@ -88,6 +95,9 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
       _descriptionController.text = workspace.description;
       _addressController.text = workspace.address;
       _selectedCity = workspace.city;
+      _latitude = workspace.latitude;
+      _longitude = workspace.longitude;
+      _locationSet = workspace.latitude != 0 || workspace.longitude != 0;
       _phoneController.text = workspace.phone ?? '';
       _emailController.text = workspace.email ?? '';
       _selectedAmenities = List.from(workspace.amenities);
@@ -148,6 +158,28 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
   void _removeImage(int index) {
     setState(() {
       _selectedImages.removeAt(index);
+    });
+  }
+
+  Future<void> _pickLocationOnMap() async {
+    final result = await Navigator.of(context).push<LocationPickResult>(
+      MaterialPageRoute(
+        builder: (_) => LocationPickerMap(
+          initialLatitude: _locationSet ? _latitude : defaultCenterForCity(_selectedCity).latitude,
+          initialLongitude: _locationSet ? _longitude : defaultCenterForCity(_selectedCity).longitude,
+          city: _selectedCity,
+        ),
+      ),
+    );
+    if (result == null) return;
+    setState(() {
+      _latitude = result.latitude;
+      _longitude = result.longitude;
+      _locationSet = true;
+      _addressController.text = result.address;
+      if (result.city != null && AppConstants.cities.contains(result.city)) {
+        _selectedCity = result.city;
+      }
     });
   }
 
@@ -288,6 +320,7 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
   Widget _buildCategoryCard(String type, _CategoryFormData formData) {
     final isShared = type == AppConstants.workspaceTypeShared;
     final isMeetingRoom = type == AppConstants.workspaceTypeMeetingRoom;
+    final limits = WorkspaceCategoryLimits.forType(type);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -333,8 +366,11 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
               TextFormField(
                 controller: formData.noOfOfficesController,
                 keyboardType: TextInputType.number,
+                inputFormatters: FormValidators.digitsOnly(),
                 decoration: InputDecoration(
                   labelText: 'No of Offices *',
+                  helperText:
+                      'Min ${limits.officesMin}, max ${limits.officesMax}',
                   prefixIcon: Icon(Icons.business_outlined, color: CAppTheme.textSecondary),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
@@ -349,26 +385,26 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
                     borderSide: BorderSide(color: CAppTheme.primaryColor, width: 2),
                   ),
                 ),
-                validator: (value) {
-                  if (!formData.enabled) return null;
-                  if (value == null || value.isEmpty) {
-                    return 'Required';
-                  }
-                  if (int.tryParse(value) == null) {
-                    return 'Invalid';
-                  }
-                  return null;
-                },
+                validator: (value) => FormValidators.positiveInt(
+                  value,
+                  required: formData.enabled,
+                  min: limits.officesMin,
+                  max: limits.officesMax,
+                  label: 'Number of offices',
+                ),
               ),
               if (isShared || isMeetingRoom) ...[
                 const SizedBox(height: 16),
                 TextFormField(
                   controller: formData.desksPerRoomController,
                   keyboardType: TextInputType.number,
+                  inputFormatters: FormValidators.digitsOnly(),
                   decoration: InputDecoration(
                     labelText: isShared
                         ? 'Room Capacity (Desks) *'
                         : 'Desks per Room *',
+                    helperText:
+                        'Min ${limits.desksMin}, max ${limits.desksMax}',
                     prefixIcon: Icon(Icons.chair_outlined, color: CAppTheme.textSecondary),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
@@ -383,16 +419,13 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
                       borderSide: BorderSide(color: CAppTheme.primaryColor, width: 2),
                     ),
                   ),
-                  validator: (value) {
-                    if (!formData.enabled) return null;
-                    if (value == null || value.isEmpty) {
-                      return 'Required';
-                    }
-                    if (int.tryParse(value) == null) {
-                      return 'Invalid';
-                    }
-                    return null;
-                  },
+                  validator: (value) => FormValidators.positiveInt(
+                    value,
+                    required: formData.enabled,
+                    min: limits.desksMin,
+                    max: limits.desksMax,
+                    label: isShared ? 'Room capacity' : 'Desks per room',
+                  ),
                 ),
               ],
               const SizedBox(height: 16),
@@ -401,9 +434,14 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
                   Expanded(
                     child: TextFormField(
                       controller: formData.pricePerDayController,
-                      keyboardType: TextInputType.number,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      inputFormatters: FormValidators.decimalPrice(),
                       decoration: InputDecoration(
                         labelText: 'Price/Day *',
+                        helperText:
+                            'Rs. ${limits.pricePerDayMin.toInt()}-${limits.pricePerDayMax.toInt()}',
                         prefixIcon: Icon(Icons.calendar_today_outlined, color: CAppTheme.textSecondary),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
@@ -418,25 +456,27 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
                           borderSide: BorderSide(color: CAppTheme.primaryColor, width: 2),
                         ),
                       ),
-                      validator: (value) {
-                        if (!formData.enabled) return null;
-                        if (value == null || value.isEmpty) {
-                          return 'Required';
-                        }
-                        if (double.tryParse(value) == null) {
-                          return 'Invalid';
-                        }
-                        return null;
-                      },
+                      validator: (value) => FormValidators.price(
+                        value,
+                        required: formData.enabled,
+                        min: limits.pricePerDayMin,
+                        max: limits.pricePerDayMax,
+                        label: 'Price per day',
+                      ),
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: TextFormField(
                       controller: formData.pricePerHourController,
-                      keyboardType: TextInputType.number,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      inputFormatters: FormValidators.decimalPrice(),
                       decoration: InputDecoration(
                         labelText: 'Price/Hour *',
+                        helperText:
+                            'Rs. ${limits.pricePerHourMin.toInt()}-${limits.pricePerHourMax.toInt()}',
                         prefixIcon: Icon(Icons.access_time_outlined, color: CAppTheme.textSecondary),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
@@ -451,16 +491,13 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
                           borderSide: BorderSide(color: CAppTheme.primaryColor, width: 2),
                         ),
                       ),
-                      validator: (value) {
-                        if (!formData.enabled) return null;
-                        if (value == null || value.isEmpty) {
-                          return 'Required';
-                        }
-                        if (double.tryParse(value) == null) {
-                          return 'Invalid';
-                        }
-                        return null;
-                      },
+                      validator: (value) => FormValidators.price(
+                        value,
+                        required: formData.enabled,
+                        min: limits.pricePerHourMin,
+                        max: limits.pricePerHourMax,
+                        label: 'Price per hour',
+                      ),
                     ),
                   ),
                 ],
@@ -683,6 +720,12 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
       return;
     }
 
+    if (!_locationSet) {
+      setState(() => _isLoading = false);
+      showErrorSnackBar(context, 'Please pick workspace location on the map.');
+      return;
+    }
+
     final workspace = WorkspaceModel(
       id: workspaceId,
       ownerId: ownerId,
@@ -692,8 +735,8 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
       city: _selectedCity!,
       state: null,
       country: 'Pakistan',
-      latitude: 0.0,
-      longitude: 0.0,
+      latitude: _latitude,
+      longitude: _longitude,
       pricePerDay: categoryOptions.isNotEmpty
           ? categoryOptions.first.pricePerDay
           : 0,
@@ -832,12 +875,7 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
                 controller: _nameController,
                 label: 'Workspace Name *',
                 icon: Icons.workspaces_outlined,
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'Please enter workspace name';
-                  }
-                  return null;
-                },
+                validator: FormValidators.workspaceName,
               ),
               const SizedBox(height: 16),
               _buildThemedTextField(
@@ -845,24 +883,16 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
                 label: 'Description *',
                 icon: Icons.description_outlined,
                 maxLines: 4,
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'Please enter description';
-                  }
-                  return null;
-                },
+                validator: FormValidators.description,
               ),
+              const SizedBox(height: 16),
+              _buildMapLocationPicker(),
               const SizedBox(height: 16),
               _buildThemedTextField(
                 controller: _addressController,
-                label: 'Address *',
+                label: 'Address * (auto-filled from map)',
                 icon: Icons.location_on_outlined,
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'Please enter address';
-                  }
-                  return null;
-                },
+                validator: FormValidators.address,
               ),
               const SizedBox(height: 20),
 
@@ -1076,6 +1106,94 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildMapLocationPicker() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildSectionHeader('Map Location *'),
+        const SizedBox(height: 8),
+        Text(
+          'Search on map or tap to pin — address will fill automatically.',
+          style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary),
+        ),
+        if (_locationSet && _addressController.text.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: CAppTheme.primaryColor.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+              border: Border.all(color: CAppTheme.primaryColor.withValues(alpha: 0.2)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.place_rounded, size: 18, color: CAppTheme.primaryColor),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _addressController.text,
+                    style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textPrimary),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        const SizedBox(height: 12),
+        if (_locationSet) ...[
+          WorkspaceMapView(latitude: _latitude, longitude: _longitude),
+          const SizedBox(height: 8),
+          Text(
+            'Lat: ${_latitude.toStringAsFixed(5)}, Lng: ${_longitude.toStringAsFixed(5)}',
+            textAlign: TextAlign.center,
+            style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary),
+          ),
+          const SizedBox(height: 8),
+        ] else
+          Container(
+            height: 120,
+            decoration: BoxDecoration(
+              color: CAppTheme.backgroundColor,
+              borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+              border: Border.all(color: CAppTheme.borderColor),
+            ),
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.map_outlined, size: 36, color: CAppTheme.textTertiary),
+                  const SizedBox(height: 8),
+                  Text(
+                    'No location selected',
+                    style: GoogleFonts.poppins(fontSize: 13, color: CAppTheme.textSecondary),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          onPressed: _pickLocationOnMap,
+          icon: const Icon(Icons.map_rounded),
+          label: Text(
+            _locationSet ? 'Change Location on Map' : 'Select Location on Map',
+            style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+          ),
+          style: OutlinedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            side: const BorderSide(color: CAppTheme.primaryColor),
+            foregroundColor: CAppTheme.primaryColor,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+            ),
+          ),
+        ),
+      ],
     );
   }
 

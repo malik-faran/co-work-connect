@@ -8,17 +8,24 @@ class AuthService {
   final SupabaseClient _client = SupabaseService.client;
 
   Stream<AuthState> get authStateChanges => _client.auth.onAuthStateChange;
-  
+
+  User? get currentAuthUser => _client.auth.currentUser;
+
+  /// Email is verified when Supabase has set `email_confirmed_at` / `confirmed_at`.
+  bool get isEmailVerified {
+    final u = _client.auth.currentUser;
+    return u?.emailConfirmedAt != null;
+  }
+
   Future<UserModel?> signUp({
     required String email,
     required String password,
     required String name,
-    required String phone,
-    required String role,
+    String role = AppConstants.roleUser,
+    String phone = '',
     String? city,
     String? businessName,
     String? businessAddress,
-    String? cnicImageUrl, // CNIC image URL
   }) async {
     try {
       final trimmedEmail = email.trim();
@@ -26,14 +33,13 @@ class AuthService {
       final response = await _client.auth.signUp(
         email: trimmedEmail,
         password: password,
-        emailRedirectTo: null,
         data: {
           'role': role,
           'name': name,
-          'phone': phone,
-          'city': city,
-          'business_name': businessName,
-          'business_address': businessAddress,
+          if (phone.isNotEmpty) 'phone': phone,
+          if (city != null) 'city': city,
+          if (businessName != null) 'business_name': businessName,
+          if (businessAddress != null) 'business_address': businessAddress,
         },
       );
 
@@ -51,9 +57,6 @@ class AuthService {
         city: city,
         businessName: businessName,
         businessAddress: businessAddress,
-        ownerApproved: role == AppConstants.roleOwner ? null : null,
-        cnicImageUrl: cnicImageUrl,
-        adminApproved: false, // Requires admin approval
         createdAt: DateTime.now(),
       );
 
@@ -63,44 +66,27 @@ class AuthService {
             .select('id')
             .eq('id', user.id)
             .maybeSingle();
-        
+
         if (existingUser != null) {
           return await getUserById(user.id);
         }
-        
+
         final userData = userModel.toUserMap();
-        userData.removeWhere((key, value) => value == null && key != 'owner_approved' && key != 'admin_approved');
-        if (role == AppConstants.roleOwner) {
-          userData['owner_approved'] = null;
-        }
-        // Ensure admin_approved is set to false for new registrations
-        userData['admin_approved'] = false;
-        
+        userData.removeWhere((key, value) => value == null);
         await _client.from(AppConstants.collectionUsers).insert(userData);
       } catch (dbError) {
         final errorMsg = dbError.toString();
-        String detailedError;
-        
-        if (errorMsg.contains('owner_approved') || errorMsg.contains('column') || errorMsg.contains('does not exist')) {
-          detailedError = 'Database setup error: Please add owner_approved column to users table. Error: ${formatDatabaseError(errorMsg)}';
-        } else if (errorMsg.contains('duplicate') || errorMsg.contains('already exists')) {
-          try {
-            final existingUser = await getUserById(user.id);
-            if (existingUser != null) {
-              return existingUser;
-            }
-          } catch (_) {}
-          detailedError = 'Account already exists. Please try logging in.';
-        } else {
-          detailedError = formatDatabaseError(errorMsg);
+        if (errorMsg.contains('duplicate') || errorMsg.contains('already exists')) {
+          final existing = await getUserById(user.id);
+          if (existing != null) return existing;
+          throw Exception('Account already exists. Please try logging in.');
         }
-        
-        throw Exception(detailedError);
+        throw Exception(formatDatabaseError(errorMsg));
       }
 
       return userModel;
     } on AuthException catch (e) {
-      throw Exception(formatAuthError(e.message ?? 'An error occurred during signup'));
+      throw Exception(formatAuthError(e.message));
     } catch (e) {
       throw Exception('Error signing up: ${e.toString()}');
     }
@@ -119,22 +105,19 @@ class AuthService {
       );
 
       final user = response.user;
-      if (user == null) {
-        return null;
+      if (user == null) return null;
+
+      if (user.emailConfirmedAt == null) {
+        throw Exception(
+          'Please verify your email before logging in. Check your inbox for the confirmation link.',
+        );
       }
 
-      final userModel = await getUserById(user.id);
-      
-      // Check if user is approved by admin
-      if (userModel != null && userModel.adminApproved == false) {
-        throw Exception('Your account is pending admin approval. Please wait for approval before logging in.');
-      }
-
-      return userModel;
+      return await getUserById(user.id);
     } on AuthException catch (e) {
-      throw Exception(formatAuthError(e.message ?? 'An error occurred during signin'));
+      throw Exception(formatAuthError(e.message));
     } catch (e) {
-      throw Exception('Error signing in: $e');
+      throw Exception('Error signing in: ${cleanErrorMessage(e.toString())}');
     }
   }
 
@@ -161,6 +144,32 @@ class AuthService {
     }
   }
 
+  Future<void> saveFcmToken(String userId, String token) async {
+    try {
+      await _client
+          .from(AppConstants.collectionUsers)
+          .update({
+            'fcm_token': token,
+            'updated_at': DateTime.now().toIso8601String(),
+          })
+          .eq('id', userId);
+    } catch (e) {
+      throw Exception('Error saving FCM token: $e');
+    }
+  }
+
+  Future<void> clearFcmToken(String userId) async {
+    try {
+      await _client
+          .from(AppConstants.collectionUsers)
+          .update({
+            'fcm_token': null,
+            'updated_at': DateTime.now().toIso8601String(),
+          })
+          .eq('id', userId);
+    } catch (_) {}
+  }
+
   Future<void> updateUserProfile(UserModel userModel) async {
     try {
       await _client
@@ -172,35 +181,82 @@ class AuthService {
     }
   }
 
+  Future<UserModel> updateResume({
+    required String userId,
+    required String resumeUrl,
+    required String resumeFileName,
+  }) async {
+    await _client.from(AppConstants.collectionUsers).update({
+      'resume_url': resumeUrl,
+      'resume_file_name': resumeFileName,
+      'updated_at': DateTime.now().toIso8601String(),
+    }).eq('id', userId);
+    final user = await getUserById(userId);
+    if (user == null) throw Exception('User not found after resume update');
+    return user;
+  }
+
+  Future<UserModel> clearResume(String userId) async {
+    await _client.from(AppConstants.collectionUsers).update({
+      'resume_url': null,
+      'resume_file_name': null,
+      'updated_at': DateTime.now().toIso8601String(),
+    }).eq('id', userId);
+    final user = await getUserById(userId);
+    if (user == null) throw Exception('User not found after resume clear');
+    return user;
+  }
+
   Future<bool> changePassword({
     required String oldPassword,
     required String newPassword,
   }) async {
     try {
       final currentUser = _client.auth.currentUser;
-      if (currentUser == null) {
-        throw Exception('User not authenticated');
-      }
-
+      if (currentUser == null) throw Exception('User not authenticated');
       final email = currentUser.email;
-      if (email == null) {
-        throw Exception('User email not found');
-      }
+      if (email == null) throw Exception('User email not found');
 
-      await _client.auth.signInWithPassword(
-        email: email,
-        password: oldPassword,
-      );
-
-      await _client.auth.updateUser(
-        UserAttributes(password: newPassword),
-      );
-
+      await _client.auth.signInWithPassword(email: email, password: oldPassword);
+      await _client.auth.updateUser(UserAttributes(password: newPassword));
       return true;
     } on AuthException catch (e) {
-      throw Exception(formatAuthError(e.message ?? 'Failed to change password'));
+      throw Exception(formatAuthError(e.message));
     } catch (e) {
       throw Exception('Error changing password: ${e.toString()}');
     }
+  }
+
+  /// Send a password reset email via Supabase.
+  Future<void> sendPasswordReset(String email) async {
+    try {
+      await _client.auth.resetPasswordForEmail(email.trim());
+    } on AuthException catch (e) {
+      throw Exception(formatAuthError(e.message));
+    } catch (e) {
+      throw Exception('Failed to send reset email: ${e.toString()}');
+    }
+  }
+
+  /// Resend the confirmation email for a signup.
+  Future<void> resendConfirmationEmail(String email) async {
+    try {
+      await _client.auth.resend(
+        type: OtpType.signup,
+        email: email.trim(),
+      );
+    } on AuthException catch (e) {
+      throw Exception(formatAuthError(e.message));
+    } catch (e) {
+      throw Exception('Failed to resend email: ${e.toString()}');
+    }
+  }
+
+  /// Re-check email verification state (refreshes current session).
+  Future<bool> refreshAndCheckVerified() async {
+    try {
+      await _client.auth.refreshSession();
+    } catch (_) {}
+    return isEmailVerified;
   }
 }

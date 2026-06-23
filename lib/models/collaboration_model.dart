@@ -11,16 +11,25 @@ class CollaborationModel {
   final String title; // Project/Request title
   final String description; // Detailed description
   final List<String> requiredSkills; // Skills needed for collaboration
-  final String collaborationType; // 'need_help' or 'offering_help'
+  final String collaborationType; // legacy: 'need_help' or 'offering_help'
   final String? projectType; // e.g., 'web_dev', 'mobile_app', 'design', etc.
   final String? budget; // Optional budget range
   final String? timeline; // Expected timeline
-  final String status; // 'open', 'in_progress', 'completed', 'cancelled'
+  final String status; // 'draft','recruiting','active','completed','cancelled'
   final List<String> responses; // List of user IDs who responded
-  final String? acceptedUserId; // User ID whose response was accepted
+  final String? acceptedUserId; // legacy single accepted user
   final DateTime createdAt;
   final DateTime? updatedAt;
   final DateTime? deadline; // Optional deadline
+
+  // Collaboration Hub v2 fields
+  final String projectMode; // 'team_project'
+  final String? coverImageUrl;
+  final String visibility; // 'public' | 'invite_only'
+  final String? meetingLink;
+  final String? inviteCode;
+  final bool inviteLinkEnabled;
+  final DateTime? launchedAt;
 
   CollaborationModel({
     required this.id,
@@ -31,16 +40,23 @@ class CollaborationModel {
     required this.title,
     required this.description,
     required this.requiredSkills,
-    required this.collaborationType,
+    this.collaborationType = 'need_help',
     this.projectType,
     this.budget,
     this.timeline,
-    this.status = 'open',
+    this.status = 'recruiting',
     this.responses = const [],
     this.acceptedUserId,
     required this.createdAt,
     this.updatedAt,
     this.deadline,
+    this.projectMode = 'team_project',
+    this.coverImageUrl,
+    this.visibility = 'public',
+    this.meetingLink,
+    this.inviteCode,
+    this.inviteLinkEnabled = true,
+    this.launchedAt,
   });
 
   /// Convert model to map for database storage
@@ -59,6 +75,10 @@ class CollaborationModel {
       'created_at': createdAt.toIso8601String(),
     };
 
+    map['project_mode'] = projectMode;
+    map['visibility'] = visibility;
+    map['invite_link_enabled'] = inviteLinkEnabled;
+
     if (userProfileImage != null) map['user_profile_image'] = userProfileImage;
     if (projectType != null) map['project_type'] = projectType;
     if (budget != null) map['budget'] = budget;
@@ -66,6 +86,10 @@ class CollaborationModel {
     if (acceptedUserId != null) map['accepted_user_id'] = acceptedUserId;
     if (updatedAt != null) map['updated_at'] = updatedAt!.toIso8601String();
     if (deadline != null) map['deadline'] = deadline!.toIso8601String();
+    if (coverImageUrl != null) map['cover_image_url'] = coverImageUrl;
+    if (meetingLink != null) map['meeting_link'] = meetingLink;
+    if (inviteCode != null) map['invite_code'] = inviteCode;
+    if (launchedAt != null) map['launched_at'] = launchedAt!.toIso8601String();
 
     return map;
   }
@@ -87,7 +111,7 @@ class CollaborationModel {
       projectType: getStringFromMap(map, 'project_type', 'projectType'),
       budget: getStringFromMap(map, 'budget', 'budget'),
       timeline: getStringFromMap(map, 'timeline', 'timeline'),
-      status: getStringFromMap(map, 'status', 'status') ?? 'open',
+      status: getStringFromMap(map, 'status', 'status') ?? 'recruiting',
       responses: getListFromMap(map, 'responses', 'responses') != null
           ? List<String>.from(getListFromMap(map, 'responses', 'responses') ?? [])
           : [],
@@ -100,6 +124,16 @@ class CollaborationModel {
           : null,
       deadline: getStringFromMap(map, 'deadline', 'deadline') != null
           ? DateTime.parse(getStringFromMap(map, 'deadline', 'deadline')!)
+          : null,
+      projectMode: getStringFromMap(map, 'project_mode', 'projectMode') ?? 'team_project',
+      coverImageUrl: getStringFromMap(map, 'cover_image_url', 'coverImageUrl'),
+      visibility: getStringFromMap(map, 'visibility', 'visibility') ?? 'public',
+      meetingLink: getStringFromMap(map, 'meeting_link', 'meetingLink'),
+      inviteCode: getStringFromMap(map, 'invite_code', 'inviteCode'),
+      inviteLinkEnabled:
+          (getValueFromMap(map, 'invite_link_enabled', 'inviteLinkEnabled', true) as bool?) ?? true,
+      launchedAt: getStringFromMap(map, 'launched_at', 'launchedAt') != null
+          ? DateTime.parse(getStringFromMap(map, 'launched_at', 'launchedAt')!)
           : null,
     );
   }
@@ -124,6 +158,13 @@ class CollaborationModel {
     DateTime? createdAt,
     DateTime? updatedAt,
     DateTime? deadline,
+    String? projectMode,
+    String? coverImageUrl,
+    String? visibility,
+    String? meetingLink,
+    String? inviteCode,
+    bool? inviteLinkEnabled,
+    DateTime? launchedAt,
   }) {
     return CollaborationModel(
       id: id ?? this.id,
@@ -144,12 +185,29 @@ class CollaborationModel {
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       deadline: deadline ?? this.deadline,
+      projectMode: projectMode ?? this.projectMode,
+      coverImageUrl: coverImageUrl ?? this.coverImageUrl,
+      visibility: visibility ?? this.visibility,
+      meetingLink: meetingLink ?? this.meetingLink,
+      inviteCode: inviteCode ?? this.inviteCode,
+      inviteLinkEnabled: inviteLinkEnabled ?? this.inviteLinkEnabled,
+      launchedAt: launchedAt ?? this.launchedAt,
     );
   }
 
-  /// Check if collaboration is still open
-  bool get isOpen => status == 'open';
-  
+  /// Lifecycle helpers
+  bool get isDraft => status == 'draft';
+  bool get isRecruiting => status == 'recruiting';
+  bool get isActive => status == 'active';
+  bool get isCompleted => status == 'completed';
+  bool get isCancelled => status == 'cancelled';
+
+  /// Back-compat: treat recruiting as "open"
+  bool get isOpen => status == 'recruiting';
+
+  String get inviteLink =>
+      inviteCode == null ? '' : 'coworkconnect://project/join/$inviteCode';
+
   /// Check if user has already responded
   bool hasUserResponded(String userId) => responses.contains(userId);
 }

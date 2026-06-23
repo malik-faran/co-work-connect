@@ -6,7 +6,7 @@ class AppConstants {
 
   // App Information
   static const String appName = 'CWL';
-  static const String appTagline = 'Coworking Spaces Made Easy';
+  static const String appTagline = 'Find teammates. Build projects. Book spaces.';
 
   // User Roles
   static const String roleUser = 'user';
@@ -18,7 +18,26 @@ class AppConstants {
   static const String bookingStatusCancelled = 'cancelled';
   static const String bookingStatusCompleted = 'completed';
 
-  // Workspace Types
+  // Payment methods
+  static const String paymentMethodStripe = 'stripe';
+  static const String paymentMethodManual = 'manual';
+
+  // Receipt status (manual bank/easypaisa payments)
+  static const String receiptAwaitingUpload = 'awaiting_upload';
+  static const String receiptAwaitingVerification = 'awaiting_verification';
+  static const String receiptApproved = 'approved';
+  static const String receiptRejected = 'rejected';
+
+  // Owner account types
+  static const String accountTypeBank = 'bank';
+  static const String accountTypeEasypaisa = 'easypaisa';
+  static const String accountTypeJazzcash = 'jazzcash';
+
+  static const List<String> ownerAccountTypes = [
+    accountTypeBank,
+    accountTypeEasypaisa,
+    accountTypeJazzcash,
+  ];
   static const String workspaceTypePrivate = 'private';
   static const String workspaceTypeShared = 'shared';
   static const String workspaceTypeMeetingRoom = 'meeting-room';

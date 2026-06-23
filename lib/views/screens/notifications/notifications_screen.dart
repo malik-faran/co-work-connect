@@ -3,9 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'package:cwc/controllers/auth_controller.dart';
+import 'package:cwc/models/collaboration_hub_models.dart';
 import 'package:cwc/models/notification_model.dart';
+import 'package:cwc/services/collaboration_hub_service.dart';
 import 'package:cwc/services/notification_service.dart';
 import 'package:cwc/utils/themes/theme.dart';
+import 'package:cwc/views/screens/collaboration/collaboration_detail_screen.dart';
 import 'package:intl/intl.dart';
 
 /// Notifications Screen
@@ -19,10 +22,12 @@ class NotificationsScreen extends StatefulWidget {
 
 class _NotificationsScreenState extends State<NotificationsScreen> {
   final NotificationService _notificationService = NotificationService();
+  final CollaborationHubService _hub = CollaborationHubService();
   List<NotificationModel> _notifications = [];
   bool _isLoading = true;
   String? _errorMessage;
   int _unreadCount = 0;
+  final Set<String> _respondingInviteIds = {};
   StreamSubscription<List<NotificationModel>>? _notificationStreamSubscription;
 
   @override
@@ -91,8 +96,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
     try {
       await _notificationService.markAsRead(notification.id);
+      if (!mounted) return;
       _loadNotifications();
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Error: ${e.toString()}'),
@@ -109,14 +116,105 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       if (currentUser == null) return;
 
       await _notificationService.markAllAsRead(currentUser.id);
+      if (!mounted) return;
       _loadNotifications();
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Error: ${e.toString()}'),
           backgroundColor: CAppTheme.errorColor,
         ),
       );
+    }
+  }
+
+  Future<void> _openNotification(NotificationModel notification) async {
+    await _markAsRead(notification);
+    final collaborationId = notification.metadata?['collaboration_id'] as String?;
+    if (collaborationId == null || !mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CollaborationDetailScreen(collaborationId: collaborationId),
+      ),
+    );
+  }
+
+  Future<void> _respondToInvite(NotificationModel notification, bool accept) async {
+    final user = context.read<AuthController>().currentUser;
+    if (user == null) return;
+
+    final inviteId = notification.metadata?['invite_id'] as String?;
+    final collaborationId = notification.metadata?['collaboration_id'] as String?;
+    if (inviteId == null && collaborationId == null) return;
+
+    setState(() => _respondingInviteIds.add(notification.id));
+    try {
+      CollaborationInvite? invite;
+      if (inviteId != null) {
+        invite = await _hub.getInviteById(inviteId);
+      }
+      invite ??= collaborationId != null
+          ? await _hub.getPendingInviteForProject(collaborationId, user.id)
+          : null;
+
+      if (invite == null || invite.status != 'pending') {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('This invitation is no longer available'),
+            backgroundColor: CAppTheme.warningColor,
+          ),
+        );
+        await _markAsRead(notification);
+        _loadNotifications();
+        return;
+      }
+
+      if (accept) {
+        await _hub.acceptInvite(
+          invite: invite,
+          userId: user.id,
+          userName: user.name,
+          userEmail: user.email,
+          userImage: user.profileImageUrl,
+          userSkills: user.skills ?? [],
+        );
+      } else {
+        await _hub.respondToInvite(invite, false);
+      }
+
+      await _markAsRead(notification);
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(accept ? 'Invitation accepted' : 'Invitation declined'),
+          backgroundColor: accept ? CAppTheme.successColor : CAppTheme.textSecondary,
+        ),
+      );
+
+      if (accept) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => CollaborationDetailScreen(collaborationId: invite!.collaborationId),
+          ),
+        );
+      }
+
+      _loadNotifications();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: ${e.toString()}'),
+          backgroundColor: CAppTheme.errorColor,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _respondingInviteIds.remove(notification.id));
     }
   }
 
@@ -217,7 +315,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
               ),
               ...items.map((notification) => _NotificationCard(
                     notification: notification,
-                    onTap: () => _markAsRead(notification),
+                    isResponding: _respondingInviteIds.contains(notification.id),
+                    onTap: () => _openNotification(notification),
+                    onAcceptInvite: () => _respondToInvite(notification, true),
+                    onDeclineInvite: () => _respondToInvite(notification, false),
                   )),
             ],
           );
@@ -316,11 +417,19 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 class _NotificationCard extends StatelessWidget {
   final NotificationModel notification;
   final VoidCallback onTap;
+  final VoidCallback? onAcceptInvite;
+  final VoidCallback? onDeclineInvite;
+  final bool isResponding;
 
   const _NotificationCard({
     required this.notification,
     required this.onTap,
+    this.onAcceptInvite,
+    this.onDeclineInvite,
+    this.isResponding = false,
   });
+
+  bool get _isInvite => notification.type == 'collaboration_invite';
 
   @override
   Widget build(BuildContext context) {
@@ -341,72 +450,123 @@ class _NotificationCard extends StatelessWidget {
             : null,
       ),
       child: InkWell(
-        onTap: onTap,
+        onTap: _isInvite ? null : onTap,
         borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: Row(
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                ),
-                child: Icon(icon, color: color, size: 22),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                    ),
+                    child: Icon(icon, color: color, size: 22),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Expanded(
-                          child: Text(
-                            notification.title,
-                            style: GoogleFonts.poppins(
-                              fontWeight: isUnread
-                                  ? FontWeight.w700
-                                  : FontWeight.w600,
-                              fontSize: 14,
-                              color: CAppTheme.textPrimary,
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                notification.title,
+                                style: GoogleFonts.poppins(
+                                  fontWeight: isUnread
+                                      ? FontWeight.w700
+                                      : FontWeight.w600,
+                                  fontSize: 14,
+                                  color: CAppTheme.textPrimary,
+                                ),
+                              ),
                             ),
+                            if (isUnread)
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: BoxDecoration(
+                                  color: color,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          notification.message,
+                          style: GoogleFonts.poppins(
+                            fontSize: 13,
+                            color: CAppTheme.textSecondary,
+                            height: 1.4,
                           ),
                         ),
-                        if (isUnread)
-                          Container(
-                            width: 8,
-                            height: 8,
-                            decoration: BoxDecoration(
-                              color: color,
-                              shape: BoxShape.circle,
-                            ),
+                        const SizedBox(height: 6),
+                        Text(
+                          _formatTime(notification.createdAt),
+                          style: GoogleFonts.poppins(
+                            fontSize: 11,
+                            color: CAppTheme.textTertiary,
                           ),
+                        ),
                       ],
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      notification.message,
-                      style: GoogleFonts.poppins(
-                        fontSize: 13,
-                        color: CAppTheme.textSecondary,
-                        height: 1.4,
+                  ),
+                ],
+              ),
+              if (_isInvite) ...[
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: CAppTheme.successColor,
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                        ),
+                        onPressed: isResponding ? null : onAcceptInvite,
+                        child: isResponding
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Text('Accept'),
                       ),
                     ),
-                    const SizedBox(height: 6),
-                    Text(
-                      _formatTime(notification.createdAt),
-                      style: GoogleFonts.poppins(
-                        fontSize: 11,
-                        color: CAppTheme.textTertiary,
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          foregroundColor: CAppTheme.errorColor,
+                          side: const BorderSide(color: CAppTheme.errorColor),
+                        ),
+                        onPressed: isResponding ? null : onDeclineInvite,
+                        child: const Text('Decline'),
                       ),
                     ),
                   ],
                 ),
-              ),
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: onTap,
+                    child: const Text('View project'),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -422,7 +582,13 @@ class _NotificationCard extends StatelessWidget {
         return Icons.cancel_rounded;
       case 'collaboration_response':
       case 'collaboration_accepted':
+      case 'collaboration_application':
+      case 'collaboration_shortlisted':
+      case 'collaboration_launched':
+      case 'collaboration_completed':
         return Icons.people_rounded;
+      case 'collaboration_invite':
+        return Icons.mail_rounded;
       case 'chat_message':
         return Icons.chat_bubble_rounded;
       case 'booking_confirmed':
@@ -442,7 +608,15 @@ class _NotificationCard extends StatelessWidget {
         return CAppTheme.errorColor;
       case 'collaboration_response':
       case 'collaboration_accepted':
+      case 'collaboration_application':
+      case 'collaboration_shortlisted':
+      case 'collaboration_launched':
+      case 'collaboration_completed':
         return CAppTheme.primaryColor;
+      case 'collaboration_invite':
+        return CAppTheme.infoColor;
+      case 'collaboration_rejected':
+        return CAppTheme.errorColor;
       case 'chat_message':
         return CAppTheme.infoColor;
       case 'booking_confirmed':

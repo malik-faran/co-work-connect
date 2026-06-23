@@ -19,6 +19,12 @@ class UserModel {
   final bool? ownerApproved;
   final String? cnicImageUrl; // CNIC image URL
   final bool? adminApproved; // Admin approval status
+  final String? bio; // Short intro for collaboration profile
+  final String? collaborationHeadline; // e.g. "Flutter dev open for FYP teams"
+  final String? availability; // e.g. "10 hrs/week"
+  final List<String>? preferredProjectTypes;
+  final String? resumeUrl;
+  final String? resumeFileName;
 
   UserModel({
     required this.id,
@@ -39,6 +45,12 @@ class UserModel {
     this.ownerApproved,
     this.cnicImageUrl,
     this.adminApproved,
+    this.bio,
+    this.collaborationHeadline,
+    this.availability,
+    this.preferredProjectTypes,
+    this.resumeUrl,
+    this.resumeFileName,
   });
 
   Map<String, dynamic> toUserMap() {
@@ -60,10 +72,16 @@ class UserModel {
     if (collaborationRequests != null) map['collaboration_requests'] = collaborationRequests;
     if (businessName != null) map['business_name'] = businessName;
     if (businessAddress != null) map['business_address'] = businessAddress;
-    map['owner_approved'] = ownerApproved;
+    if (ownerApproved != null) map['owner_approved'] = ownerApproved;
     if (cnicImageUrl != null) map['cnic_image_url'] = cnicImageUrl;
-    map['admin_approved'] = adminApproved;
-    
+    if (adminApproved != null) map['admin_approved'] = adminApproved;
+    if (bio != null) map['bio'] = bio;
+    if (collaborationHeadline != null) map['collaboration_headline'] = collaborationHeadline;
+    if (availability != null) map['availability'] = availability;
+    if (preferredProjectTypes != null) map['preferred_project_types'] = preferredProjectTypes;
+    if (resumeUrl != null) map['resume_url'] = resumeUrl;
+    if (resumeFileName != null) map['resume_file_name'] = resumeFileName;
+
     return map;
   }
 
@@ -95,6 +113,14 @@ class UserModel {
       ownerApproved: getNullableValueFromMap<bool>(map, 'owner_approved', 'ownerApproved'),
       cnicImageUrl: getStringFromMap(map, 'cnic_image_url', 'cnicImageUrl'),
       adminApproved: getNullableValueFromMap<bool>(map, 'admin_approved', 'adminApproved'),
+      bio: getStringFromMap(map, 'bio', 'bio'),
+      collaborationHeadline: getStringFromMap(map, 'collaboration_headline', 'collaborationHeadline'),
+      availability: getStringFromMap(map, 'availability', 'availability'),
+      preferredProjectTypes: getListFromMap(map, 'preferred_project_types', 'preferredProjectTypes') != null
+          ? List<String>.from(getListFromMap(map, 'preferred_project_types', 'preferredProjectTypes') ?? [])
+          : null,
+      resumeUrl: getStringFromMap(map, 'resume_url', 'resumeUrl'),
+      resumeFileName: getStringFromMap(map, 'resume_file_name', 'resumeFileName'),
     );
   }
 
@@ -117,6 +143,12 @@ class UserModel {
     bool? ownerApproved,
     String? cnicImageUrl,
     bool? adminApproved,
+    String? bio,
+    String? collaborationHeadline,
+    String? availability,
+    List<String>? preferredProjectTypes,
+    String? resumeUrl,
+    String? resumeFileName,
   }) {
     return UserModel(
       id: id ?? this.id,
@@ -137,6 +169,12 @@ class UserModel {
       ownerApproved: ownerApproved ?? this.ownerApproved,
       cnicImageUrl: cnicImageUrl ?? this.cnicImageUrl,
       adminApproved: adminApproved ?? this.adminApproved,
+      bio: bio ?? this.bio,
+      collaborationHeadline: collaborationHeadline ?? this.collaborationHeadline,
+      availability: availability ?? this.availability,
+      preferredProjectTypes: preferredProjectTypes ?? this.preferredProjectTypes,
+      resumeUrl: resumeUrl ?? this.resumeUrl,
+      resumeFileName: resumeFileName ?? this.resumeFileName,
     );
   }
 }

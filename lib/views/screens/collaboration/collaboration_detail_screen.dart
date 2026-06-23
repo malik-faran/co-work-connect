@@ -2,1356 +2,914 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
-import 'package:cwc/controllers/auth_controller.dart';
-import 'package:cwc/models/collaboration_model.dart';
-import 'package:cwc/services/collaboration_service.dart';
-import 'package:cwc/utils/helpers/model_helpers.dart';
-import 'package:cwc/services/chat_service.dart';
-import 'package:cwc/utils/themes/theme.dart';
-import 'package:cwc/views/screens/collaboration/collaboration_create_screen.dart';
-import 'package:cwc/views/screens/chat/chat_screen.dart';
 
-/// Collaboration Detail Screen
-/// Shows full collaboration details and allows users to respond
+import 'package:cwc/controllers/auth_controller.dart';
+import 'package:cwc/models/collaboration_hub_models.dart';
+import 'package:cwc/models/collaboration_model.dart';
+import 'package:cwc/services/chat_service.dart';
+import 'package:cwc/services/collaboration_hub_service.dart';
+import 'package:cwc/services/collaboration_service.dart';
+import 'package:cwc/utils/themes/theme.dart';
+import 'package:cwc/views/screens/chat/chat_screen.dart';
+import 'package:cwc/views/screens/collaboration/collaboration_apply_sheet.dart';
+import 'package:cwc/views/screens/collaboration/collaboration_create_screen.dart';
+import 'package:cwc/views/screens/collaboration/collaboration_invite_sheet.dart';
+import 'package:cwc/views/screens/collaboration/collaboration_project_screen.dart';
+import 'package:cwc/views/screens/profile/public_profile_screen.dart';
+import 'package:cwc/views/widgets/collaboration_widgets.dart';
+
 class CollaborationDetailScreen extends StatefulWidget {
   final String collaborationId;
-
-  const CollaborationDetailScreen({
-    super.key,
-    required this.collaborationId,
-  });
+  const CollaborationDetailScreen({super.key, required this.collaborationId});
 
   @override
   State<CollaborationDetailScreen> createState() => _CollaborationDetailScreenState();
 }
 
 class _CollaborationDetailScreenState extends State<CollaborationDetailScreen> {
-  final CollaborationService _collaborationService = CollaborationService();
-  final ChatService _chatService = ChatService();
+  final _collab = CollaborationService();
+  final _hub = CollaborationHubService();
+  final _chat = ChatService();
   final _uuid = const Uuid();
 
-  CollaborationModel? _collaboration;
-  List<CollaborationResponseModel> _responses = [];
-  bool _isLoading = true;
-  String? _errorMessage;
-  bool _showResponseForm = false;
-  bool _isSubmitting = false;
-
-  final _responseController = TextEditingController();
-  final _formKey = GlobalKey<FormState>();
+  CollaborationModel? _project;
+  List<CollaborationRole> _roles = [];
+  List<CollaborationApplication> _applications = [];
+  List<CollaborationInvite> _sentInvites = [];
+  bool _loading = true;
+  bool _isMember = false;
+  bool _hasApplied = false;
+  bool _busy = false;
 
   @override
   void initState() {
     super.initState();
-    _loadCollaboration();
+    _load();
   }
 
-  @override
-  void dispose() {
-    _responseController.dispose();
-    super.dispose();
-  }
+  String get _uid => context.read<AuthController>().currentUser?.id ?? '';
+  bool get _isOwner => _project != null && _project!.userId == _uid;
 
-  Future<void> _loadCollaboration() async {
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
-
+  Future<void> _load() async {
+    setState(() => _loading = true);
     try {
-      final collaboration = await _collaborationService.getCollaborationById(
-        widget.collaborationId,
-      );
-
-      if (collaboration == null) {
-        setState(() {
-          _errorMessage = 'Collaboration not found';
-          _isLoading = false;
-        });
-        return;
+      final project = await _collab.getCollaborationById(widget.collaborationId);
+      final roles = await _hub.getRoles(widget.collaborationId);
+      final isMember = await _hub.isMember(widget.collaborationId, _uid);
+      List<CollaborationApplication> apps = [];
+      List<CollaborationInvite> sentInvites = [];
+      bool hasApplied = false;
+      if (project != null && project.userId == _uid) {
+        apps = await _hub.getApplications(widget.collaborationId);
+        try {
+          sentInvites = await _hub.getSentInvites(widget.collaborationId);
+        } catch (_) {}
+      } else {
+        hasApplied = await _hub.hasApplied(widget.collaborationId, _uid);
       }
-
-      final responses = await _collaborationService.getCollaborationResponses(
-        widget.collaborationId,
-      );
-
+      if (!mounted) return;
       setState(() {
-        _collaboration = collaboration;
-        _responses = responses;
-        _isLoading = false;
+        _project = project;
+        _roles = roles;
+        _applications = apps;
+        _sentInvites = sentInvites;
+        _isMember = isMember;
+        _hasApplied = hasApplied;
+        _loading = false;
       });
     } catch (e) {
-      setState(() {
-        _errorMessage = e.toString();
-        _isLoading = false;
-      });
+      if (!mounted) return;
+      setState(() => _loading = false);
+      _toast('Failed to load: $e', isError: true);
     }
   }
-
-  Future<void> _submitResponse() async {
-    if (!_formKey.currentState!.validate()) return;
-    if (_isSubmitting) return;
-
-    final authController = context.read<AuthController>();
-    final user = authController.currentUser;
-    if (user == null || _collaboration == null) return;
-
-    if (_collaboration!.hasUserResponded(user.id)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('You have already responded to this collaboration')),
-      );
-      return;
-    }
-
-    setState(() => _isSubmitting = true);
-
-    try {
-      final response = CollaborationResponseModel(
-        id: _uuid.v4(),
-        collaborationId: _collaboration!.id,
-        userId: user.id,
-        userName: user.name,
-        userEmail: user.email,
-        userProfileImage: user.profileImageUrl,
-        message: _responseController.text.trim(),
-        userSkills: user.skills,
-        createdAt: DateTime.now(),
-      );
-
-      await _collaborationService.addResponse(response);
-
-      _responseController.clear();
-      setState(() {
-        _showResponseForm = false;
-        _isSubmitting = false;
-      });
-      _loadCollaboration();
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Response submitted successfully!'),
-          backgroundColor: CAppTheme.successColor,
-        ),
-      );
-    } catch (e) {
-      setState(() => _isSubmitting = false);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error: ${e.toString()}'),
-          backgroundColor: CAppTheme.errorColor,
-        ),
-      );
-    }
-  }
-
-  Future<void> _startChat(String otherUserId, String otherUserName) async {
-    try {
-      final authController = context.read<AuthController>();
-      final currentUser = authController.currentUser;
-      if (currentUser == null) return;
-
-      final chatRoom = await _chatService.getOrCreateChatRoom(
-        user1Id: currentUser.id,
-        user2Id: otherUserId,
-        collaborationId: _collaboration?.id,
-      );
-
-      if (!mounted) return;
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => ChatScreen(chatRoomId: chatRoom.id),
-        ),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error starting chat: ${e.toString()}'),
-          backgroundColor: CAppTheme.errorColor,
-        ),
-      );
-    }
-  }
-
-  bool get _isNeedHelp => _collaboration?.collaborationType == 'need_help';
-  Color get _typeColor => _isNeedHelp
-      ? const Color(0xFFEF8B2C)
-      : CAppTheme.successColor;
 
   @override
   Widget build(BuildContext context) {
-    final authController = context.watch<AuthController>();
-    final currentUser = authController.currentUser;
-    final isOwner = currentUser?.id == _collaboration?.userId;
-
-    return Scaffold(
-      backgroundColor: CAppTheme.backgroundColor,
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator(color: CAppTheme.primaryColor))
-          : _errorMessage != null
-              ? _buildErrorState()
-              : _collaboration == null
-                  ? _buildEmptyState()
-                  : _buildContent(isOwner, currentUser),
-    );
-  }
-
-  Widget _buildContent(bool isOwner, currentUser) {
-    return CustomScrollView(
-      slivers: [
-        _buildGradientHeader(isOwner),
-        SliverToBoxAdapter(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildCollaborationCard(),
-              if (!isOwner &&
-                  currentUser != null &&
-                  !_collaboration!.hasUserResponded(currentUser.id) &&
-                  _collaboration!.isOpen) ...[
-                _buildResponseForm(),
-              ],
-              _buildResponsesSection(isOwner, currentUser),
-              const SizedBox(height: 32),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildGradientHeader(bool isOwner) {
-    return SliverAppBar(
-      expandedHeight: 170,
-      pinned: true,
-      backgroundColor: CAppTheme.primaryColor,
-      surfaceTintColor: Colors.transparent,
-      leading: Container(
-        margin: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.2),
-          borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-        ),
-        child: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white, size: 18),
-          onPressed: () => Navigator.pop(context),
-        ),
-      ),
-      actions: isOwner
-          ? [
-              Container(
-                margin: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                ),
-                child: IconButton(
-                  icon: const Icon(Icons.edit_rounded, color: Colors.white, size: 18),
-                  onPressed: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => CollaborationCreateScreen(
-                          collaboration: _collaboration,
-                        ),
-                      ),
-                    ).then((_) => _loadCollaboration());
-                  },
-                ),
-              ),
-            ]
-          : null,
-      flexibleSpace: FlexibleSpaceBar(
-        background: Container(
-          decoration: const BoxDecoration(
-            gradient: CAppTheme.primaryGradient,
-          ),
-          child: SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 60, 20, 20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(CAppTheme.radiusXL),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          _isNeedHelp ? Icons.help_outline_rounded : Icons.handshake_outlined,
-                          size: 14,
-                          color: Colors.white,
-                        ),
-                        const SizedBox(width: 5),
-                        Text(
-                          _isNeedHelp ? 'Need Help' : 'Offering Help',
-                          style: GoogleFonts.poppins(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Text(
-                    _collaboration!.title,
-                    style: GoogleFonts.poppins(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                      height: 1.2,
-                    ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCollaborationCard() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // User info card
-        Container(
-          margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-            boxShadow: CAppTheme.softShadow,
-          ),
-          child: Row(
-            children: [
-              Container(
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: CAppTheme.primaryColor.withValues(alpha: 0.2),
-                    width: 2,
-                  ),
-                ),
-                child: CircleAvatar(
-                  radius: 22,
-                  backgroundColor: CAppTheme.primaryColor.withValues(alpha: 0.1),
-                  backgroundImage: _collaboration!.userProfileImage != null
-                      ? NetworkImage(_collaboration!.userProfileImage!)
-                      : null,
-                  child: _collaboration!.userProfileImage == null
-                      ? Text(
-                          safeInitial(_collaboration!.userName),
-                          style: GoogleFonts.poppins(
-                            color: CAppTheme.primaryColor,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 18,
-                          ),
-                        )
-                      : null,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _collaboration!.userName,
-                      style: GoogleFonts.poppins(
-                        fontWeight: FontWeight.w600,
-                        fontSize: 15,
-                        color: CAppTheme.textPrimary,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    Text(
-                      _collaboration!.userEmail,
-                      style: GoogleFonts.poppins(
-                        fontSize: 12,
-                        color: CAppTheme.textSecondary,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
-              ),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.access_time_rounded, size: 13, color: CAppTheme.textTertiary),
-                  const SizedBox(width: 4),
-                  Text(
-                    _formatTime(_collaboration!.createdAt),
-                    style: GoogleFonts.poppins(
-                      fontSize: 11,
-                      color: CAppTheme.textTertiary,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-
-        // Description section
-        Container(
-          margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-            boxShadow: CAppTheme.softShadow,
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: CAppTheme.primaryColor.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
-                    ),
-                    child: const Icon(
-                      Icons.description_outlined,
-                      size: 18,
-                      color: CAppTheme.primaryColor,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    'Description',
-                    style: GoogleFonts.poppins(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                      color: CAppTheme.textPrimary,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              Text(
-                _collaboration!.description,
-                style: GoogleFonts.poppins(
-                  fontSize: 14,
-                  color: CAppTheme.textSecondary,
-                  height: 1.6,
-                ),
-              ),
-            ],
-          ),
-        ),
-
-        // Skills section
-        Container(
-          margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-            boxShadow: CAppTheme.softShadow,
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: CAppTheme.secondaryColor.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
-                    ),
-                    child: const Icon(
-                      Icons.auto_awesome_rounded,
-                      size: 18,
-                      color: CAppTheme.secondaryColor,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    'Required Skills',
-                    style: GoogleFonts.poppins(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                      color: CAppTheme.textPrimary,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: _collaboration!.requiredSkills.map((skill) {
-                  return Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [
-                          CAppTheme.primaryColor.withValues(alpha: 0.1),
-                          CAppTheme.secondaryColor.withValues(alpha: 0.08),
-                        ],
-                      ),
-                      borderRadius: BorderRadius.circular(CAppTheme.radiusXL),
-                      border: Border.all(
-                        color: CAppTheme.primaryColor.withValues(alpha: 0.15),
-                        width: 1,
-                      ),
-                    ),
-                    child: Text(
-                      skill,
-                      style: GoogleFonts.poppins(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: CAppTheme.primaryColor,
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-            ],
-          ),
-        ),
-
-        // Project details section
-        if (_collaboration!.projectType != null ||
-            _collaboration!.budget != null ||
-            _collaboration!.timeline != null)
-          Container(
-            margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-              boxShadow: CAppTheme.softShadow,
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: CAppTheme.infoColor.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
-                      ),
-                      child: const Icon(
-                        Icons.info_outline_rounded,
-                        size: 18,
-                        color: CAppTheme.infoColor,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Text(
-                      'Project Details',
-                      style: GoogleFonts.poppins(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                        color: CAppTheme.textPrimary,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                if (_collaboration!.projectType != null)
-                  _buildInfoRow(Icons.category_rounded, 'Project Type', _collaboration!.projectType!),
-                if (_collaboration!.budget != null)
-                  _buildInfoRow(Icons.attach_money_rounded, 'Budget', _collaboration!.budget!),
-                if (_collaboration!.timeline != null)
-                  _buildInfoRow(Icons.schedule_rounded, 'Timeline', _collaboration!.timeline!),
-              ],
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildInfoRow(IconData icon, String label, String value) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: CAppTheme.backgroundColor,
-        borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, size: 18, color: CAppTheme.primaryColor),
-          const SizedBox(width: 10),
-          Text(
-            label,
-            style: GoogleFonts.poppins(
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-              color: CAppTheme.textSecondary,
-            ),
-          ),
-          const Spacer(),
-          Flexible(
-            child: Text(
-              value,
-              style: GoogleFonts.poppins(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: CAppTheme.textPrimary,
-              ),
-              textAlign: TextAlign.end,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildResponseForm() {
-    if (!_showResponseForm) {
-      return Container(
-        margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-        width: double.infinity,
-        child: ElevatedButton.icon(
-          onPressed: () => setState(() => _showResponseForm = true),
-          icon: const Icon(Icons.reply_rounded, size: 20),
-          label: Text(
-            'Respond to Collaboration',
-            style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
-          ),
-          style: ElevatedButton.styleFrom(
-            padding: const EdgeInsets.symmetric(vertical: 16),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-            ),
-          ),
+    if (_loading) {
+      return const Scaffold(
+        backgroundColor: CAppTheme.backgroundColor,
+        body: Center(child: CircularProgressIndicator(color: CAppTheme.primaryColor)),
+      );
+    }
+    if (_project == null) {
+      return Scaffold(
+        appBar: AppBar(),
+        body: const EmptyState(
+          icon: Icons.error_outline_rounded,
+          title: 'Project not found',
+          subtitle: 'This project may have been removed.',
         ),
       );
     }
-
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-        boxShadow: CAppTheme.cardShadow,
-        border: Border.all(
-          color: CAppTheme.primaryColor.withValues(alpha: 0.15),
-          width: 1,
-        ),
-      ),
-      child: Form(
-        key: _formKey,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [
-                    CAppTheme.primaryColor.withValues(alpha: 0.06),
-                    CAppTheme.secondaryColor.withValues(alpha: 0.03),
+    final p = _project!;
+    return Scaffold(
+      backgroundColor: CAppTheme.backgroundColor,
+      body: CustomScrollView(
+        slivers: [
+          SliverAppBar(
+            pinned: true,
+            expandedHeight: 180,
+            foregroundColor: Colors.white,
+            backgroundColor: CAppTheme.primaryColor,
+            leading: _buildBackButton(context),
+            actions: [
+              if (_isOwner && p.isRecruiting)
+                IconButton(
+                  icon: const Icon(Icons.ios_share_rounded),
+                  onPressed: _openInvite,
+                ),
+              if (_isOwner && p.isRecruiting)
+                IconButton(
+                  icon: const Icon(Icons.edit_rounded),
+                  onPressed: _edit,
+                ),
+              if (_isOwner)
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_vert_rounded),
+                  onSelected: (v) {
+                    if (v == 'delete') _confirmDelete();
+                  },
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(
+                      value: 'delete',
+                      child: Row(
+                        children: [
+                          Icon(Icons.delete_outline_rounded,
+                              color: CAppTheme.errorColor, size: 20),
+                          SizedBox(width: 10),
+                          Text('Delete project'),
+                        ],
+                      ),
+                    ),
                   ],
                 ),
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(CAppTheme.radiusLarge),
-                  topRight: Radius.circular(CAppTheme.radiusLarge),
-                ),
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: CAppTheme.primaryColor.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
-                    ),
-                    child: const Icon(
-                      Icons.edit_note_rounded,
-                      size: 18,
-                      color: CAppTheme.primaryColor,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
+            ],
+            flexibleSpace: FlexibleSpaceBar(
+              background: _coverHeader(p),
+            ),
+          ),
+          SliverToBoxAdapter(child: _body(p)),
+        ],
+      ),
+      bottomNavigationBar: _bottomCta(p),
+    );
+  }
+
+  Widget _buildBackButton(BuildContext context) {
+    final compact = MediaQuery.of(context).size.width < 360;
+    return Padding(
+      padding: const EdgeInsets.all(8),
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.38),
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          onTap: () => Navigator.maybePop(context),
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 10, vertical: 8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.arrow_back_ios_new_rounded, size: 15, color: Colors.white),
+                if (!compact) ...[
+                  const SizedBox(width: 4),
                   Text(
-                    'Your Response',
+                    'Back',
                     style: GoogleFonts.poppins(
-                      fontSize: 16,
+                      fontSize: 13,
                       fontWeight: FontWeight.w600,
-                      color: CAppTheme.textPrimary,
+                      color: Colors.white,
                     ),
                   ),
                 ],
-              ),
+              ],
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-              child: Column(
-                children: [
-                  TextFormField(
-                    controller: _responseController,
-                    decoration: InputDecoration(
-                      hintText: 'Tell them why you\'re interested and how you can help...',
-                      hintStyle: GoogleFonts.poppins(
-                        fontSize: 13,
-                        color: CAppTheme.textTertiary,
-                      ),
-                      filled: true,
-                      fillColor: CAppTheme.backgroundColor,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                        borderSide: BorderSide.none,
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                        borderSide: BorderSide.none,
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                        borderSide: const BorderSide(color: CAppTheme.primaryColor, width: 1.5),
-                      ),
-                      contentPadding: const EdgeInsets.all(16),
-                    ),
-                    maxLines: 5,
-                    style: GoogleFonts.poppins(fontSize: 14, color: CAppTheme.textPrimary),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'Please enter your response';
-                      }
-                      if (value.trim().length < 20) {
-                        return 'Response must be at least 20 characters';
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: () => setState(() => _showResponseForm = false),
-                          style: OutlinedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                            ),
-                          ),
-                          child: Text(
-                            'Cancel',
-                            style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: _isSubmitting ? null : _submitResponse,
-                          icon: _isSubmitting
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: Colors.white,
-                                  ),
-                                )
-                              : const Icon(Icons.send_rounded, size: 18),
-                          label: Text(
-                            _isSubmitting ? 'Submitting...' : 'Submit',
-                            style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
-                          ),
-                          style: ElevatedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildResponsesSection(bool isOwner, currentUser) {
+  Widget _coverHeader(CollaborationModel p) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        if (p.coverImageUrl != null && p.coverImageUrl!.isNotEmpty)
+          Image.network(p.coverImageUrl!, fit: BoxFit.cover)
+        else
+          Container(decoration: const BoxDecoration(gradient: CAppTheme.primaryGradient)),
+        Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Colors.black.withValues(alpha: 0.1), Colors.black.withValues(alpha: 0.6)],
+            ),
+          ),
+        ),
+        Positioned(
+          left: 16,
+          right: 16,
+          bottom: 16,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              StatusBadge(status: p.status, large: true),
+              const SizedBox(height: 8),
+              Text(p.title,
+                  style: GoogleFonts.poppins(
+                      fontSize: 20, fontWeight: FontWeight.w700, color: Colors.white)),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _body(CollaborationModel p) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
+      padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: CAppTheme.primaryColor.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
-                ),
-                child: const Icon(
-                  Icons.forum_rounded,
-                  size: 18,
-                  color: CAppTheme.primaryColor,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Text(
-                'Responses',
-                style: GoogleFonts.poppins(
-                  fontSize: 17,
-                  fontWeight: FontWeight.bold,
-                  color: CAppTheme.textPrimary,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                decoration: BoxDecoration(
-                  gradient: CAppTheme.primaryGradient,
-                  borderRadius: BorderRadius.circular(CAppTheme.radiusXL),
-                ),
-                child: Text(
-                  '${_responses.length}',
-                  style: GoogleFonts.poppins(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          if (_responses.isEmpty)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(32),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-                boxShadow: CAppTheme.softShadow,
-              ),
-              child: Column(
+          // Owner row
+          SectionCard(
+            padding: const EdgeInsets.all(12),
+            child: InkWell(
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => PublicProfileScreen(userId: p.userId))),
+              child: Row(
                 children: [
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: CAppTheme.primaryColor.withValues(alpha: 0.08),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Icons.forum_outlined,
-                      size: 32,
-                      color: CAppTheme.primaryColor,
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  Text(
-                    'No responses yet',
-                    style: GoogleFonts.poppins(
-                      color: CAppTheme.textPrimary,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
+                  UserAvatar(name: p.userName, imageUrl: p.userProfileImage, size: 42),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(p.userName,
+                            style: GoogleFonts.poppins(
+                                fontSize: 14.5, fontWeight: FontWeight.w600)),
+                        Text('Project owner',
+                            style: GoogleFonts.poppins(
+                                fontSize: 12, color: CAppTheme.textSecondary)),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Be the first one to respond!',
-                    style: GoogleFonts.poppins(
-                      color: CAppTheme.textSecondary,
-                      fontSize: 13,
-                    ),
-                  ),
+                  const Icon(Icons.chevron_right_rounded, color: CAppTheme.textTertiary),
                 ],
               ),
-            )
-          else
-            ..._responses.map((response) => _buildResponseCard(response, isOwner, currentUser)),
+            ),
+          ),
+          const SizedBox(height: 14),
+          SectionCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const SectionHeader(icon: Icons.description_rounded, title: 'About'),
+                const SizedBox(height: 10),
+                Text(p.description,
+                    style: GoogleFonts.poppins(
+                        fontSize: 14, height: 1.5, color: CAppTheme.textPrimary)),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    if (p.projectType != null)
+                      SkillChip(label: p.projectType!, icon: Icons.category_rounded),
+                    if (p.timeline != null && p.timeline!.isNotEmpty)
+                      SkillChip(label: p.timeline!, icon: Icons.schedule_rounded),
+                    if (p.budget != null && p.budget!.isNotEmpty)
+                      SkillChip(label: p.budget!, icon: Icons.payments_rounded),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          if (_roles.isNotEmpty) _rolesSection(),
+          if (!_isOwner && !_isMember && p.isRecruiting) ...[
+            const SizedBox(height: 14),
+            _howItWorksCard(),
+          ],
+          if (_isOwner && p.isRecruiting) ...[
+            const SizedBox(height: 14),
+            _applicantInbox(),
+            if (_pendingInvites.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              _pendingInvitesSection(),
+            ],
+          ],
+          const SizedBox(height: 90),
         ],
       ),
     );
   }
 
-  Widget _buildResponseCard(CollaborationResponseModel response, bool isOwner, currentUser) {
-    final isAccepted = response.status == 'accepted';
-    final isRejected = response.status == 'rejected';
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-        color: isRejected ? Colors.grey.shade50 : Colors.white,
-        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-        boxShadow: CAppTheme.softShadow,
-        border: isAccepted
-            ? Border.all(color: CAppTheme.successColor.withValues(alpha: 0.4), width: 2)
-            : isRejected
-                ? Border.all(color: CAppTheme.errorColor.withValues(alpha: 0.2), width: 1)
-                : null,
-      ),
+  Widget _rolesSection() {
+    return SectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (isAccepted)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              decoration: BoxDecoration(
-                color: CAppTheme.successColor.withValues(alpha: 0.08),
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(CAppTheme.radiusLarge),
-                  topRight: Radius.circular(CAppTheme.radiusLarge),
+          SectionHeader(
+              icon: Icons.work_outline_rounded, title: 'Open roles (${_roles.length})'),
+          const SizedBox(height: 12),
+          ..._roles.map((r) => Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: CAppTheme.backgroundColor,
+                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
                 ),
-              ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(r.title,
+                        style: GoogleFonts.poppins(
+                            fontSize: 14, fontWeight: FontWeight.w600)),
+                    if (r.requiredSkills.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: r.requiredSkills.map((s) => SkillChip(label: s)).toList(),
+                      ),
+                    ],
+                  ],
+                ),
+              )),
+        ],
+      ),
+    );
+  }
+
+  Widget _howItWorksCard() {
+    final steps = [
+      ('Apply for a role', 'Pick a role that fits you and send a short pitch.', Icons.assignment_ind_rounded),
+      ('Owner reviews', 'The project owner reviews applicants and builds the team.', Icons.fact_check_rounded),
+      ('Get on the team', 'Once accepted, you join the team when the project starts.', Icons.groups_rounded),
+      ('Work together', 'Use the Project Room: chat, milestones, files & meetings.', Icons.rocket_launch_rounded),
+    ];
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionHeader(icon: Icons.route_rounded, title: 'How this works'),
+          const SizedBox(height: 12),
+          ...List.generate(steps.length, (i) {
+            final s = steps[i];
+            final isLast = i == steps.length - 1;
+            return IntrinsicHeight(
               child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Icon(Icons.check_circle_rounded, size: 16, color: CAppTheme.successColor),
-                  const SizedBox(width: 6),
-                  Text(
-                    'Accepted Collaborator',
-                    style: GoogleFonts.poppins(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: CAppTheme.successColor,
+                  Column(
+                    children: [
+                      Container(
+                        width: 34,
+                        height: 34,
+                        decoration: BoxDecoration(
+                          color: CAppTheme.primaryColor.withValues(alpha: 0.1),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(s.$3, size: 17, color: CAppTheme.primaryColor),
+                      ),
+                      if (!isLast)
+                        Expanded(
+                          child: Container(
+                            width: 2,
+                            margin: const EdgeInsets.symmetric(vertical: 4),
+                            color: CAppTheme.borderColor,
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Padding(
+                      padding: EdgeInsets.only(bottom: isLast ? 0 : 16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('${i + 1}. ${s.$1}',
+                              style: GoogleFonts.poppins(
+                                  fontSize: 14, fontWeight: FontWeight.w600)),
+                          const SizedBox(height: 2),
+                          Text(s.$2,
+                              style: GoogleFonts.poppins(
+                                  fontSize: 12.5,
+                                  color: CAppTheme.textSecondary,
+                                  height: 1.4)),
+                        ],
+                      ),
                     ),
                   ),
                 ],
               ),
-            ),
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  List<CollaborationInvite> get _pendingInvites =>
+      _sentInvites.where((i) => i.status == 'pending').toList();
+
+  Widget _pendingInvitesSection() {
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SectionHeader(
+            icon: Icons.mail_outline_rounded,
+            title: 'Invited (${_pendingInvites.length})',
+          ),
+          const SizedBox(height: 4),
+          Text('Waiting for these people to respond to your invite.',
+              style: GoogleFonts.poppins(fontSize: 12.5, color: CAppTheme.textSecondary)),
+          const SizedBox(height: 12),
+          ..._pendingInvites.map((inv) => Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: CAppTheme.backgroundColor,
+                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                ),
+                child: Row(
                   children: [
-                    Container(
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: isAccepted
-                              ? CAppTheme.successColor.withValues(alpha: 0.3)
-                              : CAppTheme.primaryColor.withValues(alpha: 0.2),
-                          width: 2,
-                        ),
-                      ),
-                      child: CircleAvatar(
-                        radius: 20,
-                        backgroundColor: CAppTheme.primaryColor.withValues(alpha: 0.1),
-                        backgroundImage: response.userProfileImage != null
-                            ? NetworkImage(response.userProfileImage!)
-                            : null,
-                        child: response.userProfileImage == null
-                            ? Text(
-                                safeInitial(response.userName),
-                                style: GoogleFonts.poppins(
-                                  color: CAppTheme.primaryColor,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              )
-                            : null,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
+                    const Icon(Icons.hourglass_top_rounded,
+                        size: 18, color: CAppTheme.warningColor),
+                    const SizedBox(width: 10),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            response.userName,
+                            inv.roleTitle != null
+                                ? 'Invited as ${inv.roleTitle}'
+                                : 'Project invitation',
                             style: GoogleFonts.poppins(
-                              fontWeight: FontWeight.w600,
-                              fontSize: 14,
-                              color: CAppTheme.textPrimary,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                                fontSize: 13.5, fontWeight: FontWeight.w600),
                           ),
-                          Row(
-                            children: [
-                              const Icon(Icons.access_time_rounded, size: 12, color: CAppTheme.textTertiary),
-                              const SizedBox(width: 3),
-                              Text(
-                                _formatTime(response.createdAt),
-                                style: GoogleFonts.poppins(
-                                  fontSize: 11,
-                                  color: CAppTheme.textTertiary,
-                                ),
-                              ),
-                            ],
-                          ),
+                          Text('Pending response',
+                              style: GoogleFonts.poppins(
+                                  fontSize: 11.5, color: CAppTheme.textSecondary)),
                         ],
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 14),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: CAppTheme.backgroundColor,
-                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                  ),
-                  child: Text(
-                    response.message,
+              )),
+        ],
+      ),
+    );
+  }
+
+  Widget _applicantInbox() {
+    final accepted = _applications.where((a) => a.isAccepted).length;
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SectionHeader(
+            icon: Icons.inbox_rounded,
+            title: 'Applicants (${_applications.length})',
+            trailing: accepted > 0
+                ? Text('$accepted on team',
                     style: GoogleFonts.poppins(
-                      fontSize: 13,
-                      color: CAppTheme.textSecondary,
-                      height: 1.5,
-                    ),
-                  ),
-                ),
-                if (response.userSkills != null && response.userSkills!.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  Text(
-                    'Skills',
-                    style: GoogleFonts.poppins(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: CAppTheme.textSecondary,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: response.userSkills!.take(6).map((skill) {
-                      return Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [
-                              CAppTheme.primaryColor.withValues(alpha: 0.1),
-                              CAppTheme.secondaryColor.withValues(alpha: 0.06),
-                            ],
-                          ),
-                          borderRadius: BorderRadius.circular(CAppTheme.radiusXL),
-                        ),
-                        child: Text(
-                          skill,
+                        fontSize: 12, fontWeight: FontWeight.w600, color: CAppTheme.successColor))
+                : null,
+          ),
+          const SizedBox(height: 8),
+          if (_applications.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              child: Text('No applicants yet. Share your invite link to get teammates faster.',
+                  style: GoogleFonts.poppins(fontSize: 13, color: CAppTheme.textSecondary)),
+            )
+          else
+            ..._applications.map(_applicantCard),
+        ],
+      ),
+    );
+  }
+
+  Widget _applicantCard(CollaborationApplication app) {
+    final match = skillMatchPercent(
+      app.userSkills,
+      _roles.firstWhere((r) => r.id == app.roleId,
+          orElse: () => CollaborationRole(
+              id: '', collaborationId: '', title: '', createdAt: DateTime.now())).requiredSkills,
+    );
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: CAppTheme.backgroundColor,
+        borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+        border: app.isAccepted
+            ? Border.all(color: CAppTheme.successColor.withValues(alpha: 0.4))
+            : null,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              GestureDetector(
+                onTap: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => PublicProfileScreen(userId: app.userId))),
+                child: UserAvatar(name: app.userName, imageUrl: app.userProfileImage, size: 40),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(app.userName,
+                        style: GoogleFonts.poppins(
+                            fontSize: 14, fontWeight: FontWeight.w600)),
+                    if (app.roleTitle != null)
+                      Text('for ${app.roleTitle}',
                           style: GoogleFonts.poppins(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: CAppTheme.primaryColor,
-                          ),
-                        ),
-                      );
-                    }).toList(),
-                  ),
-                ],
-                const SizedBox(height: 14),
-                if (isOwner && response.status == 'pending')
-                  Row(
-                    children: [
-                      const Spacer(),
-                      OutlinedButton.icon(
-                        onPressed: () => _showConfirmDialog(
-                          title: 'Reject Response',
-                          message: 'Are you sure you want to reject ${response.userName}\'s response?',
-                          confirmText: 'Reject',
-                          confirmColor: CAppTheme.errorColor,
-                          onConfirm: () async {
-                            try {
-                              await _collaborationService.rejectResponse(
-                                _collaboration!.id,
-                                response.id,
-                                response.userId,
-                              );
-                              _loadCollaboration();
-                              if (!context.mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Response rejected'),
-                                  backgroundColor: CAppTheme.warningColor,
-                                ),
-                              );
-                            } catch (e) {
-                              if (!context.mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text('Error: ${e.toString()}'),
-                                  backgroundColor: CAppTheme.errorColor,
-                                ),
-                              );
-                            }
-                          },
-                        ),
-                        icon: const Icon(Icons.close_rounded, size: 18),
-                        label: Text(
-                          'Reject',
-                          style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
-                        ),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: CAppTheme.errorColor,
-                          side: const BorderSide(color: CAppTheme.errorColor),
-                          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      ElevatedButton.icon(
-                        onPressed: () => _showConfirmDialog(
-                          title: 'Accept Response',
-                          message: 'Are you sure you want to accept ${response.userName}\'s response? This will change the collaboration status to In Progress.',
-                          confirmText: 'Accept',
-                          confirmColor: CAppTheme.successColor,
-                          onConfirm: () async {
-                            try {
-                              await _collaborationService.acceptResponse(
-                                _collaboration!.id,
-                                response.id,
-                                response.userId,
-                              );
-                              _loadCollaboration();
-                              if (!context.mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Response accepted!'),
-                                  backgroundColor: CAppTheme.successColor,
-                                ),
-                              );
-                            } catch (e) {
-                              if (!context.mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text('Error: ${e.toString()}'),
-                                  backgroundColor: CAppTheme.errorColor,
-                                ),
-                              );
-                            }
-                          },
-                        ),
-                        icon: const Icon(Icons.check_circle_outline_rounded, size: 18),
-                        label: Text(
-                          'Accept',
-                          style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
-                        ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: CAppTheme.successColor,
-                          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                          ),
-                        ),
-                      ),
-                    ],
-                  )
-                else if (response.status == 'rejected')
-                  Row(
-                    children: [
-                      const Spacer(),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: CAppTheme.errorColor.withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.cancel_rounded, size: 16, color: CAppTheme.errorColor),
-                            const SizedBox(width: 6),
-                            Text(
-                              'Rejected',
-                              style: GoogleFonts.poppins(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                                color: CAppTheme.errorColor,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  )
-                else if (currentUser != null &&
-                    currentUser.id != response.userId &&
-                    response.status == 'accepted')
-                  Row(
-                    children: [
-                      const Spacer(),
-                      ElevatedButton.icon(
-                        onPressed: () => _startChat(response.userId, response.userName),
-                        icon: const Icon(Icons.chat_rounded, size: 18),
-                        label: Text(
-                          'Start Chat',
-                          style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
-                        ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: CAppTheme.primaryColor,
-                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                              fontSize: 12, color: CAppTheme.textSecondary)),
+                  ],
+                ),
+              ),
+              if (app.userSkills.isNotEmpty && app.roleId != null) MatchBadge(percent: match),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(app.pitchMessage,
+              style: GoogleFonts.poppins(
+                  fontSize: 13, height: 1.4, color: CAppTheme.textPrimary)),
+          if (app.availability != null || app.proposedRate != null) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                if (app.availability != null)
+                  SkillChip(label: app.availability!, icon: Icons.schedule_rounded),
+                if (app.proposedRate != null)
+                  SkillChip(label: app.proposedRate!, icon: Icons.payments_rounded),
               ],
             ),
-          ),
+          ],
+          const SizedBox(height: 12),
+          _applicantActions(app),
         ],
       ),
     );
   }
 
-  Widget _buildErrorState() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              width: 72,
-              height: 72,
+  Widget _applicantActions(CollaborationApplication app) {
+    if (app.isRejected) {
+      return Align(
+        alignment: Alignment.centerLeft,
+        child: Text('Rejected',
+            style: GoogleFonts.poppins(fontSize: 12.5, color: CAppTheme.errorColor)),
+      );
+    }
+    return Row(
+      children: [
+        if (app.isAccepted)
+          Expanded(
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              alignment: Alignment.center,
               decoration: BoxDecoration(
-                color: CAppTheme.errorColor.withValues(alpha: 0.1),
-                shape: BoxShape.circle,
+                color: CAppTheme.successColor.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
               ),
-              child: const Icon(Icons.error_outline_rounded, size: 36, color: CAppTheme.errorColor),
+              child: Text('On the team',
+                  style: GoogleFonts.poppins(
+                      fontSize: 12.5, fontWeight: FontWeight.w600, color: CAppTheme.successColor)),
             ),
-            const SizedBox(height: 20),
-            Text(
-              'Something went wrong',
-              style: GoogleFonts.poppins(
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-                color: CAppTheme.textPrimary,
+          )
+        else ...[
+          Expanded(
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                backgroundColor: CAppTheme.successColor,
               ),
+              onPressed: () => _setStatus(app, 'accepted'),
+              child: Text('Add to team', style: GoogleFonts.poppins(fontSize: 12.5)),
             ),
-            const SizedBox(height: 8),
-            Text(
-              _errorMessage ?? 'Unknown error',
-              style: GoogleFonts.poppins(color: CAppTheme.textSecondary, fontSize: 14),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton(
-              onPressed: _loadCollaboration,
-              child: const Text('Retry'),
-            ),
-          ],
+          ),
+          const SizedBox(width: 8),
+          if (!app.isShortlisted)
+            _iconBtn(Icons.star_outline_rounded, CAppTheme.warningColor,
+                () => _setStatus(app, 'shortlisted')),
+        ],
+        const SizedBox(width: 8),
+        _iconBtn(Icons.chat_bubble_outline_rounded, CAppTheme.primaryColor,
+            () => _messageApplicant(app)),
+        if (!app.isAccepted) ...[
+          const SizedBox(width: 8),
+          _iconBtn(Icons.close_rounded, CAppTheme.errorColor, () => _setStatus(app, 'rejected')),
+        ],
+      ],
+    );
+  }
+
+  Widget _iconBtn(IconData icon, Color color, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
+      child: Container(
+        padding: const EdgeInsets.all(9),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
         ),
+        child: Icon(icon, size: 18, color: color),
       ),
     );
   }
 
-  Widget _buildEmptyState() {
-    return Center(
-      child: Text(
-        'Collaboration not found',
-        style: GoogleFonts.poppins(
-          color: CAppTheme.textSecondary,
-          fontSize: 16,
-        ),
-      ),
-    );
+  Widget? _bottomCta(CollaborationModel p) {
+    final user = context.read<AuthController>().currentUser;
+    if (user == null) return null;
+
+    // Member or owner of an active/completed project -> open the room.
+    if ((_isMember || _isOwner) && (p.isActive || p.isCompleted)) {
+      return _ctaBar(
+        icon: Icons.meeting_room_rounded,
+        label: 'Open Project Room',
+        onTap: () => Navigator.pushReplacement(context,
+            MaterialPageRoute(builder: (_) => CollaborationProjectScreen(collaborationId: p.id))),
+      );
+    }
+
+    // Owner recruiting -> Start Project.
+    if (_isOwner && p.isRecruiting) {
+      final acceptedCount = _applications.where((a) => a.isAccepted).length;
+      return _ctaBar(
+        icon: Icons.rocket_launch_rounded,
+        label: acceptedCount == 0
+            ? 'Add teammates to start'
+            : 'Start Project ($acceptedCount)',
+        color: CAppTheme.successColor,
+        enabled: acceptedCount > 0 && !_busy,
+        onTap: _launch,
+      );
+    }
+
+    // Visitor on a recruiting project -> apply.
+    if (!_isOwner && p.isRecruiting) {
+      if (_hasApplied) {
+        return _ctaBar(
+          icon: Icons.check_circle_rounded,
+          label: 'Application submitted',
+          enabled: false,
+          onTap: () {},
+        );
+      }
+      return _ctaBar(
+        icon: Icons.assignment_ind_rounded,
+        label: 'Apply for a role',
+        enabled: !_busy,
+        onTap: _apply,
+      );
+    }
+
+    // Visitor on an active project (e.g. via link) -> request join.
+    if (!_isOwner && !_isMember && p.isActive) {
+      return _ctaBar(
+        icon: Icons.group_add_rounded,
+        label: 'Request to join',
+        enabled: !_busy,
+        onTap: _requestJoinActive,
+      );
+    }
+
+    return null;
   }
 
-  void _showConfirmDialog({
-    required String title,
-    required String message,
-    required String confirmText,
-    required Color confirmColor,
-    required Future<void> Function() onConfirm,
+  Widget _ctaBar({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+    Color? color,
+    bool enabled = true,
   }) {
-    showDialog(
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: Colors.white, boxShadow: CAppTheme.softShadow),
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: color),
+            onPressed: enabled ? onTap : null,
+            icon: Icon(icon),
+            label: Text(label),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------ actions
+  Future<void> _setStatus(CollaborationApplication app, String status) async {
+    String? reason;
+    if (status == 'rejected') {
+      reason = await _askReason();
+      if (reason == null) return; // cancelled
+    }
+    await _hub.setApplicationStatus(app,
+        status: status, rejectReason: reason, projectTitle: _project!.title);
+    _load();
+  }
+
+  Future<String?> _askReason() async {
+    final controller = TextEditingController();
+    return showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-        ),
-        title: Text(
-          title,
-          style: GoogleFonts.poppins(
-            fontWeight: FontWeight.w600,
-            fontSize: 18,
-            color: CAppTheme.textPrimary,
-          ),
-        ),
-        content: Text(
-          message,
-          style: GoogleFonts.poppins(
-            fontSize: 14,
-            color: CAppTheme.textSecondary,
-            height: 1.5,
-          ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(CAppTheme.radiusXL)),
+        title: const Text('Reject applicant?'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(labelText: 'Reason (optional)'),
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text(
-              'Cancel',
-              style: GoogleFonts.poppins(
-                fontWeight: FontWeight.w600,
-                color: CAppTheme.textSecondary,
-              ),
-            ),
-          ),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           ElevatedButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              onConfirm();
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: confirmColor,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-              ),
-            ),
-            child: Text(
-              confirmText,
-              style: GoogleFonts.poppins(
-                fontWeight: FontWeight.w600,
-                color: Colors.white,
-              ),
-            ),
+            style: ElevatedButton.styleFrom(backgroundColor: CAppTheme.errorColor),
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Reject'),
           ),
         ],
       ),
     );
   }
 
-  String _formatTime(DateTime dateTime) {
-    final now = DateTime.now();
-    final difference = now.difference(dateTime);
+  Future<void> _messageApplicant(CollaborationApplication app) async {
+    final user = context.read<AuthController>().currentUser;
+    if (user == null) return;
+    final room = await _chat.getOrCreateChatRoom(
+      user1Id: user.id,
+      user2Id: app.userId,
+      collaborationId: _project!.id,
+    );
+    if (!mounted) return;
+    Navigator.push(context, MaterialPageRoute(builder: (_) => ChatScreen(chatRoomId: room.id)));
+  }
 
-    if (difference.inDays > 7) {
-      return '${dateTime.day}/${dateTime.month}/${dateTime.year}';
-    } else if (difference.inDays > 0) {
-      return '${difference.inDays}d ago';
-    } else if (difference.inHours > 0) {
-      return '${difference.inHours}h ago';
-    } else if (difference.inMinutes > 0) {
-      return '${difference.inMinutes}m ago';
-    } else {
-      return 'Just now';
+  Future<void> _launch() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(CAppTheme.radiusXL)),
+        title: const Text('Start project?'),
+        content: const Text(
+            'This builds your team, opens the group chat and moves the project to Active. You can still invite more people later.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: CAppTheme.successColor),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Start'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => _busy = true);
+    try {
+      final accepted = _applications.where((a) => a.isAccepted).toList();
+      await _hub.launchProject(collaboration: _project!, acceptedApplications: accepted);
+      if (!mounted) return;
+      Navigator.pushReplacement(context,
+          MaterialPageRoute(builder: (_) => CollaborationProjectScreen(collaborationId: _project!.id)));
+    } catch (e) {
+      setState(() => _busy = false);
+      _toast('Failed to start: $e', isError: true);
     }
+  }
+
+  Future<void> _apply() async {
+    final user = context.read<AuthController>().currentUser;
+    if (user == null || _project == null) return;
+    final result = await showModalBottomSheet<ApplyResult>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => CollaborationApplySheet(roles: _roles, userSkills: user.skills ?? []),
+    );
+    if (result == null) return;
+    setState(() => _busy = true);
+    try {
+      await _hub.apply(
+        CollaborationApplication(
+          id: _uuid.v4(),
+          collaborationId: _project!.id,
+          roleId: result.role?.id,
+          roleTitle: result.role?.title,
+          userId: user.id,
+          userName: user.name,
+          userEmail: user.email,
+          userProfileImage: user.profileImageUrl,
+          userSkills: user.skills ?? [],
+          pitchMessage: result.pitch,
+          availability: result.availability,
+          proposedRate: result.proposedRate,
+          createdAt: DateTime.now(),
+        ),
+        _project!.userId,
+        _project!.title,
+      );
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _hasApplied = true;
+      });
+      _toast('Application submitted!');
+    } catch (e) {
+      setState(() => _busy = false);
+      _toast('Failed to apply: $e', isError: true);
+    }
+  }
+
+  Future<void> _requestJoinActive() async {
+    final user = context.read<AuthController>().currentUser;
+    if (user == null || _project == null) return;
+    setState(() => _busy = true);
+    try {
+      await _hub.joinActiveProject(
+        collaboration: _project!,
+        userId: user.id,
+        userName: user.name,
+        userImage: user.profileImageUrl,
+        joinedVia: 'link',
+      );
+      if (!mounted) return;
+      Navigator.pushReplacement(context,
+          MaterialPageRoute(builder: (_) => CollaborationProjectScreen(collaborationId: _project!.id)));
+    } catch (e) {
+      setState(() => _busy = false);
+      _toast('Failed to join: $e', isError: true);
+    }
+  }
+
+  Future<void> _openInvite() async {
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => CollaborationInviteSheet(project: _project!),
+    );
+  }
+
+  Future<void> _confirmDelete() async {
+    if (_project == null) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(CAppTheme.radiusXL)),
+        title: const Text('Delete project?'),
+        content: const Text(
+            'This permanently removes the project, its roles, applications and invites. This cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: CAppTheme.errorColor),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await _collab.deleteCollaboration(_project!.id);
+      if (!mounted) return;
+      Navigator.pop(context, true);
+      _toast('Project deleted');
+    } catch (e) {
+      _toast('Failed to delete: $e', isError: true);
+    }
+  }
+
+  Future<void> _edit() async {
+    final changed = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => CollaborationCreateScreen(collaboration: _project)),
+    );
+    if (changed == true) _load();
+  }
+
+  void _toast(String msg, {bool isError = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg),
+      backgroundColor: isError ? CAppTheme.errorColor : CAppTheme.successColor,
+    ));
   }
 }

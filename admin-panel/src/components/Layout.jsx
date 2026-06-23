@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
+import { supabase } from '../lib/supabase'
 import { 
   LayoutDashboard, 
   UserCheck, 
@@ -23,6 +24,7 @@ const Layout = ({ user, setUser }) => {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [pendingOwners, setPendingOwners] = useState(0)
 
   useEffect(() => {
     const handleResize = () => {
@@ -40,8 +42,31 @@ const Layout = ({ user, setUser }) => {
     return () => window.removeEventListener('resize', handleResize)
   }, [])
 
-  const handleLogout = () => {
-    localStorage.removeItem('admin_user')
+  useEffect(() => {
+    if (!user) return
+    const fetchPendingCounts = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select('id')
+          .eq('role', 'owner')
+          .is('owner_approved', null)
+        
+        if (!error && data) {
+          setPendingOwners(data.length)
+        }
+      } catch (error) {
+        console.error('Error fetching pending owner requests count:', error)
+      }
+    }
+    fetchPendingCounts()
+    // Fetch every 15 seconds to keep sidebar status active
+    const interval = setInterval(fetchPendingCounts, 15000)
+    return () => clearInterval(interval)
+  }, [location.pathname, user])
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut()
     setUser(null)
     navigate('/login')
   }
@@ -126,6 +151,7 @@ const Layout = ({ user, setUser }) => {
         {menuItems.map((item) => {
           const Icon = item.icon
           const isActive = location.pathname === item.path
+          const isOwnerRequests = item.path === '/owner-requests'
           return (
             <Link
               key={item.path}
@@ -145,7 +171,8 @@ const Layout = ({ user, setUser }) => {
                 transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
                 fontWeight: isActive ? '600' : '500',
                 boxShadow: isActive ? '0 4px 12px rgba(99, 102, 241, 0.3)' : 'none',
-                transform: isActive ? 'translateX(4px)' : 'translateX(0)'
+                transform: isActive ? 'translateX(4px)' : 'translateX(0)',
+                position: 'relative'
               }}
             >
               <Icon 
@@ -159,9 +186,27 @@ const Layout = ({ user, setUser }) => {
               {(sidebarOpen || isMobile) && (
                 <span style={{ 
                   fontSize: '14px',
-                  letterSpacing: '0.3px'
+                  letterSpacing: '0.3px',
+                  flex: 1
                 }}>
                   {item.label}
+                </span>
+              )}
+              {isOwnerRequests && pendingOwners > 0 && (
+                <span style={{
+                  background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
+                  color: 'white',
+                  borderRadius: '10px',
+                  padding: '2px 8px',
+                  fontSize: '11px',
+                  fontWeight: '700',
+                  boxShadow: '0 2px 8px rgba(239, 68, 68, 0.4)',
+                  marginLeft: (sidebarOpen || isMobile) ? '8px' : '0',
+                  position: (sidebarOpen || isMobile) ? 'static' : 'absolute',
+                  top: (sidebarOpen || isMobile) ? 'auto' : '6px',
+                  right: (sidebarOpen || isMobile) ? 'auto' : '6px'
+                }}>
+                  {pendingOwners}
                 </span>
               )}
             </Link>

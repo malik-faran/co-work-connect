@@ -9,6 +9,8 @@ import 'package:cwc/models/workspace_model.dart';
 import 'package:cwc/utils/constants/app_constants.dart';
 import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/views/screens/profile/profile_screen.dart';
+import 'package:cwc/views/screens/profile/collaboration_profile_screen.dart';
+import 'package:cwc/views/screens/profile/portfolio_editor_screen.dart';
 import 'package:cwc/views/screens/role_selection_screen.dart';
 import 'package:cwc/views/screens/user/workspace_detail_screen.dart';
 import 'package:cwc/views/screens/user/booking_history_screen.dart';
@@ -18,9 +20,20 @@ import 'package:cwc/views/screens/sos/sos_screen.dart';
 import 'package:cwc/views/screens/chat/chat_list_screen.dart';
 import 'package:cwc/services/notification_service.dart';
 import 'package:cwc/models/notification_model.dart';
+import 'package:cwc/views/widgets/workspaces_map_view.dart';
 
 class UserHomeScreen extends StatefulWidget {
   const UserHomeScreen({super.key});
+
+  /// Lets any deeper screen request a bottom-nav tab switch.
+  /// 0 = Projects, 1 = Spaces, 2 = Messages, 3 = Profile.
+  static final ValueNotifier<int> tabRequest = ValueNotifier<int>(0);
+
+  /// Pop back to the home shell and switch to [index].
+  static void goToTab(BuildContext context, int index) {
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    tabRequest.value = index;
+  }
 
   @override
   State<UserHomeScreen> createState() => _UserHomeScreenState();
@@ -37,11 +50,16 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   @override
   void initState() {
     super.initState();
+    UserHomeScreen.tabRequest.addListener(_onTabRequest);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadNotificationCount();
       _setupNotificationStream();
       context.read<WorkspaceController>().loadWorkspaces();
     });
+  }
+
+  void _onTabRequest() {
+    if (mounted) setState(() => _selectedTab = UserHomeScreen.tabRequest.value);
   }
 
   Future<void> _loadNotificationCount() async {
@@ -57,19 +75,26 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
     final user = context.read<AuthController>().currentUser;
     if (user == null) return;
     _notifSub?.cancel();
-    _notifSub = _notificationService.getNotificationsStream(user.id).listen(
-      (notifs) {
-        if (mounted) {
-          setState(() => _unreadNotificationCount = notifs.where((n) => !n.isRead).length);
-        }
-      },
-      onError: (_) {},
-      cancelOnError: false,
-    );
+    _notifSub = _notificationService
+        .getNotificationsStream(user.id)
+        .listen(
+          (notifs) {
+            if (mounted) {
+              setState(
+                () => _unreadNotificationCount = notifs
+                    .where((n) => !n.isRead)
+                    .length,
+              );
+            }
+          },
+          onError: (_) {},
+          cancelOnError: false,
+        );
   }
 
   @override
   void dispose() {
+    UserHomeScreen.tabRequest.removeListener(_onTabRequest);
     _notifSub?.cancel();
     _refreshTimer?.cancel();
     _searchController.dispose();
@@ -77,18 +102,28 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   }
 
   Future<void> _handleLogout() async {
-    final shouldLogout = await showDialog<bool>(
+    final shouldLogout =
+        await showDialog<bool>(
           context: context,
           builder: (ctx) => AlertDialog(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(CAppTheme.radiusXL)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(CAppTheme.radiusXL),
+            ),
             title: const Text('Logout'),
             content: const Text('Do you want to logout from your CWL account?'),
             actions: [
-              TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
-              ElevatedButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Logout')),
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: const Text('Logout'),
+              ),
             ],
           ),
-        ) ?? false;
+        ) ??
+        false;
 
     if (shouldLogout) {
       await context.read<AuthController>().signOut();
@@ -112,16 +147,19 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
         body: IndexedStack(
           index: _selectedTab,
           children: [
+            const CollaborationListScreen(),
             _HomeTab(
               searchController: _searchController,
               unreadCount: _unreadNotificationCount,
               onNotificationTap: () {
-                Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => const NotificationsScreen()))
-                    .then((_) => _loadNotificationCount());
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const NotificationsScreen(),
+                  ),
+                ).then((_) => _loadNotificationCount());
               },
             ),
-            const CollaborationListScreen(),
             const ChatListScreen(),
             _ProfileTab(onLogout: _handleLogout),
           ],
@@ -143,10 +181,30 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
-                  _NavItem(icon: Icons.home_rounded, label: 'Home', isActive: _selectedTab == 0, onTap: () => setState(() => _selectedTab = 0)),
-                  _NavItem(icon: Icons.people_outline_rounded, label: 'Collab', isActive: _selectedTab == 1, onTap: () => setState(() => _selectedTab = 1)),
-                  _NavItem(icon: Icons.chat_bubble_outline_rounded, label: 'Messages', isActive: _selectedTab == 2, onTap: () => setState(() => _selectedTab = 2)),
-                  _NavItem(icon: Icons.person_outline_rounded, label: 'Profile', isActive: _selectedTab == 3, onTap: () => setState(() => _selectedTab = 3)),
+                  _NavItem(
+                    icon: Icons.rocket_launch_rounded,
+                    label: 'Projects',
+                    isActive: _selectedTab == 0,
+                    onTap: () => setState(() => _selectedTab = 0),
+                  ),
+                  _NavItem(
+                    icon: Icons.meeting_room_rounded,
+                    label: 'Spaces',
+                    isActive: _selectedTab == 1,
+                    onTap: () => setState(() => _selectedTab = 1),
+                  ),
+                  _NavItem(
+                    icon: Icons.chat_bubble_outline_rounded,
+                    label: 'Messages',
+                    isActive: _selectedTab == 2,
+                    onTap: () => setState(() => _selectedTab = 2),
+                  ),
+                  _NavItem(
+                    icon: Icons.person_outline_rounded,
+                    label: 'Profile',
+                    isActive: _selectedTab == 3,
+                    onTap: () => setState(() => _selectedTab = 3),
+                  ),
                 ],
               ),
             ),
@@ -163,7 +221,12 @@ class _NavItem extends StatelessWidget {
   final bool isActive;
   final VoidCallback onTap;
 
-  const _NavItem({required this.icon, required this.label, required this.isActive, required this.onTap});
+  const _NavItem({
+    required this.icon,
+    required this.label,
+    required this.isActive,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -174,20 +237,28 @@ class _NavItem extends StatelessWidget {
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         decoration: BoxDecoration(
-          color: isActive ? CAppTheme.primaryColor.withValues(alpha: 0.1) : Colors.transparent,
+          color: isActive
+              ? CAppTheme.primaryColor.withValues(alpha: 0.1)
+              : Colors.transparent,
           borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, color: isActive ? CAppTheme.primaryColor : CAppTheme.textTertiary, size: 24),
+            Icon(
+              icon,
+              color: isActive ? CAppTheme.primaryColor : CAppTheme.textTertiary,
+              size: 24,
+            ),
             const SizedBox(height: 4),
             Text(
               label,
               style: GoogleFonts.poppins(
                 fontSize: 11,
                 fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
-                color: isActive ? CAppTheme.primaryColor : CAppTheme.textTertiary,
+                color: isActive
+                    ? CAppTheme.primaryColor
+                    : CAppTheme.textTertiary,
               ),
             ),
           ],
@@ -198,18 +269,41 @@ class _NavItem extends StatelessWidget {
 }
 
 // ─── HOME TAB ──────────────────────────────────────────────
-class _HomeTab extends StatelessWidget {
+class _HomeTab extends StatefulWidget {
   final TextEditingController searchController;
   final int unreadCount;
   final VoidCallback onNotificationTap;
 
-  const _HomeTab({required this.searchController, required this.unreadCount, required this.onNotificationTap});
+  const _HomeTab({
+    required this.searchController,
+    required this.unreadCount,
+    required this.onNotificationTap,
+  });
+
+  @override
+  State<_HomeTab> createState() => _HomeTabState();
+}
+
+class _HomeTabState extends State<_HomeTab> {
+  bool _showMapView = false;
 
   static const _categories = <_CategoryDef>[
     _CategoryDef(label: 'All', icon: Icons.grid_view_rounded, value: null),
-    _CategoryDef(label: 'Private Office', icon: Icons.meeting_room_outlined, value: 'private'),
-    _CategoryDef(label: 'Meeting Room', icon: Icons.groups_outlined, value: 'meeting-room'),
-    _CategoryDef(label: 'Shared Desk', icon: Icons.desk_outlined, value: 'shared'),
+    _CategoryDef(
+      label: 'Private Office',
+      icon: Icons.groups_outlined,
+      value: 'private',
+    ),
+    _CategoryDef(
+      label: 'Meeting Room',
+      icon: Icons.groups_outlined,
+      value: 'meeting-room',
+    ),
+    _CategoryDef(
+      label: 'Shared Desk',
+      icon: Icons.desk_outlined,
+      value: 'shared',
+    ),
   ];
 
   @override
@@ -233,16 +327,27 @@ class _HomeTab extends StatelessWidget {
                     children: [
                       Text(
                         'Hi, ${user?.name.split(' ').first ?? 'Explorer'}',
-                        style: GoogleFonts.poppins(fontSize: 22, fontWeight: FontWeight.bold, color: CAppTheme.textPrimary),
+                        style: GoogleFonts.poppins(
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                          color: CAppTheme.textPrimary,
+                        ),
                       ),
                       const SizedBox(height: 2),
                       Row(
                         children: [
-                          const Icon(Icons.location_on, size: 14, color: CAppTheme.primaryColor),
+                          const Icon(
+                            Icons.location_on,
+                            size: 14,
+                            color: CAppTheme.primaryColor,
+                          ),
                           const SizedBox(width: 4),
                           Text(
                             user?.city ?? 'Pakistan',
-                            style: GoogleFonts.poppins(fontSize: 13, color: CAppTheme.textSecondary),
+                            style: GoogleFonts.poppins(
+                              fontSize: 13,
+                              color: CAppTheme.textSecondary,
+                            ),
                           ),
                         ],
                       ),
@@ -252,22 +357,39 @@ class _HomeTab extends StatelessWidget {
                 _HeaderIcon(
                   icon: Icons.emergency,
                   color: CAppTheme.errorColor,
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SosScreen())),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SosScreen()),
+                  ),
                 ),
                 const SizedBox(width: 10),
                 Stack(
                   children: [
-                    _HeaderIcon(icon: Icons.notifications_outlined, onTap: onNotificationTap),
-                    if (unreadCount > 0)
+                    _HeaderIcon(
+                      icon: Icons.notifications_outlined,
+                      onTap: widget.onNotificationTap,
+                    ),
+                    if (widget.unreadCount > 0)
                       Positioned(
-                        right: 0, top: 0,
+                        right: 0,
+                        top: 0,
                         child: Container(
                           padding: const EdgeInsets.all(4),
-                          decoration: const BoxDecoration(color: CAppTheme.errorColor, shape: BoxShape.circle),
-                          constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+                          decoration: const BoxDecoration(
+                            color: CAppTheme.errorColor,
+                            shape: BoxShape.circle,
+                          ),
+                          constraints: const BoxConstraints(
+                            minWidth: 18,
+                            minHeight: 18,
+                          ),
                           child: Text(
-                            unreadCount > 9 ? '9+' : '$unreadCount',
-                            style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                            widget.unreadCount > 9 ? '9+' : '${widget.unreadCount}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
                             textAlign: TextAlign.center,
                           ),
                         ),
@@ -310,19 +432,21 @@ class _HomeTab extends StatelessWidget {
                 boxShadow: CAppTheme.softShadow,
               ),
               child: TextField(
-                controller: searchController,
+                controller: widget.searchController,
                 decoration: InputDecoration(
                   hintText: 'Search workspaces...',
                   prefixIcon: const Icon(Icons.search_rounded),
                   suffixIcon: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (searchController.text.isNotEmpty)
+                      if (widget.searchController.text.isNotEmpty)
                         IconButton(
                           icon: const Icon(Icons.clear, size: 20),
                           onPressed: () {
-                            searchController.clear();
-                            context.read<WorkspaceController>().searchWorkspaces('');
+                            widget.searchController.clear();
+                            context
+                                .read<WorkspaceController>()
+                                .searchWorkspaces('');
                           },
                         ),
                       IconButton(
@@ -336,30 +460,77 @@ class _HomeTab extends StatelessWidget {
                   focusedBorder: InputBorder.none,
                   contentPadding: const EdgeInsets.symmetric(vertical: 14),
                 ),
-                onChanged: (v) => context.read<WorkspaceController>().searchWorkspaces(v),
+                onChanged: (v) =>
+                    context.read<WorkspaceController>().searchWorkspaces(v),
               ),
             ),
           ),
 
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
 
-          // Workspace list
+          // List / Map toggle
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Container(
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+                boxShadow: CAppTheme.softShadow,
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _ViewToggleButton(
+                      icon: Icons.view_list_rounded,
+                      label: 'List',
+                      isActive: !_showMapView,
+                      onTap: () => setState(() => _showMapView = false),
+                    ),
+                  ),
+                  Expanded(
+                    child: _ViewToggleButton(
+                      icon: Icons.map_rounded,
+                      label: 'Map',
+                      isActive: _showMapView,
+                      onTap: () => setState(() => _showMapView = true),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          // Workspace list or map
           Expanded(
             child: Consumer<WorkspaceController>(
               builder: (context, controller, _) {
                 if (controller.isLoading && controller.workspaces.isEmpty) {
                   return const Center(child: CircularProgressIndicator());
                 }
-                if (controller.errorMessage != null && controller.workspaces.isEmpty) {
+                if (controller.errorMessage != null &&
+                    controller.workspaces.isEmpty) {
                   return Center(
                     child: Padding(
                       padding: const EdgeInsets.all(24),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.error_outline, size: 48, color: CAppTheme.errorColor),
+                          const Icon(
+                            Icons.error_outline,
+                            size: 48,
+                            color: CAppTheme.errorColor,
+                          ),
                           const SizedBox(height: 12),
-                          Text(controller.errorMessage!, style: GoogleFonts.poppins(color: CAppTheme.textSecondary), textAlign: TextAlign.center),
+                          Text(
+                            controller.errorMessage!,
+                            style: GoogleFonts.poppins(
+                              color: CAppTheme.textSecondary,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
                         ],
                       ),
                     ),
@@ -372,14 +543,35 @@ class _HomeTab extends StatelessWidget {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.search_off_rounded, size: 64, color: CAppTheme.textTertiary),
+                        Icon(
+                          Icons.search_off_rounded,
+                          size: 64,
+                          color: CAppTheme.textTertiary,
+                        ),
                         const SizedBox(height: 12),
-                        Text('No workspaces found', style: GoogleFonts.poppins(fontSize: 16, color: CAppTheme.textSecondary, fontWeight: FontWeight.w500)),
+                        Text(
+                          'No workspaces found',
+                          style: GoogleFonts.poppins(
+                            fontSize: 16,
+                            color: CAppTheme.textSecondary,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
                         const SizedBox(height: 4),
-                        Text('Try adjusting your search or filters', style: GoogleFonts.poppins(fontSize: 13, color: CAppTheme.textTertiary)),
+                        Text(
+                          'Try adjusting your search or filters',
+                          style: GoogleFonts.poppins(
+                            fontSize: 13,
+                            color: CAppTheme.textTertiary,
+                          ),
+                        ),
                       ],
                     ),
                   );
+                }
+
+                if (_showMapView) {
+                  return WorkspacesMapView(workspaces: workspaces);
                 }
 
                 // Group by city
@@ -405,16 +597,29 @@ class _HomeTab extends StatelessWidget {
                             padding: const EdgeInsets.only(top: 8, bottom: 12),
                             child: Row(
                               children: [
-                                const Icon(Icons.location_city_rounded, size: 18, color: CAppTheme.primaryColor),
+                                const Icon(
+                                  Icons.location_city_rounded,
+                                  size: 18,
+                                  color: CAppTheme.primaryColor,
+                                ),
                                 const SizedBox(width: 6),
-                                Text(city, style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.w700, color: CAppTheme.textPrimary)),
+                                Text(
+                                  city,
+                                  style: GoogleFonts.poppins(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w700,
+                                    color: CAppTheme.textPrimary,
+                                  ),
+                                ),
                               ],
                             ),
                           ),
-                          ...list.map((ws) => Padding(
-                            padding: const EdgeInsets.only(bottom: 16),
-                            child: _WorkspaceCard(workspace: ws),
-                          )),
+                          ...list.map(
+                            (ws) => Padding(
+                              padding: const EdgeInsets.only(bottom: 16),
+                              child: _WorkspaceCard(workspace: ws),
+                            ),
+                          ),
                         ],
                       );
                     },
@@ -429,7 +634,9 @@ class _HomeTab extends StatelessWidget {
   }
 
   void _showFilterSheet(BuildContext context) {
-    final selected = List<String>.from(context.read<WorkspaceController>().selectedAmenities);
+    final selected = List<String>.from(
+      context.read<WorkspaceController>().selectedAmenities,
+    );
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -442,7 +649,55 @@ class _CategoryDef {
   final String label;
   final IconData icon;
   final String? value;
-  const _CategoryDef({required this.label, required this.icon, required this.value});
+  const _CategoryDef({
+    required this.label,
+    required this.icon,
+    required this.value,
+  });
+}
+
+class _ViewToggleButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool isActive;
+  final VoidCallback onTap;
+
+  const _ViewToggleButton({
+    required this.icon,
+    required this.label,
+    required this.isActive,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+          color: isActive ? CAppTheme.primaryColor : Colors.transparent,
+          borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 18, color: isActive ? Colors.white : CAppTheme.textSecondary),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: GoogleFonts.poppins(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: isActive ? Colors.white : CAppTheme.textSecondary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _HeaderIcon extends StatelessWidget {
@@ -457,7 +712,8 @@ class _HeaderIcon extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 42, height: 42,
+        width: 42,
+        height: 42,
         decoration: BoxDecoration(
           color: (color ?? CAppTheme.textSecondary).withValues(alpha: 0.1),
           borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
@@ -474,7 +730,12 @@ class _CategoryChip extends StatelessWidget {
   final bool isActive;
   final VoidCallback onTap;
 
-  const _CategoryChip({required this.label, required this.icon, this.isActive = false, required this.onTap});
+  const _CategoryChip({
+    required this.label,
+    required this.icon,
+    this.isActive = false,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -491,9 +752,20 @@ class _CategoryChip extends StatelessWidget {
           ),
           child: Row(
             children: [
-              Icon(icon, size: 18, color: isActive ? Colors.white : CAppTheme.textSecondary),
+              Icon(
+                icon,
+                size: 18,
+                color: isActive ? Colors.white : CAppTheme.textSecondary,
+              ),
               const SizedBox(width: 6),
-              Text(label, style: GoogleFonts.poppins(fontSize: 13, fontWeight: FontWeight.w500, color: isActive ? Colors.white : CAppTheme.textSecondary)),
+              Text(
+                label,
+                style: GoogleFonts.poppins(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: isActive ? Colors.white : CAppTheme.textSecondary,
+                ),
+              ),
             ],
           ),
         ),
@@ -513,7 +785,9 @@ class _WorkspaceCard extends StatelessWidget {
     return GestureDetector(
       onTap: () => Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => WorkspaceDetailScreen(workspaceId: workspace.id)),
+        MaterialPageRoute(
+          builder: (_) => WorkspaceDetailScreen(workspaceId: workspace.id),
+        ),
       ),
       child: Container(
         decoration: BoxDecoration(
@@ -526,7 +800,9 @@ class _WorkspaceCard extends StatelessWidget {
           children: [
             // Image
             ClipRRect(
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(20),
+              ),
               child: SizedBox(
                 height: 180,
                 width: double.infinity,
@@ -544,39 +820,65 @@ class _WorkspaceCard extends StatelessWidget {
                                 if (progress == null) return child;
                                 return Container(
                                   color: CAppTheme.borderColor,
-                                  child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                                  child: const Center(
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  ),
                                 );
                               },
                               errorBuilder: (_, __, ___) => Container(
                                 color: CAppTheme.borderColor,
-                                child: const Icon(Icons.image_not_supported_outlined, size: 48, color: CAppTheme.textTertiary),
+                                child: const Icon(
+                                  Icons.image_not_supported_outlined,
+                                  size: 48,
+                                  color: CAppTheme.textTertiary,
+                                ),
                               ),
                             )
                           : Container(
                               color: CAppTheme.borderColor,
-                              child: const Icon(Icons.workspaces_outlined, size: 48, color: CAppTheme.textTertiary),
+                              child: const Icon(
+                                Icons.workspaces_outlined,
+                                size: 48,
+                                color: CAppTheme.textTertiary,
+                              ),
                             ),
                     ),
                     // Status badge
                     Positioned(
-                      top: 12, right: 12,
+                      top: 12,
+                      right: 12,
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 5,
+                        ),
                         decoration: BoxDecoration(
-                          color: workspace.isAvailable ? CAppTheme.successColor : CAppTheme.errorColor,
+                          color: workspace.isAvailable
+                              ? CAppTheme.successColor
+                              : CAppTheme.errorColor,
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Text(
                           workspace.isAvailable ? 'Available' : 'Unavailable',
-                          style: GoogleFonts.poppins(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
+                          style: GoogleFonts.poppins(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ),
                     ),
                     // Price badge
                     Positioned(
-                      bottom: 12, left: 12,
+                      bottom: 12,
+                      left: 12,
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
                         decoration: BoxDecoration(
                           color: Colors.white,
                           borderRadius: BorderRadius.circular(10),
@@ -584,7 +886,11 @@ class _WorkspaceCard extends StatelessWidget {
                         ),
                         child: Text(
                           'Rs. ${workspace.pricePerDay.toStringAsFixed(0)}/day',
-                          style: GoogleFonts.poppins(fontSize: 13, fontWeight: FontWeight.w700, color: CAppTheme.primaryColor),
+                          style: GoogleFonts.poppins(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: CAppTheme.primaryColor,
+                          ),
                         ),
                       ),
                     ),
@@ -600,19 +906,32 @@ class _WorkspaceCard extends StatelessWidget {
                 children: [
                   Text(
                     workspace.name,
-                    style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w600, color: CAppTheme.textPrimary),
-                    maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.poppins(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: CAppTheme.textPrimary,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 4),
                   Row(
                     children: [
-                      const Icon(Icons.location_on_outlined, size: 14, color: CAppTheme.textTertiary),
+                      const Icon(
+                        Icons.location_on_outlined,
+                        size: 14,
+                        color: CAppTheme.textTertiary,
+                      ),
                       const SizedBox(width: 4),
                       Expanded(
                         child: Text(
                           '${workspace.address}, ${workspace.city}',
-                          style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary),
-                          maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            color: CAppTheme.textSecondary,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                     ],
@@ -620,15 +939,31 @@ class _WorkspaceCard extends StatelessWidget {
                   const SizedBox(height: 10),
                   // Amenity chips
                   Wrap(
-                    spacing: 6, runSpacing: 6,
-                    children: workspace.amenities.take(4).map((a) => Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF0F3FF),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(a, style: GoogleFonts.poppins(fontSize: 11, fontWeight: FontWeight.w500, color: CAppTheme.primaryColor)),
-                    )).toList(),
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: workspace.amenities
+                        .take(4)
+                        .map(
+                          (a) => Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF0F3FF),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              a,
+                              style: GoogleFonts.poppins(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w500,
+                                color: CAppTheme.primaryColor,
+                              ),
+                            ),
+                          ),
+                        )
+                        .toList(),
                   ),
                 ],
               ),
@@ -659,13 +994,16 @@ class _ProfileTab extends StatelessWidget {
             const SizedBox(height: 20),
             // Avatar
             Container(
-              width: 90, height: 90,
+              width: 90,
+              height: 90,
               decoration: BoxDecoration(
                 gradient: CAppTheme.primaryGradient,
                 shape: BoxShape.circle,
                 boxShadow: CAppTheme.cardShadow,
               ),
-              child: user?.profileImageUrl != null && user!.profileImageUrl!.isNotEmpty
+              child:
+                  user?.profileImageUrl != null &&
+                      user!.profileImageUrl!.isNotEmpty
                   ? ClipOval(
                       child: Image.network(
                         user.profileImageUrl!,
@@ -675,7 +1013,11 @@ class _ProfileTab extends StatelessWidget {
                         errorBuilder: (_, __, ___) => Center(
                           child: Text(
                             (user.name).substring(0, 1).toUpperCase(),
-                            style: GoogleFonts.poppins(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.white),
+                            style: GoogleFonts.poppins(
+                              fontSize: 36,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
                           ),
                         ),
                       ),
@@ -683,20 +1025,134 @@ class _ProfileTab extends StatelessWidget {
                   : Center(
                       child: Text(
                         (user?.name ?? 'U').substring(0, 1).toUpperCase(),
-                        style: GoogleFonts.poppins(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.white),
+                        style: GoogleFonts.poppins(
+                          fontSize: 36,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
                       ),
                     ),
             ),
             const SizedBox(height: 16),
-            Text(user?.name ?? 'User', style: GoogleFonts.poppins(fontSize: 20, fontWeight: FontWeight.w700, color: CAppTheme.textPrimary)),
-            Text(user?.email ?? '', style: GoogleFonts.poppins(fontSize: 13, color: CAppTheme.textSecondary)),
-            const SizedBox(height: 32),
+            Text(
+              user?.name ?? 'User',
+              style: GoogleFonts.poppins(
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+                color: CAppTheme.textPrimary,
+              ),
+            ),
+            Text(
+              user?.email ?? '',
+              style: GoogleFonts.poppins(
+                fontSize: 13,
+                color: CAppTheme.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 24),
 
-            _ProfileMenuItem(icon: Icons.person_outline, label: 'Edit Profile', onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfileScreen()))),
-            _ProfileMenuItem(icon: Icons.book_outlined, label: 'Booking History', onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BookingHistoryScreen()))),
-            _ProfileMenuItem(icon: Icons.emergency, label: 'Emergency SOS', color: CAppTheme.errorColor, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SosScreen()))),
+            // Quick "Open to Collaborate" toggle
+            Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: CAppTheme.softShadow,
+                border: Border.all(
+                  color: (user?.collaborationEnabled ?? false)
+                      ? CAppTheme.primaryColor.withValues(alpha: 0.4)
+                      : CAppTheme.borderColor,
+                ),
+              ),
+              child: SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: user?.collaborationEnabled ?? false,
+                secondary: Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: CAppTheme.primaryColor.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.handshake_rounded, color: CAppTheme.primaryColor, size: 20),
+                ),
+                title: Text('Open to Collaborate',
+                    style: GoogleFonts.poppins(fontSize: 14.5, fontWeight: FontWeight.w600)),
+                subtitle: Text(
+                  (user?.collaborationEnabled ?? false)
+                      ? 'You appear in "Open Teammates" — owners can invite you'
+                      : 'Turn on to get discovered and invited to projects',
+                  style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary),
+                ),
+                onChanged: user == null
+                    ? null
+                    : (value) async {
+                        await auth.updateProfile(
+                          user.copyUser(collaborationEnabled: value),
+                        );
+                        if (!context.mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(value
+                                ? 'You are now open to collaborate'
+                                : 'You are no longer listed as open'),
+                            backgroundColor: CAppTheme.successColor,
+                          ),
+                        );
+                      },
+              ),
+            ),
+
+            _ProfileMenuItem(
+              icon: Icons.person_outline,
+              label: 'Edit Profile',
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ProfileScreen()),
+              ),
+            ),
+            _ProfileMenuItem(
+              icon: Icons.handshake_outlined,
+              label: 'Collaboration Profile',
+              color: CAppTheme.primaryColor,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const CollaborationProfileScreen()),
+              ),
+            ),
+            _ProfileMenuItem(
+              icon: Icons.work_outline_rounded,
+              label: 'My Portfolio',
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const PortfolioEditorScreen()),
+              ),
+            ),
+            _ProfileMenuItem(
+              icon: Icons.book_outlined,
+              label: 'Booking History',
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const BookingHistoryScreen()),
+              ),
+            ),
+            _ProfileMenuItem(
+              icon: Icons.emergency,
+              label: 'Emergency SOS',
+              color: CAppTheme.errorColor,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const SosScreen()),
+              ),
+            ),
             const SizedBox(height: 8),
-            _ProfileMenuItem(icon: Icons.logout_rounded, label: 'Logout', color: CAppTheme.errorColor, onTap: onLogout),
+            _ProfileMenuItem(
+              icon: Icons.logout_rounded,
+              label: 'Logout',
+              color: CAppTheme.errorColor,
+              onTap: onLogout,
+            ),
           ],
         ),
       ),
@@ -710,7 +1166,12 @@ class _ProfileMenuItem extends StatelessWidget {
   final Color? color;
   final VoidCallback onTap;
 
-  const _ProfileMenuItem({required this.icon, required this.label, this.color, required this.onTap});
+  const _ProfileMenuItem({
+    required this.icon,
+    required this.label,
+    this.color,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -728,7 +1189,8 @@ class _ProfileMenuItem extends StatelessWidget {
             child: Row(
               children: [
                 Container(
-                  width: 40, height: 40,
+                  width: 40,
+                  height: 40,
                   decoration: BoxDecoration(
                     color: c.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(10),
@@ -736,8 +1198,21 @@ class _ProfileMenuItem extends StatelessWidget {
                   child: Icon(icon, color: c, size: 20),
                 ),
                 const SizedBox(width: 14),
-                Expanded(child: Text(label, style: GoogleFonts.poppins(fontSize: 15, fontWeight: FontWeight.w500, color: c))),
-                Icon(Icons.arrow_forward_ios_rounded, size: 16, color: CAppTheme.textTertiary),
+                Expanded(
+                  child: Text(
+                    label,
+                    style: GoogleFonts.poppins(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
+                      color: c,
+                    ),
+                  ),
+                ),
+                Icon(
+                  Icons.arrow_forward_ios_rounded,
+                  size: 16,
+                  color: CAppTheme.textTertiary,
+                ),
               ],
             ),
           ),
@@ -778,17 +1253,40 @@ class _AmenityFilterSheetState extends State<_AmenityFilterSheet> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Center(
-            child: Container(width: 40, height: 4, decoration: BoxDecoration(color: CAppTheme.borderColor, borderRadius: BorderRadius.circular(2))),
+            child: Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: CAppTheme.borderColor,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
           ),
           const SizedBox(height: 20),
-          Text('Filter by Amenities', style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.w700)),
+          Text(
+            'Filter by Amenities',
+            style: GoogleFonts.poppins(
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
           const SizedBox(height: 16),
           Wrap(
-            spacing: 8, runSpacing: 8,
+            spacing: 8,
+            runSpacing: 8,
             children: AppConstants.commonAmenities.map((a) {
-              final on = _selected.any((s) => s.toLowerCase() == a.toLowerCase());
+              final on = _selected.any(
+                (s) => s.toLowerCase() == a.toLowerCase(),
+              );
               return FilterChip(
-                label: Text(a, style: GoogleFonts.poppins(fontSize: 13, fontWeight: FontWeight.w500, color: on ? Colors.white : CAppTheme.primaryColor)),
+                label: Text(
+                  a,
+                  style: GoogleFonts.poppins(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: on ? Colors.white : CAppTheme.primaryColor,
+                  ),
+                ),
                 selected: on,
                 selectedColor: CAppTheme.primaryColor,
                 checkmarkColor: Colors.white,
@@ -796,8 +1294,13 @@ class _AmenityFilterSheetState extends State<_AmenityFilterSheet> {
                 side: BorderSide.none,
                 onSelected: (_) {
                   setState(() {
-                    if (on) { _selected.removeWhere((s) => s.toLowerCase() == a.toLowerCase()); }
-                    else { _selected.add(a); }
+                    if (on) {
+                      _selected.removeWhere(
+                        (s) => s.toLowerCase() == a.toLowerCase(),
+                      );
+                    } else {
+                      _selected.add(a);
+                    }
                   });
                 },
               );
@@ -819,7 +1322,9 @@ class _AmenityFilterSheetState extends State<_AmenityFilterSheet> {
               Expanded(
                 child: ElevatedButton(
                   onPressed: () {
-                    context.read<WorkspaceController>().filterByAmenities(_selected);
+                    context.read<WorkspaceController>().filterByAmenities(
+                      _selected,
+                    );
                     Navigator.pop(context);
                   },
                   child: const Text('Apply'),

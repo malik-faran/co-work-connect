@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "174374530965",
+    "project_id": "cwcc-64d25",
+    "storage_bucket": "cwcc-64d25.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:174374530965:android:abe89bce8cf5a3c916909c",
+        "android_client_info": {
+          "package_name": "com.example.cwc"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAmif0c9gbxdE6xi2gYoNs0FTrOrV-k01M"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

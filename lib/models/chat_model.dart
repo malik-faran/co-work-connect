@@ -4,8 +4,10 @@ import 'package:cwc/utils/helpers/model_helpers.dart';
 /// Represents a conversation between two users
 class ChatRoomModel {
   final String id;
-  final String user1Id; // First user ID
-  final String user2Id; // Second user ID
+  final String user1Id; // First user ID (group: creator/owner)
+  final String user2Id; // Second user ID (group: empty)
+  final String roomType; // 'direct' | 'group'
+  final String? name; // group room name (e.g. project title)
   final String? user1Name; // Cached name for quick access
   final String? user2Name;
   final String? user1ProfileImage;
@@ -22,7 +24,9 @@ class ChatRoomModel {
   ChatRoomModel({
     required this.id,
     required this.user1Id,
-    required this.user2Id,
+    this.user2Id = '',
+    this.roomType = 'direct',
+    this.name,
     this.user1Name,
     this.user2Name,
     this.user1ProfileImage,
@@ -42,12 +46,18 @@ class ChatRoomModel {
     final map = <String, dynamic>{
       'id': id,
       'user1_id': user1Id,
-      'user2_id': user2Id,
+      'room_type': roomType,
       'unread_count1': unreadCount1,
       'unread_count2': unreadCount2,
       'created_at': createdAt.toIso8601String(),
     };
 
+    if (roomType == 'group') {
+      if (user2Id.isNotEmpty) map['user2_id'] = user2Id;
+    } else {
+      map['user2_id'] = user2Id;
+    }
+    if (name != null) map['name'] = name;
     if (user1Name != null) map['user1_name'] = user1Name;
     if (user2Name != null) map['user2_name'] = user2Name;
     if (user1ProfileImage != null) map['user1_profile_image'] = user1ProfileImage;
@@ -67,6 +77,8 @@ class ChatRoomModel {
       id: map['id'] ?? '',
       user1Id: getStringFromMap(map, 'user1_id', 'user1Id') ?? '',
       user2Id: getStringFromMap(map, 'user2_id', 'user2Id') ?? '',
+      roomType: getStringFromMap(map, 'room_type', 'roomType') ?? 'direct',
+      name: getStringFromMap(map, 'name', 'name'),
       user1Name: getStringFromMap(map, 'user1_name', 'user1Name'),
       user2Name: getStringFromMap(map, 'user2_name', 'user2Name'),
       user1ProfileImage: getStringFromMap(map, 'user1_profile_image', 'user1ProfileImage'),
@@ -107,6 +119,8 @@ class ChatRoomModel {
   int getUnreadCount(String currentUserId) {
     return currentUserId == user1Id ? unreadCount1 : unreadCount2;
   }
+
+  bool get isGroup => roomType == 'group';
 }
 
 /// Chat Message Model

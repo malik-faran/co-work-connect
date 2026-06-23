@@ -1,12 +1,18 @@
 import 'dart:async';
+import 'package:desktop_drop/desktop_drop.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:cwc/controllers/auth_controller.dart';
 import 'package:cwc/models/chat_model.dart';
 import 'package:cwc/services/chat_service.dart';
+import 'package:cwc/services/storage_service.dart';
 import 'package:cwc/utils/helpers/model_helpers.dart';
 import 'package:cwc/utils/themes/theme.dart';
+import 'package:cwc/utils/constants/validation_constants.dart';
+import 'package:cwc/utils/validators/form_validators.dart';
 import 'package:cwc/services/supabase_service.dart';
 import 'package:uuid/uuid.dart';
 
@@ -23,6 +29,8 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final ChatService _chatService = ChatService();
+  final StorageService _storageService = StorageService();
+  final ImagePicker _imagePicker = ImagePicker();
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final _uuid = const Uuid();
@@ -30,6 +38,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   ChatRoomModel? _chatRoom;
   List<ChatMessageModel> _messages = [];
   bool _isLoading = true;
+  bool _isUploadingImage = false;
+  bool _isDraggingImage = false;
   String? _errorMessage;
   String? _otherUserName;
   String? _otherUserProfileImage;
@@ -164,9 +174,183 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
+  Future<void> _pickAndSendImage(ImageSource source) async {
+    try {
+      final picked = await _imagePicker.pickImage(
+        source: source,
+        maxWidth: 1920,
+        imageQuality: 85,
+      );
+      if (picked != null) {
+        await _sendImageFromXFile(picked);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not pick image'),
+          backgroundColor: CAppTheme.errorColor,
+        ),
+      );
+    }
+  }
+
+  void _showImageSourceSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: Text('Gallery', style: GoogleFonts.poppins()),
+              onTap: () {
+                Navigator.pop(ctx);
+                _pickAndSendImage(ImageSource.gallery);
+              },
+            ),
+            if (!kIsWeb)
+              ListTile(
+                leading: const Icon(Icons.camera_alt_outlined),
+                title: Text('Camera', style: GoogleFonts.poppins()),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickAndSendImage(ImageSource.camera);
+                },
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _sendImageFromXFile(XFile file) async {
+    if (_isUploadingImage || _chatRoom == null) return;
+
+    final fileName = file.name.isNotEmpty ? file.name : 'image.jpg';
+    if (!StorageService.isAllowedChatImage(fileName)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Only JPG, PNG, GIF or WEBP images are allowed'),
+          backgroundColor: CAppTheme.errorColor,
+        ),
+      );
+      return;
+    }
+
+    final authController = context.read<AuthController>();
+    final currentUser = authController.currentUser;
+    if (currentUser == null) return;
+
+    setState(() => _isUploadingImage = true);
+
+    try {
+      final bytes = await file.readAsBytes();
+      final imageUrl = await _storageService.uploadChatImage(
+        chatRoomId: widget.chatRoomId,
+        bytes: bytes,
+        fileName: fileName,
+      );
+
+      final message = ChatMessageModel(
+        id: _uuid.v4(),
+        chatRoomId: widget.chatRoomId,
+        senderId: currentUser.id,
+        senderName: currentUser.name,
+        senderProfileImage: currentUser.profileImageUrl,
+        message: '📷 Photo',
+        messageType: 'image',
+        imageUrl: imageUrl,
+        createdAt: DateTime.now(),
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _messages = [..._messages, message];
+        _isUploadingImage = false;
+      });
+      _scrollToBottom();
+
+      await _chatService.sendMessage(message);
+      await _chatService.markMessagesAsRead(widget.chatRoomId, currentUser.id);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isUploadingImage = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            e.toString().replaceFirst('Exception: ', ''),
+            style: GoogleFonts.poppins(),
+          ),
+          backgroundColor: CAppTheme.errorColor,
+        ),
+      );
+    }
+  }
+
+  void _onImageDropped(DropDoneDetails details) {
+    setState(() => _isDraggingImage = false);
+    for (final file in details.files) {
+      _sendImageFromXFile(file);
+      break;
+    }
+  }
+
+  void _showFullImage(String url) {
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.black,
+        insetPadding: const EdgeInsets.all(16),
+        child: Stack(
+          children: [
+            InteractiveViewer(
+              child: Image.network(
+                url,
+                fit: BoxFit.contain,
+                loadingBuilder: (_, child, progress) {
+                  if (progress == null) return child;
+                  return const Center(
+                    child: CircularProgressIndicator(color: Colors.white),
+                  );
+                },
+              ),
+            ),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton(
+                icon: const Icon(Icons.close, color: Colors.white),
+                onPressed: () => Navigator.pop(ctx),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _sendMessage() async {
     final text = _messageController.text.trim();
-    if (text.isEmpty) return;
+    final validationError = FormValidators.chatMessage(text);
+    if (validationError != null) {
+      if (text.isNotEmpty && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(validationError),
+            backgroundColor: CAppTheme.errorColor,
+          ),
+        );
+      }
+      return;
+    }
 
     final authController = context.read<AuthController>();
     final currentUser = authController.currentUser;
@@ -204,6 +388,96 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ),
         );
       }
+    }
+  }
+
+  void _showMessageOptions(ChatMessageModel message) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 8),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: CAppTheme.borderColor,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline_rounded, color: CAppTheme.errorColor),
+              title: Text(
+                'Delete Message',
+                style: GoogleFonts.poppins(
+                  color: CAppTheme.errorColor,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              onTap: () async {
+                Navigator.of(ctx).pop();
+                final confirm = await _confirmDeleteMessage();
+                if (confirm) await _deleteMessage(message);
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<bool> _confirmDeleteMessage() async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(CAppTheme.radiusLarge)),
+        title: Text('Delete Message', style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
+        content: Text(
+          'This message will be permanently removed. Are you sure?',
+          style: GoogleFonts.poppins(fontSize: 14, color: CAppTheme.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text('Cancel', style: GoogleFonts.poppins(color: CAppTheme.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: CAppTheme.errorColor),
+            child: Text('Delete', style: GoogleFonts.poppins(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    return result == true;
+  }
+
+  Future<void> _deleteMessage(ChatMessageModel message) async {
+    final removed = message;
+    setState(() {
+      _messages = _messages.where((m) => m.id != message.id).toList();
+    });
+    try {
+      await _chatService.deleteMessage(message.id);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _messages = [..._messages, removed]
+          ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to delete message', style: GoogleFonts.poppins()),
+          backgroundColor: CAppTheme.errorColor,
+        ),
+      );
     }
   }
 
@@ -295,11 +569,23 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ],
         ),
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator(color: CAppTheme.primaryColor))
-          : _errorMessage != null
-              ? _buildErrorState()
-              : _buildChatBody(currentUser),
+      body: DropTarget(
+        onDragEntered: (_) => setState(() => _isDraggingImage = true),
+        onDragExited: (_) => setState(() => _isDraggingImage = false),
+        onDragDone: _onImageDropped,
+        child: Stack(
+          children: [
+            _isLoading
+                ? const Center(
+                    child: CircularProgressIndicator(color: CAppTheme.primaryColor),
+                  )
+                : _errorMessage != null
+                    ? _buildErrorState()
+                    : _buildChatBody(currentUser),
+            if (_isDraggingImage) _buildDropOverlay(),
+          ],
+        ),
+      ),
     );
   }
 
@@ -323,12 +609,61 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       message: message,
                       isMe: isMe,
                       showAvatar: showAvatar,
+                      onLongPress: isMe ? () => _showMessageOptions(message) : null,
+                      onImageTap: message.imageUrl != null
+                          ? () => _showFullImage(message.imageUrl!)
+                          : null,
                     );
                   },
                 ),
         ),
         _buildMessageInput(),
       ],
+    );
+  }
+
+  Widget _buildDropOverlay() {
+    return Container(
+      color: CAppTheme.primaryColor.withValues(alpha: 0.12),
+      child: Center(
+        child: Container(
+          margin: const EdgeInsets.all(32),
+          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+            border: Border.all(color: CAppTheme.primaryColor, width: 2),
+            boxShadow: CAppTheme.softShadow,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.file_download_outlined,
+                size: 48,
+                color: CAppTheme.primaryColor.withValues(alpha: 0.9),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Drop image here',
+                style: GoogleFonts.poppins(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  color: CAppTheme.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'JPG, PNG, GIF, WEBP — max 5 MB',
+                style: GoogleFonts.poppins(
+                  fontSize: 13,
+                  color: CAppTheme.textSecondary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -348,9 +683,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       child: SafeArea(
         child: Row(
           children: [
+            IconButton(
+              onPressed: _isUploadingImage ? null : _showImageSourceSheet,
+              icon: _isUploadingImage
+                  ? const SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.image_outlined, color: CAppTheme.primaryColor),
+              tooltip: 'Send image',
+            ),
             Expanded(
               child: TextField(
                 controller: _messageController,
+                maxLength: ValidationLimits.chatMessageMax,
                 decoration: InputDecoration(
                   hintText: 'Type a message...',
                   hintStyle: GoogleFonts.poppins(color: CAppTheme.textTertiary, fontSize: 14),
@@ -386,7 +733,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               ),
               child: IconButton(
                 icon: const Icon(Icons.send_rounded, color: Colors.white),
-                onPressed: _sendMessage,
+                onPressed: _isUploadingImage ? null : _sendMessage,
               ),
             ),
           ],
@@ -500,12 +847,19 @@ class _MessageBubble extends StatelessWidget {
   final ChatMessageModel message;
   final bool isMe;
   final bool showAvatar;
+  final VoidCallback? onLongPress;
+  final VoidCallback? onImageTap;
 
   const _MessageBubble({
     required this.message,
     required this.isMe,
     required this.showAvatar,
+    this.onLongPress,
+    this.onImageTap,
   });
+
+  bool get _isImageMessage =>
+      message.messageType == 'image' && message.imageUrl != null;
 
   @override
   Widget build(BuildContext context) {
@@ -536,77 +890,120 @@ class _MessageBubble extends StatelessWidget {
           if (!isMe && showAvatar) const SizedBox(width: 8),
           if (!isMe && !showAvatar) const SizedBox(width: 40),
           Flexible(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(
-                color: isMe
-                    ? CAppTheme.primaryColor
-                    : Colors.white,
-                borderRadius: BorderRadius.only(
-                  topLeft: const Radius.circular(20),
-                  topRight: const Radius.circular(20),
-                  bottomLeft: Radius.circular(isMe ? 20 : 4),
-                  bottomRight: Radius.circular(isMe ? 4 : 20),
+            child: GestureDetector(
+              onLongPress: onLongPress,
+              child: Container(
+                padding: EdgeInsets.symmetric(
+                  horizontal: _isImageMessage ? 6 : 16,
+                  vertical: _isImageMessage ? 6 : 12,
                 ),
-                boxShadow: [
-                  BoxShadow(
-                    color: isMe
-                        ? CAppTheme.primaryColor.withValues(alpha: 0.3)
-                        : Colors.black.withValues(alpha: 0.05),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
+                decoration: BoxDecoration(
+                  color: isMe
+                      ? CAppTheme.primaryColor
+                      : Colors.white,
+                  borderRadius: BorderRadius.only(
+                    topLeft: const Radius.circular(20),
+                    topRight: const Radius.circular(20),
+                    bottomLeft: Radius.circular(isMe ? 20 : 4),
+                    bottomRight: Radius.circular(isMe ? 4 : 20),
                   ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (!isMe && showAvatar)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Text(
-                        message.senderName,
-                        style: GoogleFonts.poppins(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: CAppTheme.primaryColor,
+                  boxShadow: [
+                    BoxShadow(
+                      color: isMe
+                          ? CAppTheme.primaryColor.withValues(alpha: 0.3)
+                          : Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (!isMe && showAvatar)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Text(
+                          message.senderName,
+                          style: GoogleFonts.poppins(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: CAppTheme.primaryColor,
+                          ),
                         ),
                       ),
-                    ),
-                  Text(
-                    message.message,
-                    style: GoogleFonts.poppins(
-                      fontSize: 14,
-                      color: isMe ? Colors.white : CAppTheme.textPrimary,
-                      height: 1.4,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
+                    if (_isImageMessage)
+                      GestureDetector(
+                        onTap: onImageTap,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(14),
+                          child: Image.network(
+                            message.imageUrl!,
+                            width: 220,
+                            fit: BoxFit.cover,
+                            loadingBuilder: (context, child, progress) {
+                              if (progress == null) return child;
+                              return SizedBox(
+                                width: 220,
+                                height: 160,
+                                child: Center(
+                                  child: CircularProgressIndicator(
+                                    color: isMe
+                                        ? Colors.white
+                                        : CAppTheme.primaryColor,
+                                    strokeWidth: 2,
+                                  ),
+                                ),
+                              );
+                            },
+                            errorBuilder: (_, __, ___) => Container(
+                              width: 220,
+                              height: 120,
+                              color: CAppTheme.borderColor,
+                              child: Icon(
+                                Icons.broken_image_outlined,
+                                color: CAppTheme.textTertiary,
+                              ),
+                            ),
+                          ),
+                        ),
+                      )
+                    else
                       Text(
-                        _formatTime(message.createdAt),
+                        message.message,
                         style: GoogleFonts.poppins(
-                          fontSize: 10,
-                          color: isMe
-                              ? Colors.white.withValues(alpha: 0.7)
-                              : CAppTheme.textTertiary,
+                          fontSize: 14,
+                          color: isMe ? Colors.white : CAppTheme.textPrimary,
+                          height: 1.4,
                         ),
                       ),
-                      if (isMe) ...[
-                        const SizedBox(width: 4),
-                        Icon(
-                          message.isRead ? Icons.done_all : Icons.done,
-                          size: 14,
-                          color: message.isRead
-                              ? Colors.white
-                              : Colors.white.withValues(alpha: 0.7),
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _formatTime(message.createdAt),
+                          style: GoogleFonts.poppins(
+                            fontSize: 10,
+                            color: isMe
+                                ? Colors.white.withValues(alpha: 0.7)
+                                : CAppTheme.textTertiary,
+                          ),
                         ),
+                        if (isMe) ...[
+                          const SizedBox(width: 4),
+                          Icon(
+                            message.isRead ? Icons.done_all : Icons.done,
+                            size: 14,
+                            color: message.isRead
+                                ? Colors.white
+                                : Colors.white.withValues(alpha: 0.7),
+                          ),
+                        ],
                       ],
-                    ],
-                  ),
-                ],
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

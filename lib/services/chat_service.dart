@@ -3,6 +3,13 @@ import 'package:cwc/services/notification_service.dart';
 import 'package:cwc/services/supabase_service.dart';
 import 'package:uuid/uuid.dart';
 
+/// Preview text shown in chat list / notifications for image messages.
+String chatMessagePreview(ChatMessageModel message) {
+  if (message.messageType == 'image') return '📷 Photo';
+  if (message.messageType == 'file') return '📎 File';
+  return message.message;
+}
+
 /// Chat Service
 /// Handles all chat-related database operations
 class ChatService {
@@ -66,7 +73,7 @@ class ChatService {
     }
   }
 
-  /// Get all chat rooms for a user
+  /// Get all chat rooms for a user (direct + group rooms they belong to)
   Future<List<ChatRoomModel>> getUserChatRooms(String userId) async {
     try {
       final rows = await _supabase
@@ -75,10 +82,122 @@ class ChatService {
           .or('user1_id.eq.$userId,user2_id.eq.$userId')
           .order('last_message_at', ascending: false);
 
-      return rows.map((r) => ChatRoomModel.fromChatRoomMap(r)).toList();
+      final rooms = rows.map((r) => ChatRoomModel.fromChatRoomMap(r)).toList();
+
+      // Include group rooms where the user is a member.
+      final memberRows = await _supabase
+          .from('chat_room_members')
+          .select('chat_room_id')
+          .eq('user_id', userId);
+      final memberRoomIds = memberRows
+          .map((m) => m['chat_room_id'] as String?)
+          .whereType<String>()
+          .toSet()
+          ..removeAll(rooms.map((r) => r.id));
+
+      if (memberRoomIds.isNotEmpty) {
+        final groupRows = await _supabase
+            .from('chat_rooms')
+            .select()
+            .inFilter('id', memberRoomIds.toList());
+        rooms.addAll(groupRows.map((r) => ChatRoomModel.fromChatRoomMap(r)));
+      }
+
+      rooms.sort((a, b) {
+        final at = a.lastMessageAt?.millisecondsSinceEpoch ?? 0;
+        final bt = b.lastMessageAt?.millisecondsSinceEpoch ?? 0;
+        return bt.compareTo(at);
+      });
+      return rooms;
     } catch (e) {
       throw Exception('Failed to fetch chat rooms: ${e.toString()}');
     }
+  }
+
+  /// Create (or return existing) group chat room for a collaboration.
+  Future<ChatRoomModel> createGroupChatRoom({
+    required String collaborationId,
+    required String ownerId,
+    required String name,
+    required List<Map<String, String?>> members, // {id, name, image}
+  }) async {
+    // Return existing room for this collaboration if present.
+    final existing = await _supabase
+        .from('chat_rooms')
+        .select()
+        .eq('collaboration_id', collaborationId)
+        .eq('room_type', 'group')
+        .maybeSingle();
+
+    ChatRoomModel room;
+    if (existing != null) {
+      room = ChatRoomModel.fromChatRoomMap(existing);
+    } else {
+      room = ChatRoomModel(
+        id: _uuid.v4(),
+        user1Id: ownerId,
+        roomType: 'group',
+        name: name,
+        collaborationId: collaborationId,
+        createdAt: DateTime.now(),
+      );
+      final data = room.toChatRoomMap();
+      data.removeWhere((key, value) => value == null);
+      await _supabase.from('chat_rooms').insert(data);
+    }
+
+    // Ensure all members are registered.
+    for (final m in members) {
+      final uid = m['id'];
+      if (uid == null) continue;
+      await addGroupMember(
+        chatRoomId: room.id,
+        userId: uid,
+        userName: m['name'],
+        userProfileImage: m['image'],
+      );
+    }
+    return room;
+  }
+
+  /// Add a member to a group chat room (idempotent).
+  Future<void> addGroupMember({
+    required String chatRoomId,
+    required String userId,
+    String? userName,
+    String? userProfileImage,
+  }) async {
+    try {
+      await _supabase.from('chat_room_members').upsert({
+        'chat_room_id': chatRoomId,
+        'user_id': userId,
+        if (userName != null) 'user_name': userName,
+        if (userProfileImage != null) 'user_profile_image': userProfileImage,
+      }, onConflict: 'chat_room_id,user_id');
+    } catch (_) {
+      // ignore duplicates
+    }
+  }
+
+  /// Get the group chat room for a collaboration, if any.
+  Future<ChatRoomModel?> getGroupRoomForCollaboration(String collaborationId) async {
+    final result = await _supabase
+        .from('chat_rooms')
+        .select()
+        .eq('collaboration_id', collaborationId)
+        .eq('room_type', 'group')
+        .maybeSingle();
+    if (result == null) return null;
+    return ChatRoomModel.fromChatRoomMap(result);
+  }
+
+  /// Group room members (with cached names).
+  Future<List<Map<String, dynamic>>> getGroupMembers(String chatRoomId) async {
+    final rows = await _supabase
+        .from('chat_room_members')
+        .select()
+        .eq('chat_room_id', chatRoomId);
+    return List<Map<String, dynamic>>.from(rows);
   }
 
   /// Get chat room by ID
@@ -109,11 +228,33 @@ class ChatService {
 
       // Update chat room with last message
       final chatRoom = await getChatRoomById(message.chatRoomId);
-      if (chatRoom != null) {
+      if (chatRoom != null && chatRoom.isGroup) {
+        await _supabase.from('chat_rooms').update({
+          'last_message': '${message.senderName.split(' ').first}: ${chatMessagePreview(message)}',
+          'last_message_at': message.createdAt.toIso8601String(),
+          'updated_at': DateTime.now().toIso8601String(),
+        }).eq('id', message.chatRoomId);
+
+        // Notify all other group members.
+        try {
+          final members = await getGroupMembers(message.chatRoomId);
+          final notificationService = NotificationService();
+          for (final m in members) {
+            final uid = m['user_id'] as String?;
+            if (uid == null || uid == message.senderId) continue;
+            await notificationService.sendChatMessageNotification(
+              receiverUserId: uid,
+              senderName: '${message.senderName} (${chatRoom.name ?? 'Team'})',
+              message: chatMessagePreview(message),
+              chatRoomId: message.chatRoomId,
+            );
+          }
+        } catch (_) {}
+      } else if (chatRoom != null) {
         final isUser1 = message.senderId == chatRoom.user1Id;
         final receiverId = isUser1 ? chatRoom.user2Id : chatRoom.user1Id;
         final updateData = {
-          'last_message': message.message,
+          'last_message': chatMessagePreview(message),
           'last_message_at': message.createdAt.toIso8601String(),
           'updated_at': DateTime.now().toIso8601String(),
           if (isUser1) 'unread_count2': chatRoom.unreadCount2 + 1,
@@ -130,7 +271,7 @@ class ChatService {
         await notificationService.sendChatMessageNotification(
           receiverUserId: receiverId,
           senderName: message.senderName,
-          message: message.message,
+          message: chatMessagePreview(message),
           chatRoomId: message.chatRoomId,
         );
       }
@@ -241,6 +382,16 @@ class ChatService {
       await _supabase.from('messages').delete().eq('id', messageId);
     } catch (e) {
       throw Exception('Failed to delete message: ${e.toString()}');
+    }
+  }
+
+  /// Delete a chat room (and all its messages)
+  Future<void> deleteChatRoom(String chatRoomId) async {
+    try {
+      await _supabase.from('messages').delete().eq('chat_room_id', chatRoomId);
+      await _supabase.from('chat_rooms').delete().eq('id', chatRoomId);
+    } catch (e) {
+      throw Exception('Failed to delete chat: ${e.toString()}');
     }
   }
 }

@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'package:cwc/models/notification_model.dart';
 import 'package:cwc/models/payment_model.dart';
+import 'package:cwc/utils/constants/app_constants.dart';
 import 'package:cwc/services/notification_service.dart';
 import 'package:cwc/services/supabase_service.dart';
 import 'package:http/http.dart' as http;
@@ -16,6 +18,239 @@ class PaymentService {
   static const String stripePublishableKey = 'pk_test_51T3jkzGWYJoNa16xYiXyZ7XOrDQYCrNEgQgtjIQB0sDdpq97ZHeJvj5MbQkEm2rGw12edram8Jpy4gOj8NAVfFF900IMUpuwVY';
   static const String stripeSecretKey = 'sk_test_51T3jkzGWYJoNa16x2kUEiL1KRUCtTSXPPlDbpwZBMFRjuiws6pwd12X6jGcOJb1pPXZ1327UwXg959daMLr7dtTb00eytD3EBo';
   static const String stripeApiUrl = 'https://api.stripe.com/v1';
+
+  /// Create manual payment (bank / EasyPaisa) — no Stripe.
+  ///
+  /// If a payment row already exists for this booking (e.g. a Stripe one created
+  /// when the user first opened the screen), it is converted to manual instead
+  /// of inserting a duplicate. This avoids "failed to switch payment method"
+  /// errors and guarantees the owner sees the receipt under a manual payment.
+  Future<PaymentModel> createManualPayment({
+    required String bookingId,
+    required String userId,
+    required double amount,
+    String currency = 'PKR',
+  }) async {
+    final expiresAt = DateTime.now().add(const Duration(hours: 24));
+    final existing = await getPaymentByBookingId(bookingId);
+
+    if (existing != null && existing.status != 'completed') {
+      // Keep an in-progress receipt status if one was already submitted.
+      final keepReceipt =
+          existing.receiptStatus == AppConstants.receiptAwaitingVerification ||
+              existing.receiptStatus == AppConstants.receiptApproved;
+      await _supabase.from('payments').update({
+        'payment_method': AppConstants.paymentMethodManual,
+        'status': 'pending',
+        'receipt_status': keepReceipt
+            ? existing.receiptStatus
+            : AppConstants.receiptAwaitingUpload,
+        'stripe_payment_intent_id': null,
+        'stripe_client_secret': null,
+        'expires_at': expiresAt.toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
+      }).eq('id', existing.id);
+      return (await getPaymentById(existing.id)) ?? existing;
+    }
+
+    final payment = PaymentModel(
+      id: _uuid.v4(),
+      bookingId: bookingId,
+      userId: userId,
+      amount: amount,
+      currency: currency,
+      status: 'pending',
+      paymentMethod: AppConstants.paymentMethodManual,
+      receiptStatus: AppConstants.receiptAwaitingUpload,
+      createdAt: DateTime.now(),
+      expiresAt: expiresAt,
+    );
+
+    final paymentData = payment.toPaymentMap()
+      ..removeWhere((key, value) => value == null);
+
+    await _supabase.from('payments').insert(paymentData);
+    return payment;
+  }
+
+  /// User submits receipt after bank/easypaisa transfer.
+  Future<void> submitManualReceipt({
+    required String paymentId,
+    required String ownerAccountId,
+    required String receiptUrl,
+    String? transferReference,
+  }) async {
+    await _supabase.from('payments').update({
+      'payment_method': AppConstants.paymentMethodManual,
+      'status': 'pending',
+      'owner_account_id': ownerAccountId,
+      'receipt_url': receiptUrl,
+      'receipt_status': AppConstants.receiptAwaitingVerification,
+      'transfer_reference': transferReference,
+      'updated_at': DateTime.now().toIso8601String(),
+    }).eq('id', paymentId);
+
+    final payment = await getPaymentById(paymentId);
+    if (payment == null) return;
+
+    try {
+      final bookingData = await _supabase
+          .from('bookings')
+          .select('workspace_id, workspace_name, user_id')
+          .eq('id', payment.bookingId)
+          .maybeSingle();
+
+      if (bookingData == null) return;
+
+      final ws = await _supabase
+          .from('workspaces')
+          .select('owner_id')
+          .eq('id', bookingData['workspace_id'])
+          .maybeSingle();
+
+      if (ws == null) return;
+      final ownerId = ws['owner_id'] as String;
+
+      final userData = await _supabase
+          .from('users')
+          .select('name')
+          .eq('id', payment.userId)
+          .maybeSingle();
+
+      final notificationService = NotificationService();
+      await notificationService.createNotification(
+        NotificationModel(
+          id: _uuid.v4(),
+          userId: ownerId,
+          title: 'Payment receipt uploaded',
+          message:
+              '${userData?['name'] ?? 'A user'} sent a payment receipt for ${bookingData['workspace_name']}. Please verify.',
+          type: 'payment_receipt',
+          createdAt: DateTime.now(),
+          metadata: {
+            'booking_id': payment.bookingId,
+            'payment_id': paymentId,
+          },
+        ),
+      );
+    } catch (_) {}
+  }
+
+  /// Owner approves manual payment receipt → booking confirmed.
+  Future<void> approveManualPayment(String paymentId) async {
+    final payment = await getPaymentById(paymentId);
+    if (payment == null) throw Exception('Payment not found');
+
+    await _supabase.from('payments').update({
+      'status': 'completed',
+      'receipt_status': AppConstants.receiptApproved,
+      'owner_verified_at': DateTime.now().toIso8601String(),
+      'updated_at': DateTime.now().toIso8601String(),
+    }).eq('id', paymentId);
+
+    await _confirmBookingAfterPayment(payment.bookingId);
+  }
+
+  /// Owner rejects receipt — user can re-upload.
+  Future<void> rejectManualPayment(String paymentId, {String? reason}) async {
+    await _supabase.from('payments').update({
+      'receipt_status': AppConstants.receiptRejected,
+      'failure_reason': reason ?? 'Receipt rejected by owner',
+      'updated_at': DateTime.now().toIso8601String(),
+    }).eq('id', paymentId);
+
+    final payment = await getPaymentById(paymentId);
+    if (payment == null) return;
+
+    try {
+      final notificationService = NotificationService();
+      await notificationService.createNotification(
+        NotificationModel(
+          id: _uuid.v4(),
+          userId: payment.userId,
+          title: 'Payment receipt rejected',
+          message: reason ??
+              'Your payment receipt was rejected. Please upload a valid receipt or pay by card.',
+          type: 'payment_rejected',
+          createdAt: DateTime.now(),
+          metadata: {'booking_id': payment.bookingId, 'payment_id': paymentId},
+        ),
+      );
+    } catch (_) {}
+  }
+
+  /// Booking ids for all workspaces owned by [ownerId].
+  Future<List<String>> _ownerBookingIds(String ownerId) async {
+    final workspaceRows = await _supabase
+        .from('workspaces')
+        .select('id')
+        .eq('owner_id', ownerId);
+
+    final workspaceIds =
+        workspaceRows.map((w) => w['id'] as String).toList();
+    if (workspaceIds.isEmpty) return [];
+
+    final bookings = await _supabase
+        .from('bookings')
+        .select('id')
+        .inFilter('workspace_id', workspaceIds);
+
+    return bookings.map((b) => b['id'] as String).toList();
+  }
+
+  /// Pending manual payments awaiting owner verification.
+  Future<List<PaymentModel>> getPendingReceiptsForOwner(String ownerId) async {
+    final bookingIds = await _ownerBookingIds(ownerId);
+    if (bookingIds.isEmpty) return [];
+
+    final rows = await _supabase
+        .from('payments')
+        .select()
+        .inFilter('booking_id', bookingIds)
+        .eq('receipt_status', AppConstants.receiptAwaitingVerification)
+        .order('created_at', ascending: false);
+
+    return rows.map((r) => PaymentModel.fromPaymentMap(r)).toList();
+  }
+
+  /// All payments received by an owner across their workspaces (history).
+  Future<List<PaymentModel>> getOwnerReceivedPayments(String ownerId) async {
+    final bookingIds = await _ownerBookingIds(ownerId);
+    if (bookingIds.isEmpty) return [];
+
+    final rows = await _supabase
+        .from('payments')
+        .select()
+        .inFilter('booking_id', bookingIds)
+        .order('created_at', ascending: false);
+
+    return rows.map((r) => PaymentModel.fromPaymentMap(r)).toList();
+  }
+
+  Future<void> _confirmBookingAfterPayment(String bookingId) async {
+    await _supabase.from('bookings').update({
+      'status': 'confirmed',
+      'updated_at': DateTime.now().toIso8601String(),
+    }).eq('id', bookingId);
+
+    try {
+      final bookingData = await _supabase
+          .from('bookings')
+          .select()
+          .eq('id', bookingId)
+          .limit(1);
+
+      if (bookingData.isEmpty) return;
+      final b = bookingData.first;
+      final notificationService = NotificationService();
+
+      await notificationService.sendBookingConfirmedNotification(
+        userId: b['user_id'] ?? '',
+        workspaceName: b['workspace_name'] ?? '',
+        bookingId: bookingId,
+      );
+    } catch (_) {}
+  }
 
   /// Create a payment for a booking
   /// Returns payment with Stripe client secret for payment processing
@@ -34,6 +269,31 @@ class PaymentService {
 
       // Create payment record in database
       final expiresAt = DateTime.now().add(const Duration(minutes: 30));
+
+      // Reuse an existing (non-completed) payment row for this booking so we
+      // never end up with duplicate rows when the user toggles methods.
+      final existing = await getPaymentByBookingId(bookingId);
+      if (existing != null && existing.status != 'completed') {
+        await _supabase.from('payments').update({
+          'payment_method': AppConstants.paymentMethodStripe,
+          'status': 'pending',
+          'stripe_payment_intent_id': paymentIntent['id'],
+          'stripe_client_secret': paymentIntent['client_secret'],
+          'receipt_status': null,
+          'owner_account_id': null,
+          'receipt_url': null,
+          'expires_at': expiresAt.toIso8601String(),
+          'updated_at': DateTime.now().toIso8601String(),
+        }).eq('id', existing.id);
+        return (await getPaymentById(existing.id)) ??
+            existing.copyPayment(
+              paymentMethod: AppConstants.paymentMethodStripe,
+              stripePaymentIntentId: paymentIntent['id'],
+              stripeClientSecret: paymentIntent['client_secret'],
+              expiresAt: expiresAt,
+            );
+      }
+
       final payment = PaymentModel(
         id: _uuid.v4(),
         bookingId: bookingId,

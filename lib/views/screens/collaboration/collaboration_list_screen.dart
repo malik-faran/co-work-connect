@@ -1,17 +1,21 @@
-import 'dart:math' show max;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
+
 import 'package:cwc/controllers/auth_controller.dart';
+import 'package:cwc/models/collaboration_hub_models.dart';
 import 'package:cwc/models/collaboration_model.dart';
-import 'package:cwc/utils/helpers/model_helpers.dart';
+import 'package:cwc/services/collaboration_hub_service.dart';
 import 'package:cwc/services/collaboration_service.dart';
 import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/views/screens/collaboration/collaboration_create_screen.dart';
 import 'package:cwc/views/screens/collaboration/collaboration_detail_screen.dart';
+import 'package:cwc/views/screens/collaboration/collaboration_join_screen.dart';
+import 'package:cwc/views/screens/collaboration/collaboration_project_screen.dart';
+import 'package:cwc/views/screens/profile/public_profile_screen.dart';
+import 'package:cwc/views/widgets/collaboration_widgets.dart';
 
-/// Collaboration List Screen
-/// Displays all available collaboration requests
+/// Projects hub — the primary app experience.
 class CollaborationListScreen extends StatefulWidget {
   const CollaborationListScreen({super.key});
 
@@ -19,113 +23,88 @@ class CollaborationListScreen extends StatefulWidget {
   State<CollaborationListScreen> createState() => _CollaborationListScreenState();
 }
 
-class _CollaborationListScreenState extends State<CollaborationListScreen> {
-  final CollaborationService _collaborationService = CollaborationService();
-  final TextEditingController _searchController = TextEditingController();
-  List<CollaborationModel> _collaborations = [];
-  List<CollaborationModel> _allCollaborations = [];
-  Map<String, int> _responseCounts = {};
-  bool _isLoading = true;
-  String? _errorMessage;
-  String _selectedFilter = 'all';
-  String _searchQuery = '';
-  final Set<String> _selectedSkills = {};
-  List<String> _availableSkills = [];
+class _CollaborationListScreenState extends State<CollaborationListScreen>
+    with SingleTickerProviderStateMixin {
+  final _collab = CollaborationService();
+  final _hub = CollaborationHubService();
+  late final TabController _tabController;
+  final _searchController = TextEditingController();
 
-  static const List<String> _defaultSkills = [
-    'Flutter', 'React', 'Python', 'JavaScript', 'UI/UX',
-    'Node.js', 'Firebase', 'Java', 'Swift', 'Kotlin',
-    'PHP', 'Laravel', 'Django', 'Machine Learning', 'DevOps',
-    'Graphic Design', 'Video Editing', 'Content Writing',
-  ];
+  List<CollaborationModel> _discover = [];
+  List<Map<String, dynamic>> _openTeammates = [];
+  List<CollaborationModel> _myPosts = [];
+  List<CollaborationModel> _myTeams = [];
+  List<CollaborationApplication> _myApps = [];
+  List<CollaborationInvite> _invites = [];
+  Map<String, int> _responseCounts = {};
+
+  bool _loading = true;
+  String _search = '';
 
   @override
   void initState() {
     super.initState();
-    _loadCollaborations();
+    _tabController = TabController(length: 5, vsync: this);
     _searchController.addListener(() {
-      if (_searchQuery != _searchController.text) {
-        _searchQuery = _searchController.text;
-        _applyLocalFilters();
+      if (_search != _searchController.text) {
+        setState(() => _search = _searchController.text);
       }
     });
+    _loadAll();
   }
 
   @override
   void dispose() {
+    _tabController.dispose();
     _searchController.dispose();
     super.dispose();
   }
 
-  Future<void> _loadCollaborations() async {
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
-
+  /// Runs a fetch in isolation so one failing query never blanks the whole
+  /// screen (e.g. a discover list staying empty because an unrelated query
+  /// threw). Returns [fallback] on error.
+  Future<T> _safe<T>(Future<T> Function() task, T fallback) async {
     try {
-      // Always fetch ALL collaborations to build the complete skills list
-      final allResults = await _collaborationService.getAllCollaborations();
-
-      // Fetch actual response counts from collaboration_responses table
-      final ids = allResults.map((c) => c.id).toList();
-      _responseCounts = await _collaborationService.getResponseCounts(ids);
-
-      // Merge default skills with skills from existing collaborations
-      final skillSet = <String>{..._defaultSkills};
-      for (final c in allResults) {
-        for (final s in c.requiredSkills) {
-          if (s.trim().isNotEmpty) skillSet.add(s.trim());
-        }
-      }
-      _availableSkills = skillSet.toList()..sort();
-
-      // Apply type filter locally
-      List<CollaborationModel> collaborations;
-      if (_selectedFilter == 'all') {
-        collaborations = allResults;
-      } else {
-        collaborations = allResults
-            .where((c) => c.collaborationType == _selectedFilter)
-            .toList();
-      }
-
-      _allCollaborations = List.from(collaborations);
-      _applyLocalFilters(collaborations);
+      return await task();
     } catch (e) {
-      setState(() {
-        _errorMessage = e.toString();
-        _isLoading = false;
-      });
+      debugPrint('collaboration load step failed: $e');
+      return fallback;
     }
   }
 
-  void _applyLocalFilters([List<CollaborationModel>? source]) {
-    var collaborations = source ?? List.from(_allCollaborations);
+  Future<void> _loadAll() async {
+    setState(() => _loading = true);
+    final uid = context.read<AuthController>().currentUser?.id;
 
-    // Apply search query
-    if (_searchQuery.isNotEmpty) {
-      final query = _searchQuery.toLowerCase();
-      collaborations.removeWhere((collab) {
-        return !collab.title.toLowerCase().contains(query) &&
-            !collab.description.toLowerCase().contains(query) &&
-            !collab.requiredSkills.any((skill) =>
-                skill.toLowerCase().contains(query));
-      });
-    }
+    final discover = await _safe(() => _collab.getAllCollaborations(), <CollaborationModel>[]);
+    final teammates =
+        await _safe(() => _hub.getOpenTeammates(excludeUserId: uid), <Map<String, dynamic>>[]);
+    final myPosts = uid != null
+        ? await _safe(() => _collab.getUserCollaborations(uid), <CollaborationModel>[])
+        : <CollaborationModel>[];
+    final myTeams = uid != null
+        ? await _safe(() => _hub.getUserTeams(uid), <CollaborationModel>[])
+        : <CollaborationModel>[];
+    final myApps = uid != null
+        ? await _safe(() => _hub.getUserApplications(uid), <CollaborationApplication>[])
+        : <CollaborationApplication>[];
+    final invites = uid != null
+        ? await _safe(() => _hub.getUserInvites(uid), <CollaborationInvite>[])
+        : <CollaborationInvite>[];
+    final counts = await _safe(
+        () => _collab.getResponseCounts(discover.map((c) => c.id).toList()), <String, int>{});
 
-    // Apply skill filter
-    if (_selectedSkills.isNotEmpty) {
-      collaborations.removeWhere((collab) {
-        return !_selectedSkills.any((skill) =>
-            collab.requiredSkills.any((rs) =>
-                rs.toLowerCase() == skill.toLowerCase()));
-      });
-    }
-
+    if (!mounted) return;
     setState(() {
-      _collaborations = collaborations;
-      _isLoading = false;
+      // Don't show the viewer their own posts in Discover — those live in "My Posts".
+      _discover = uid == null ? discover : discover.where((c) => c.userId != uid).toList();
+      _openTeammates = teammates;
+      _myPosts = myPosts;
+      _myTeams = myTeams;
+      _myApps = myApps;
+      _invites = invites;
+      _responseCounts = counts;
+      _loading = false;
     });
   }
 
@@ -133,151 +112,74 @@ class _CollaborationListScreenState extends State<CollaborationListScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: CAppTheme.backgroundColor,
-      appBar: AppBar(
-        elevation: 0,
-        backgroundColor: Colors.white,
-        surfaceTintColor: Colors.transparent,
-        title: Text(
-          'Collaborations',
-          style: GoogleFonts.poppins(
-            fontWeight: FontWeight.bold,
-            color: CAppTheme.textPrimary,
-          ),
-        ),
-        automaticallyImplyLeading: false,
-        actions: [
-          Container(
-            margin: const EdgeInsets.only(right: 12),
-            decoration: BoxDecoration(
-              gradient: CAppTheme.primaryGradient,
-              borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-              boxShadow: [
-                BoxShadow(
-                  color: CAppTheme.primaryColor.withValues(alpha: 0.3),
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
-                ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _createProject,
+        icon: const Icon(Icons.add),
+        label: const Text('Post project'),
+      ),
+      body: SafeArea(
+        child: Column(
+          children: [
+            _header(),
+            TabBar(
+              controller: _tabController,
+              isScrollable: true,
+              tabAlignment: TabAlignment.start,
+              tabs: const [
+                Tab(text: 'Discover'),
+                Tab(text: 'Open Teammates'),
+                Tab(text: 'My Posts'),
+                Tab(text: 'My Teams'),
+                Tab(text: 'My Applications'),
               ],
             ),
-            child: IconButton(
-              icon: const Icon(Icons.add_rounded, color: Colors.white),
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => const CollaborationCreateScreen(),
-                  ),
-                ).then((_) => _loadCollaborations());
-              },
-              tooltip: 'Create Collaboration',
+            Expanded(
+              child: _loading
+                  ? const Center(child: CircularProgressIndicator(color: CAppTheme.primaryColor))
+                  : RefreshIndicator(
+                      onRefresh: _loadAll,
+                      child: TabBarView(
+                        controller: _tabController,
+                        children: [
+                          _discoverTab(),
+                          _teammatesTab(),
+                          _myPostsTab(),
+                          _myTeamsTab(),
+                          _myApplicationsTab(),
+                        ],
+                      ),
+                    ),
             ),
-          ),
-        ],
-      ),
-      body: RefreshIndicator(
-        color: CAppTheme.primaryColor,
-        onRefresh: _loadCollaborations,
-        child: CustomScrollView(
-          slivers: [
-            SliverToBoxAdapter(child: _buildHeroHeader()),
-            SliverToBoxAdapter(child: _buildFloatingSearchBar()),
-            SliverToBoxAdapter(child: _buildFilterChips()),
-            SliverToBoxAdapter(child: _buildSkillFilters()),
-            if (_isLoading)
-              const SliverFillRemaining(
-                child: Center(
-                  child: CircularProgressIndicator(color: CAppTheme.primaryColor),
-                ),
-              )
-            else if (_errorMessage != null)
-              SliverFillRemaining(hasScrollBody: false, child: _buildErrorState())
-            else if (_collaborations.isEmpty)
-              SliverFillRemaining(hasScrollBody: false, child: _buildEmptyState())
-            else
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-                sliver: SliverList(
-                  delegate: SliverChildBuilderDelegate(
-                    (context, index) {
-                      final collab = _collaborations[index];
-                      return _CollaborationCard(
-                        collaboration: collab,
-                        responseCount: max(_responseCounts[collab.id] ?? 0, collab.responses.length),
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => CollaborationDetailScreen(
-                                collaborationId: collab.id,
-                              ),
-                            ),
-                          ).then((_) => _loadCollaborations());
-                        },
-                      );
-                    },
-                    childCount: _collaborations.length,
-                  ),
-                ),
-              ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildHeroHeader() {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        gradient: CAppTheme.primaryGradient,
-        borderRadius: BorderRadius.circular(CAppTheme.radiusXL),
-        boxShadow: [
-          BoxShadow(
-            color: CAppTheme.primaryColor.withValues(alpha: 0.3),
-            blurRadius: 16,
-            offset: const Offset(0, 6),
-          ),
-        ],
-      ),
+  Widget _header() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
       child: Row(
         children: [
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Find Collaborators',
-                  style: GoogleFonts.poppins(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  'Connect with talented people and bring your ideas to life',
-                  style: GoogleFonts.poppins(
-                    fontSize: 13,
-                    color: Colors.white.withValues(alpha: 0.85),
-                    height: 1.4,
-                  ),
-                ),
+                Text('Projects',
+                    style: GoogleFonts.poppins(fontSize: 24, fontWeight: FontWeight.w700)),
+                Text('Find teammates. Build projects.',
+                    style: GoogleFonts.poppins(fontSize: 13, color: CAppTheme.textSecondary)),
               ],
             ),
           ),
-          const SizedBox(width: 12),
-          Container(
-            width: 64,
-            height: 64,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-            ),
-            child: const Icon(
-              Icons.people_alt_rounded,
-              size: 34,
-              color: Colors.white,
+          IconButton(
+            onPressed: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const CollaborationJoinScreen())),
+            icon: const Icon(Icons.qr_code_rounded),
+            tooltip: 'Join with code',
+            style: IconButton.styleFrom(
+              backgroundColor: CAppTheme.primaryColor.withValues(alpha: 0.1),
+              foregroundColor: CAppTheme.primaryColor,
             ),
           ),
         ],
@@ -285,416 +187,417 @@ class _CollaborationListScreenState extends State<CollaborationListScreen> {
     );
   }
 
-  Widget _buildFloatingSearchBar() {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-        boxShadow: CAppTheme.cardShadow,
-      ),
-      child: TextField(
-        controller: _searchController,
-        style: GoogleFonts.poppins(fontSize: 14, color: CAppTheme.textPrimary),
-        decoration: InputDecoration(
-          hintText: 'Search collaborations, skills...',
-          hintStyle: GoogleFonts.poppins(color: CAppTheme.textTertiary, fontSize: 14),
-          prefixIcon: const Icon(Icons.search_rounded, color: CAppTheme.primaryColor),
-          suffixIcon: _searchQuery.isNotEmpty
-              ? IconButton(
-                  icon: const Icon(Icons.clear_rounded, color: CAppTheme.textSecondary),
-                  onPressed: () {
-                    _searchController.clear();
-                  },
+  // ---------------------------------------------------------- Discover
+  Widget _discoverTab() {
+    final query = _search.toLowerCase();
+    final filtered = query.isEmpty
+        ? _discover
+        : _discover.where((c) {
+            return c.title.toLowerCase().contains(query) ||
+                c.description.toLowerCase().contains(query) ||
+                c.requiredSkills.any((s) => s.toLowerCase().contains(query));
+          }).toList();
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          child: TextField(
+            controller: _searchController,
+            decoration: InputDecoration(
+              hintText: 'Search projects or skills...',
+              prefixIcon: const Icon(Icons.search_rounded),
+              contentPadding: const EdgeInsets.symmetric(vertical: 0),
+            ),
+          ),
+        ),
+        Expanded(
+          child: filtered.isEmpty
+              ? EmptyState(
+                  icon: Icons.explore_rounded,
+                  title: 'No open projects',
+                  subtitle: 'Be the first to post a project and build a team.',
+                  action: ElevatedButton.icon(
+                    onPressed: _createProject,
+                    icon: const Icon(Icons.add),
+                    label: const Text('Post a project'),
+                  ),
                 )
-              : null,
-          filled: true,
-          fillColor: Colors.white,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-            borderSide: BorderSide.none,
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-            borderSide: BorderSide.none,
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-            borderSide: const BorderSide(color: CAppTheme.primaryColor, width: 1.5),
-          ),
-          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildFilterChips() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            _buildFilterChip('all', 'All', Icons.grid_view_rounded),
-            const SizedBox(width: 10),
-            _buildFilterChip('need_help', 'Need Help', Icons.help_outline_rounded),
-            const SizedBox(width: 10),
-            _buildFilterChip('offering_help', 'Offering Help', Icons.handshake_outlined),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildFilterChip(String value, String label, IconData icon) {
-    final isSelected = _selectedFilter == value;
-    return GestureDetector(
-      onTap: () {
-        setState(() => _selectedFilter = value);
-        _loadCollaborations();
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        decoration: BoxDecoration(
-          gradient: isSelected ? CAppTheme.primaryGradient : null,
-          color: isSelected ? null : Colors.white,
-          borderRadius: BorderRadius.circular(CAppTheme.radiusXL),
-          border: isSelected
-              ? null
-              : Border.all(color: CAppTheme.borderColor, width: 1.5),
-          boxShadow: isSelected
-              ? [
-                  BoxShadow(
-                    color: CAppTheme.primaryColor.withValues(alpha: 0.3),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
-                  ),
-                ]
-              : CAppTheme.softShadow,
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              icon,
-              size: 16,
-              color: isSelected ? Colors.white : CAppTheme.textSecondary,
-            ),
-            const SizedBox(width: 6),
-            Text(
-              label,
-              style: GoogleFonts.poppins(
-                color: isSelected ? Colors.white : CAppTheme.textPrimary,
-                fontWeight: FontWeight.w600,
-                fontSize: 13,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSkillFilters() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.auto_awesome_rounded, size: 14, color: CAppTheme.primaryColor),
-              const SizedBox(width: 6),
-              Text(
-                'Filter by Skills',
-                style: GoogleFonts.poppins(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: CAppTheme.textSecondary,
+              : ListView(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
+                  children: [
+                    if (_invites.isNotEmpty) _invitesBanner(),
+                    ...filtered.map(_projectCard),
+                  ],
                 ),
+        ),
+      ],
+    );
+  }
+
+  Widget _invitesBanner() {
+    return Column(
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.mail_rounded, size: 18, color: CAppTheme.primaryColor),
+            const SizedBox(width: 8),
+            Text('Project invitations',
+                style: GoogleFonts.poppins(fontSize: 14, fontWeight: FontWeight.w700)),
+          ],
+        ),
+        const SizedBox(height: 10),
+        ..._invites.map((inv) => Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                gradient: CAppTheme.primaryGradient,
+                borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
               ),
-              if (_selectedSkills.isNotEmpty) ...[
-                const SizedBox(width: 8),
-                GestureDetector(
-                  onTap: () {
-                    _selectedSkills.clear();
-                    _applyLocalFilters();
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: CAppTheme.errorColor.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(CAppTheme.radiusRound),
-                    ),
-                    child: Text(
-                      'Clear',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(inv.collaborationTitle ?? 'A project',
                       style: GoogleFonts.poppins(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: CAppTheme.errorColor,
-                      ),
-                    ),
+                          fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white)),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${inv.invitedByName ?? 'Someone'} invited you${inv.roleTitle != null ? ' as ${inv.roleTitle}' : ''}',
+                    style: GoogleFonts.poppins(fontSize: 12.5, color: Colors.white70),
                   ),
-                ),
-              ],
-            ],
-          ),
-          const SizedBox(height: 8),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: _availableSkills.map((skill) {
-                final isSelected = _selectedSkills.contains(skill);
-                return Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: GestureDetector(
-                    onTap: () {
-                      if (isSelected) {
-                        _selectedSkills.remove(skill);
-                      } else {
-                        _selectedSkills.add(skill);
-                      }
-                      _applyLocalFilters();
-                    },
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                      decoration: BoxDecoration(
-                        color: isSelected
-                            ? CAppTheme.primaryColor
-                            : CAppTheme.primaryColor.withValues(alpha: 0.06),
-                        borderRadius: BorderRadius.circular(CAppTheme.radiusRound),
-                        border: Border.all(
-                          color: isSelected
-                              ? CAppTheme.primaryColor
-                              : CAppTheme.primaryColor.withValues(alpha: 0.2),
-                          width: 1,
+                  if (inv.message != null && inv.message!.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Text('"${inv.message!}"',
+                        style: GoogleFonts.poppins(
+                            fontSize: 12.5, fontStyle: FontStyle.italic, color: Colors.white)),
+                  ],
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.white,
+                            foregroundColor: CAppTheme.primaryColor,
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                          ),
+                          onPressed: () => _respondInvite(inv, true),
+                          child: const Text('Accept'),
                         ),
                       ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (isSelected) ...[
-                            const Icon(Icons.check_rounded, size: 14, color: Colors.white),
-                            const SizedBox(width: 4),
-                          ],
-                          Text(
-                            skill,
+                      const SizedBox(width: 10),
+                      TextButton(
+                        style: TextButton.styleFrom(foregroundColor: Colors.white),
+                        onPressed: () => _respondInvite(inv, false),
+                        child: const Text('Decline'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            )),
+        const Divider(height: 24),
+      ],
+    );
+  }
+
+  Future<void> _respondInvite(CollaborationInvite inv, bool accept) async {
+    final user = context.read<AuthController>().currentUser;
+    if (user == null) return;
+    if (accept) {
+      await _hub.acceptInvite(
+        invite: inv,
+        userId: user.id,
+        userName: user.name,
+        userEmail: user.email,
+        userImage: user.profileImageUrl,
+        userSkills: user.skills ?? [],
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Joined "${inv.collaborationTitle ?? 'project'}"'),
+            backgroundColor: CAppTheme.successColor),
+      );
+    } else {
+      await _hub.respondToInvite(inv, false);
+    }
+    _loadAll();
+  }
+
+  // ---------------------------------------------------- Open Teammates
+  Widget _teammatesTab() {
+    if (_openTeammates.isEmpty) {
+      return const EmptyState(
+        icon: Icons.groups_rounded,
+        title: 'No open teammates yet',
+        subtitle: 'People who turn on "Open to Collaborate" will show up here.',
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 90),
+      itemCount: _openTeammates.length,
+      itemBuilder: (_, i) {
+        final u = _openTeammates[i];
+        final skills = (u['skills'] as List?)?.cast<String>() ?? [];
+        return Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          child: SectionCard(
+            padding: const EdgeInsets.all(14),
+            child: InkWell(
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => PublicProfileScreen(userId: u['id']))),
+              child: Row(
+                children: [
+                  UserAvatar(name: u['name'], imageUrl: u['profile_image_url'], size: 50),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(u['name'] ?? 'User',
                             style: GoogleFonts.poppins(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: isSelected ? Colors.white : CAppTheme.primaryColor,
-                            ),
+                                fontSize: 15, fontWeight: FontWeight.w600)),
+                        if (u['collaboration_headline'] != null)
+                          Text(u['collaboration_headline'],
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: GoogleFonts.poppins(
+                                  fontSize: 12.5, color: CAppTheme.primaryColor)),
+                        if (skills.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 6,
+                            children: skills.take(3).map((s) => SkillChip(label: s)).toList(),
                           ),
                         ],
-                      ),
+                      ],
                     ),
                   ),
-                );
-              }).toList(),
+                  const Icon(Icons.chevron_right_rounded, color: CAppTheme.textTertiary),
+                ],
+              ),
             ),
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
-  Widget _buildEmptyState() {
-    return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                color: CAppTheme.primaryColor.withValues(alpha: 0.1),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.people_outline_rounded,
-                size: 36,
-                color: CAppTheme.primaryColor,
-              ),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'No collaborations found',
-              style: GoogleFonts.poppins(
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-                color: CAppTheme.textPrimary,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Be the first to create a collaboration request!',
-              style: GoogleFonts.poppins(
-                color: CAppTheme.textSecondary,
-                fontSize: 13,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => const CollaborationCreateScreen(),
+  // ------------------------------------------------------------ My Posts
+  Widget _myPostsTab() {
+    if (_myPosts.isEmpty) {
+      return EmptyState(
+        icon: Icons.post_add_rounded,
+        title: 'No projects yet',
+        subtitle: 'Post your first project to start building a team.',
+        action: ElevatedButton.icon(
+          onPressed: _createProject,
+          icon: const Icon(Icons.add),
+          label: const Text('Post a project'),
+        ),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 90),
+      itemCount: _myPosts.length,
+      itemBuilder: (_, i) => _projectCard(_myPosts[i], showStatus: true),
+    );
+  }
+
+  // ------------------------------------------------------------ My Teams
+  Widget _myTeamsTab() {
+    if (_myTeams.isEmpty) {
+      return const EmptyState(
+        icon: Icons.diversity_3_rounded,
+        title: 'You are not on a team yet',
+        subtitle: 'Apply to projects or accept an invite to join a team.',
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 90),
+      itemCount: _myTeams.length,
+      itemBuilder: (_, i) {
+        final p = _myTeams[i];
+        return _projectCard(p, showStatus: true, openRoom: p.isActive || p.isCompleted);
+      },
+    );
+  }
+
+  // ----------------------------------------------------- My Applications
+  Widget _myApplicationsTab() {
+    if (_myApps.isEmpty) {
+      return const EmptyState(
+        icon: Icons.assignment_rounded,
+        title: 'No applications yet',
+        subtitle: 'Applications you submit will appear here with their status.',
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 90),
+      itemCount: _myApps.length,
+      itemBuilder: (_, i) {
+        final a = _myApps[i];
+        return Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          child: SectionCard(
+            padding: const EdgeInsets.all(14),
+            child: InkWell(
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => CollaborationDetailScreen(collaborationId: a.collaborationId)),
+              ).then((_) => _loadAll()),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (a.roleTitle != null)
+                          Text('Applied as ${a.roleTitle}',
+                              style: GoogleFonts.poppins(
+                                  fontSize: 14, fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 4),
+                        Text(a.pitchMessage,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: GoogleFonts.poppins(
+                                fontSize: 12.5, color: CAppTheme.textSecondary)),
+                      ],
+                    ),
                   ),
-                ).then((_) => _loadCollaborations());
-              },
-              icon: const Icon(Icons.add_rounded),
-              label: const Text('Create Collaboration'),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                  const SizedBox(width: 10),
+                  _appStatusChip(a.status),
+                ],
               ),
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 
-  Widget _buildErrorState() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                color: CAppTheme.errorColor.withValues(alpha: 0.1),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.error_outline_rounded,
-                size: 36,
-                color: CAppTheme.errorColor,
-              ),
-            ),
-            const SizedBox(height: 20),
-            Text(
-              'Error loading collaborations',
-              style: GoogleFonts.poppins(
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-                color: CAppTheme.textPrimary,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              _errorMessage ?? 'Unknown error',
-              style: GoogleFonts.poppins(
-                color: CAppTheme.textSecondary,
-                fontSize: 14,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton(
-              onPressed: _loadCollaborations,
-              child: const Text('Retry'),
-            ),
-          ],
-        ),
+  Widget _appStatusChip(String status) {
+    Color color;
+    String label;
+    switch (status) {
+      case 'accepted':
+        color = CAppTheme.successColor;
+        label = 'Accepted';
+        break;
+      case 'shortlisted':
+        color = CAppTheme.warningColor;
+        label = 'Shortlisted';
+        break;
+      case 'rejected':
+        color = CAppTheme.errorColor;
+        label = 'Not selected';
+        break;
+      default:
+        color = CAppTheme.infoColor;
+        label = 'Pending';
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(CAppTheme.radiusRound),
       ),
+      child: Text(label,
+          style: GoogleFonts.poppins(fontSize: 11.5, fontWeight: FontWeight.w600, color: color)),
     );
   }
-}
 
-/// Collaboration Card Widget
-class _CollaborationCard extends StatelessWidget {
-  final CollaborationModel collaboration;
-  final VoidCallback onTap;
-  final int responseCount;
-
-  const _CollaborationCard({
-    required this.collaboration,
-    required this.onTap,
-    required this.responseCount,
-  });
-
-  bool get _isNeedHelp => collaboration.collaborationType == 'need_help';
-  Color get _typeColor => _isNeedHelp
-      ? const Color(0xFFEF8B2C)
-      : CAppTheme.successColor;
-
-  @override
-  Widget build(BuildContext context) {
+  // ----------------------------------------------------------- shared card
+  Widget _projectCard(CollaborationModel p, {bool showStatus = false, bool openRoom = false}) {
+    final responseCount = _responseCounts[p.id] ?? 0;
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-        boxShadow: CAppTheme.cardShadow,
-      ),
-      child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+      child: SectionCard(
+        padding: EdgeInsets.zero,
         child: InkWell(
-          onTap: onTap,
           borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+          onTap: () {
+            if (openRoom) {
+              Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => CollaborationProjectScreen(collaborationId: p.id)))
+                  .then((_) => _loadAll());
+            } else {
+              Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => CollaborationDetailScreen(collaborationId: p.id)))
+                  .then((_) => _loadAll());
+            }
+          },
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildTopAccent(),
+              if (p.coverImageUrl != null && p.coverImageUrl!.isNotEmpty)
+                ClipRRect(
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(CAppTheme.radiusLarge)),
+                  child: Image.network(p.coverImageUrl!,
+                      height: 120, width: double.infinity, fit: BoxFit.cover),
+                ),
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+                padding: const EdgeInsets.all(16),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _buildHeader(),
-                    const SizedBox(height: 14),
-                    Text(
-                      collaboration.title,
-                      style: GoogleFonts.poppins(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w700,
-                        color: CAppTheme.textPrimary,
-                        height: 1.3,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(p.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: GoogleFonts.poppins(
+                                  fontSize: 16, fontWeight: FontWeight.w700)),
+                        ),
+                        if (showStatus) StatusBadge(status: p.status),
+                      ],
                     ),
                     const SizedBox(height: 6),
-                    Text(
-                      collaboration.description,
-                      style: GoogleFonts.poppins(
-                        fontSize: 13,
-                        color: CAppTheme.textSecondary,
-                        height: 1.5,
-                      ),
-                      maxLines: 3,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 12),
-                    _buildSkillChips(),
-                    const SizedBox(height: 14),
-                    Divider(
-                      color: CAppTheme.borderColor.withValues(alpha: 0.5),
-                      height: 1,
-                    ),
-                    const SizedBox(height: 12),
-                    _buildFooter(),
-                    const SizedBox(height: 8),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: Text(
-                        'View Details →',
+                    Text(p.description,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
                         style: GoogleFonts.poppins(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: CAppTheme.primaryColor,
-                        ),
+                            fontSize: 13, color: CAppTheme.textSecondary, height: 1.4)),
+                    if (p.requiredSkills.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children:
+                            p.requiredSkills.take(4).map((s) => SkillChip(label: s)).toList(),
                       ),
+                    ],
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        UserAvatar(name: p.userName, imageUrl: p.userProfileImage, size: 24),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(p.userName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: GoogleFonts.poppins(
+                                  fontSize: 12.5, color: CAppTheme.textSecondary)),
+                        ),
+                        if (!showStatus && responseCount > 0) ...[
+                          const Icon(Icons.people_alt_rounded,
+                              size: 14, color: CAppTheme.textTertiary),
+                          const SizedBox(width: 4),
+                          Text('$responseCount',
+                              style: GoogleFonts.poppins(
+                                  fontSize: 12.5, color: CAppTheme.textTertiary)),
+                        ],
+                        if (openRoom)
+                          Text('Open room →',
+                              style: GoogleFonts.poppins(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: CAppTheme.primaryColor)),
+                      ],
                     ),
                   ],
                 ),
@@ -706,284 +609,11 @@ class _CollaborationCard extends StatelessWidget {
     );
   }
 
-  Widget _buildTopAccent() {
-    return Container(
-      height: 3,
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            _typeColor,
-            _typeColor.withValues(alpha: 0.3),
-          ],
-        ),
-        borderRadius: BorderRadius.only(
-          topLeft: Radius.circular(CAppTheme.radiusLarge),
-          topRight: Radius.circular(CAppTheme.radiusLarge),
-        ),
-      ),
+  Future<void> _createProject() async {
+    final created = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => const CollaborationCreateScreen()),
     );
-  }
-
-  Widget _buildHeader() {
-    return Row(
-      children: [
-        _buildAvatar(),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Row(
-            children: [
-              Flexible(
-                child: Text(
-                  collaboration.userName,
-                  style: GoogleFonts.poppins(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14,
-                    color: CAppTheme.textPrimary,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 6),
-                child: Icon(
-                  Icons.circle,
-                  size: 4,
-                  color: CAppTheme.textTertiary,
-                ),
-              ),
-              Text(
-                _formatTime(collaboration.createdAt),
-                style: GoogleFonts.poppins(
-                  fontSize: 11,
-                  color: CAppTheme.textTertiary,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(width: 8),
-        _buildTypeBadge(),
-      ],
-    );
-  }
-
-  Widget _buildAvatar() {
-    return Container(
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        border: Border.all(
-          color: _typeColor.withValues(alpha: 0.3),
-          width: 2,
-        ),
-      ),
-      child: CircleAvatar(
-        radius: 22,
-        backgroundColor: _typeColor.withValues(alpha: 0.1),
-        backgroundImage: collaboration.userProfileImage != null
-            ? NetworkImage(collaboration.userProfileImage!)
-            : null,
-        child: collaboration.userProfileImage == null
-            ? Text(
-                safeInitial(collaboration.userName),
-                style: GoogleFonts.poppins(
-                  color: _typeColor,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 17,
-                ),
-              )
-            : null,
-      ),
-    );
-  }
-
-  Widget _buildTypeBadge() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: _typeColor.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(CAppTheme.radiusXL),
-        border: Border.all(
-          color: _typeColor.withValues(alpha: 0.2),
-          width: 1,
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            _isNeedHelp ? Icons.help_outline_rounded : Icons.handshake_outlined,
-            size: 13,
-            color: _typeColor,
-          ),
-          const SizedBox(width: 4),
-          Text(
-            _isNeedHelp ? 'Need Help' : 'Offering',
-            style: GoogleFonts.poppins(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: _typeColor,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSkillChips() {
-    final skills = collaboration.requiredSkills;
-    final displaySkills = skills.take(4).toList();
-    final remaining = skills.length - displaySkills.length;
-
-    return Wrap(
-      spacing: 6,
-      runSpacing: 6,
-      children: [
-        ...displaySkills.map((skill) {
-          return Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(CAppTheme.radiusXL),
-              border: Border.all(
-                color: CAppTheme.primaryColor.withValues(alpha: 0.3),
-                width: 1,
-              ),
-            ),
-            child: Text(
-              skill,
-              style: GoogleFonts.poppins(
-                fontSize: 10,
-                fontWeight: FontWeight.w600,
-                color: CAppTheme.primaryColor,
-              ),
-            ),
-          );
-        }),
-        if (remaining > 0)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(CAppTheme.radiusXL),
-              border: Border.all(
-                color: CAppTheme.textTertiary.withValues(alpha: 0.3),
-                width: 1,
-              ),
-            ),
-            child: Text(
-              '+$remaining more',
-              style: GoogleFonts.poppins(
-                fontSize: 10,
-                fontWeight: FontWeight.w500,
-                color: CAppTheme.textSecondary,
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildFooter() {
-    return Row(
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: CAppTheme.primaryColor.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(
-                Icons.forum_outlined,
-                size: 14,
-                color: CAppTheme.primaryColor,
-              ),
-              const SizedBox(width: 4),
-              Text(
-                '$responseCount ${responseCount == 1 ? 'response' : 'responses'}',
-                style: GoogleFonts.poppins(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: CAppTheme.primaryColor,
-                ),
-              ),
-            ],
-          ),
-        ),
-        if (collaboration.projectType != null &&
-            collaboration.projectType!.isNotEmpty) ...[
-          const Spacer(),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: CAppTheme.textTertiary.withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.folder_outlined,
-                  size: 13,
-                  color: CAppTheme.textSecondary,
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  collaboration.projectType!,
-                  style: GoogleFonts.poppins(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                    color: CAppTheme.textSecondary,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-        if (collaboration.budget != null &&
-            collaboration.budget!.isNotEmpty) ...[
-          const Spacer(),
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.payments_outlined,
-                size: 13,
-                color: CAppTheme.successColor,
-              ),
-              const SizedBox(width: 4),
-              Text(
-                collaboration.budget!,
-                style: GoogleFonts.poppins(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: CAppTheme.successColor,
-                ),
-              ),
-            ],
-          ),
-        ],
-        if (collaboration.projectType == null && collaboration.budget == null)
-          const Spacer(),
-      ],
-    );
-  }
-
-  String _formatTime(DateTime dateTime) {
-    final now = DateTime.now();
-    final difference = now.difference(dateTime);
-
-    if (difference.inDays > 7) {
-      return '${dateTime.day}/${dateTime.month}/${dateTime.year}';
-    } else if (difference.inDays > 0) {
-      return '${difference.inDays}d ago';
-    } else if (difference.inHours > 0) {
-      return '${difference.inHours}h ago';
-    } else if (difference.inMinutes > 0) {
-      return '${difference.inMinutes}m ago';
-    } else {
-      return 'Just now';
-    }
+    if (created == true) _loadAll();
   }
 }

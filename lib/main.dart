@@ -3,6 +3,8 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:provider/provider.dart';
 import 'package:cwc/services/supabase_service.dart';
 import 'package:cwc/services/payment_service.dart';
+import 'package:cwc/services/local_notification_service.dart';
+import 'package:cwc/services/fcm_service.dart';
 import 'package:cwc/controllers/auth_controller.dart';
 import 'package:cwc/controllers/workspace_controller.dart';
 import 'package:cwc/utils/themes/theme.dart';
@@ -14,6 +16,8 @@ void main() async {
   await SupabaseService.initialize();
 
   if (!kIsWeb) {
+    await LocalNotificationService.instance.initialize();
+    await FcmService.instance.initialize();
     Stripe.publishableKey = PaymentService.stripePublishableKey;
   }
 

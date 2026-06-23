@@ -6,6 +6,7 @@ import 'package:cwc/models/booking_model.dart';
 import 'package:cwc/models/review_model.dart';
 import 'package:cwc/services/review_service.dart';
 import 'package:cwc/utils/themes/theme.dart';
+import 'package:cwc/utils/validators/form_validators.dart';
 import 'package:uuid/uuid.dart';
 
 /// Review Dialog
@@ -104,6 +105,24 @@ class _ReviewDialogState extends State<ReviewDialog> {
     if (_rating == 3) return 'Good';
     if (_rating == 4) return 'Very Good';
     return 'Excellent';
+  }
+
+  bool get _requiresFeedback => _rating == 1 || _rating == 5;
+
+  String get _feedbackLabel {
+    if (_rating == 1) return 'Why did you give this rating? *';
+    if (_rating == 5) return 'What did you like? *';
+    return 'Your Feedback (Optional)';
+  }
+
+  String get _feedbackHint {
+    if (_rating == 1) {
+      return 'Please tell us what went wrong...';
+    }
+    if (_rating == 5) {
+      return 'Tell us what made your experience excellent...';
+    }
+    return 'Share your experience...';
   }
 
   Color get _ratingColor {
@@ -235,7 +254,7 @@ class _ReviewDialogState extends State<ReviewDialog> {
                 const SizedBox(height: 20),
 
                 Text(
-                  'Your Feedback (Optional)',
+                  _feedbackLabel,
                   style: GoogleFonts.poppins(
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
@@ -245,8 +264,12 @@ class _ReviewDialogState extends State<ReviewDialog> {
                 const SizedBox(height: 8),
                 TextFormField(
                   controller: _commentController,
+                  validator: (value) => FormValidators.reviewComment(
+                        value,
+                        required: _requiresFeedback,
+                      ),
                   decoration: InputDecoration(
-                    hintText: 'Share your experience...',
+                    hintText: _feedbackHint,
                     hintStyle: GoogleFonts.poppins(color: CAppTheme.textTertiary, fontSize: 14),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),

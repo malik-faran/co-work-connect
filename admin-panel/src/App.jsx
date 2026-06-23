@@ -13,35 +13,68 @@ import ChatMonitoring from './pages/ChatMonitoring'
 import Payments from './pages/Payments'
 import OwnerRevenue from './pages/OwnerRevenue'
 import Layout from './components/Layout'
+import Loading from './components/Loading'
+import { supabase, fetchAdminProfile } from './lib/supabase'
 
 function App() {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // Check if user is already logged in
-    const savedUser = localStorage.getItem('admin_user')
-    if (savedUser) {
+    let mounted = true
+
+    const loadSession = async (session) => {
+      if (!session?.user) {
+        if (mounted) setUser(null)
+        return
+      }
       try {
-        const user = JSON.parse(savedUser)
-        setUser(user)
-      } catch (e) {
-        localStorage.removeItem('admin_user')
-        setUser(null)
+        const profile = await fetchAdminProfile(session.user.id)
+        if (mounted) {
+          setUser({
+            id: session.user.id,
+            email: session.user.email,
+            role: profile.role,
+            name: profile.name,
+          })
+        }
+      } catch {
+        await supabase.auth.signOut()
+        if (mounted) setUser(null)
       }
     }
-    setLoading(false)
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      loadSession(session).finally(() => {
+        if (mounted) setLoading(false)
+      })
+    })
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (_event, session) => {
+        await loadSession(session)
+      }
+    )
+
+    return () => {
+      mounted = false
+      subscription.unsubscribe()
+    }
   }, [])
+
+  if (loading) {
+    return <Loading message="Loading admin panel..." />
+  }
 
   return (
     <Router>
       <Routes>
-        <Route 
-          path="/login" 
-          element={user ? <Navigate to="/dashboard" /> : <Login setUser={setUser} />} 
+        <Route
+          path="/login"
+          element={user ? <Navigate to="/dashboard" /> : <Login setUser={setUser} />}
         />
-        <Route 
-          path="/" 
+        <Route
+          path="/"
           element={user ? <Layout user={user} setUser={setUser} /> : <Navigate to="/login" />}
         >
           <Route index element={<Navigate to="/dashboard" />} />
@@ -63,4 +96,3 @@ function App() {
 }
 
 export default App
-

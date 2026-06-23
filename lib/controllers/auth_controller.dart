@@ -2,7 +2,10 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:cwc/models/user_model.dart';
 import 'package:cwc/services/auth_service.dart';
+import 'package:cwc/services/notification_listener_service.dart';
+import 'package:cwc/services/fcm_service.dart';
 import 'package:cwc/services/supabase_service.dart';
+import 'package:cwc/utils/constants/app_constants.dart';
 
 class AuthController with ChangeNotifier {
   final AuthService _authService = AuthService();
@@ -16,19 +19,25 @@ class AuthController with ChangeNotifier {
   bool get isLoading => _isLoading;
   String? get errorMessage => _errorMessage;
   bool get isAuthenticated => _currentUser != null;
+  bool get isEmailVerified => _authService.isEmailVerified;
 
   Future<void> initialize() async {
     _isLoading = true;
     notifyListeners();
 
     try {
-      _authSubscription = SupabaseService.client.auth.onAuthStateChange.listen((data) async {
+      _authSubscription =
+          SupabaseService.client.auth.onAuthStateChange.listen((data) async {
         final user = data.session?.user;
         if (user != null && user.id.isNotEmpty) {
-          _currentUser = await _authService.getUserById(user.id);
+          // Only load profile if email is verified; otherwise keep null so the
+          // splash / router pushes to verification screen.
+          final verified = user.emailConfirmedAt != null;
+          _currentUser = verified ? await _authService.getUserById(user.id) : null;
         } else {
           _currentUser = null;
         }
+        _syncNotificationListener();
         _isLoading = false;
         notifyListeners();
       });
@@ -42,20 +51,31 @@ class AuthController with ChangeNotifier {
   @override
   void dispose() {
     _authSubscription?.cancel();
+    NotificationListenerService.instance.stop();
     super.dispose();
   }
 
-  /// Sign up
+  void _syncNotificationListener() {
+    final userId = _currentUser?.id;
+    if (userId != null && isEmailVerified) {
+      NotificationListenerService.instance.start(userId);
+      if (!kIsWeb) {
+        FcmService.instance.syncTokenForUser(userId);
+      }
+    } else {
+      NotificationListenerService.instance.stop();
+    }
+  }
+
   Future<bool> signUp({
     required String email,
     required String password,
     required String name,
-    required String phone,
-    required String role,
+    String role = AppConstants.roleUser,
+    String phone = '',
     String? city,
     String? businessName,
     String? businessAddress,
-    String? cnicImageUrl, // CNIC image URL
   }) async {
     _isLoading = true;
     _errorMessage = null;
@@ -66,14 +86,12 @@ class AuthController with ChangeNotifier {
         email: email,
         password: password,
         name: name,
-        phone: phone,
         role: role,
+        phone: phone,
         city: city,
         businessName: businessName,
         businessAddress: businessAddress,
-        cnicImageUrl: cnicImageUrl,
       );
-
       _isLoading = false;
       notifyListeners();
       return _currentUser != null;
@@ -85,7 +103,6 @@ class AuthController with ChangeNotifier {
     }
   }
 
-  /// Sign in
   Future<bool> signIn({
     required String email,
     required String password,
@@ -95,11 +112,8 @@ class AuthController with ChangeNotifier {
     notifyListeners();
 
     try {
-      _currentUser = await _authService.signIn(
-        email: email,
-        password: password,
-      );
-
+      _currentUser = await _authService.signIn(email: email, password: password);
+      _syncNotificationListener();
       _isLoading = false;
       notifyListeners();
       return _currentUser != null;
@@ -111,38 +125,42 @@ class AuthController with ChangeNotifier {
     }
   }
 
-  /// Sign out
   Future<void> signOut() async {
     _isLoading = true;
     notifyListeners();
-
     try {
+      final userId = _currentUser?.id;
+      if (userId != null && !kIsWeb) {
+        await FcmService.instance.clearTokenForUser(userId);
+      }
       await _authService.signOut();
       _currentUser = null;
-      _isLoading = false;
-      notifyListeners();
+      NotificationListenerService.instance.stop();
     } catch (e) {
       _errorMessage = e.toString();
+    } finally {
       _isLoading = false;
       notifyListeners();
     }
   }
 
-  /// Update user profile
   Future<void> updateProfile(UserModel userModel) async {
     _isLoading = true;
     notifyListeners();
-
     try {
       await _authService.updateUserProfile(userModel);
       _currentUser = userModel;
-      _isLoading = false;
-      notifyListeners();
     } catch (e) {
       _errorMessage = e.toString();
+    } finally {
       _isLoading = false;
       notifyListeners();
     }
+  }
+
+  void setCurrentUser(UserModel user) {
+    _currentUser = user;
+    notifyListeners();
   }
 
   Future<bool> changePassword({
@@ -152,22 +170,59 @@ class AuthController with ChangeNotifier {
     _isLoading = true;
     _errorMessage = null;
     notifyListeners();
-
     try {
-      final success = await _authService.changePassword(
+      final ok = await _authService.changePassword(
         oldPassword: oldPassword,
         newPassword: newPassword,
       );
-
-      _isLoading = false;
-      notifyListeners();
-      return success;
+      return ok;
     } catch (e) {
       _errorMessage = e.toString();
+      return false;
+    } finally {
       _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> sendPasswordReset(String email) async {
+    _isLoading = true;
+    _errorMessage = null;
+    notifyListeners();
+    try {
+      await _authService.sendPasswordReset(email);
+      return true;
+    } catch (e) {
+      _errorMessage = e.toString();
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> resendConfirmationEmail(String email) async {
+    try {
+      await _authService.resendConfirmationEmail(email);
+      return true;
+    } catch (e) {
+      _errorMessage = e.toString();
       notifyListeners();
       return false;
     }
+  }
+
+  Future<bool> refreshVerificationState() async {
+    final verified = await _authService.refreshAndCheckVerified();
+    if (verified) {
+      final uid = SupabaseService.client.auth.currentUser?.id;
+      if (uid != null) {
+        _currentUser = await _authService.getUserById(uid);
+        _syncNotificationListener();
+        notifyListeners();
+      }
+    }
+    return verified;
   }
 
   void clearError() {
@@ -175,4 +230,3 @@ class AuthController with ChangeNotifier {
     notifyListeners();
   }
 }
-

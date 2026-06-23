@@ -1,136 +1,497 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
-import 'package:cwc/controllers/auth_controller.dart';
-import 'package:cwc/models/collaboration_model.dart';
-import 'package:cwc/services/collaboration_service.dart';
-import 'package:cwc/utils/themes/theme.dart';
 import 'package:uuid/uuid.dart';
 
-/// Collaboration Create Screen
-/// Allows users to create new collaboration requests
-class CollaborationCreateScreen extends StatefulWidget {
-  final CollaborationModel? collaboration;
+import 'package:cwc/controllers/auth_controller.dart';
+import 'package:cwc/models/collaboration_hub_models.dart';
+import 'package:cwc/models/collaboration_model.dart';
+import 'package:cwc/services/collaboration_hub_service.dart';
+import 'package:cwc/services/collaboration_service.dart';
+import 'package:cwc/services/storage_service.dart';
+import 'package:cwc/utils/themes/theme.dart';
+import 'package:cwc/utils/validators/form_validators.dart';
+import 'package:cwc/views/widgets/collaboration_widgets.dart';
 
+/// Professional, role-based "Build a Team" project creator.
+class CollaborationCreateScreen extends StatefulWidget {
+  final CollaborationModel? collaboration; // edit mode
   const CollaborationCreateScreen({super.key, this.collaboration});
 
   @override
   State<CollaborationCreateScreen> createState() => _CollaborationCreateScreenState();
 }
 
-class _CollaborationCreateScreenState extends State<CollaborationCreateScreen>
-    with SingleTickerProviderStateMixin {
-  final _formKey = GlobalKey<FormState>();
-  final _titleController = TextEditingController();
-  final _descriptionController = TextEditingController();
-  final _budgetController = TextEditingController();
-  final _timelineController = TextEditingController();
-  final _skillController = TextEditingController();
+class _RoleDraft {
+  String title;
+  List<String> skills;
+  _RoleDraft(this.title, this.skills);
+}
 
-  final CollaborationService _collaborationService = CollaborationService();
+class _CollaborationCreateScreenState extends State<CollaborationCreateScreen> {
+  final _collab = CollaborationService();
+  final _hub = CollaborationHubService();
   final _uuid = const Uuid();
 
-  String _collaborationType = 'need_help';
-  String? _projectType;
-  List<String> _requiredSkills = [];
+  final _formKey = GlobalKey<FormState>();
+  final _titleController = TextEditingController();
+  final _descController = TextEditingController();
+  final _budgetController = TextEditingController();
+  final _timelineController = TextEditingController();
+
+  int _step = 0;
   bool _isLoading = false;
-  int _currentStep = 0;
 
-  late final AnimationController _animController;
-  late final Animation<double> _fadeAnim;
+  String? _category;
+  String _visibility = 'public';
+  String? _coverImageUrl;
+  bool _uploadingCover = false;
 
-  final List<String> _commonSkills = [
-    'Flutter Development',
-    'React Development',
-    'UI/UX Design',
-    'Backend Development',
-    'Mobile App Development',
-    'Web Development',
-    'Graphic Design',
-    'Content Writing',
-    'Marketing',
-    'Data Analysis',
-    'Project Management',
-    'Video Editing',
-    'Photography',
-    'Business Strategy',
-    'Accounting',
+  final List<_RoleDraft> _roles = [];
+
+  static const _categories = [
+    'Web Development', 'Mobile App', 'Design', 'FYP / University',
+    'Hackathon', 'Startup', 'Marketing', 'Content', 'Other',
   ];
 
-  final List<String> _projectTypes = [
-    'Web Development',
-    'Mobile App',
-    'Design',
-    'Marketing',
-    'Content Creation',
-    'Business',
-    'Other',
+  static const _suggestedSkills = [
+    'Flutter', 'React', 'Node.js', 'Python', 'UI/UX', 'Firebase',
+    'Java', 'Kotlin', 'Django', 'Figma', 'Machine Learning', 'Content Writing',
   ];
+
+  bool get _isEdit => widget.collaboration != null;
 
   @override
   void initState() {
     super.initState();
-    _animController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 400),
-    );
-    _fadeAnim = CurvedAnimation(parent: _animController, curve: Curves.easeOut);
-    _animController.forward();
-
-    if (widget.collaboration != null) {
-      final collab = widget.collaboration!;
-      _titleController.text = collab.title;
-      _descriptionController.text = collab.description;
-      _budgetController.text = collab.budget ?? '';
-      _timelineController.text = collab.timeline ?? '';
-      _collaborationType = collab.collaborationType;
-      _projectType = collab.projectType;
-      _requiredSkills = List.from(collab.requiredSkills);
+    final c = widget.collaboration;
+    if (c != null) {
+      _titleController.text = c.title;
+      _descController.text = c.description;
+      _budgetController.text = c.budget ?? '';
+      _timelineController.text = c.timeline ?? '';
+      _category = c.projectType;
+      _visibility = c.visibility;
+      _coverImageUrl = c.coverImageUrl;
     }
   }
 
   @override
   void dispose() {
-    _animController.dispose();
     _titleController.dispose();
-    _descriptionController.dispose();
+    _descController.dispose();
     _budgetController.dispose();
     _timelineController.dispose();
-    _skillController.dispose();
     super.dispose();
   }
 
-  void _addSkill(String skill) {
-    if (skill.trim().isNotEmpty && !_requiredSkills.contains(skill.trim())) {
-      setState(() {
-        _requiredSkills.add(skill.trim());
-        _skillController.clear();
-      });
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: CAppTheme.backgroundColor,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        title: Text(_isEdit ? 'Edit project' : 'Post a project'),
+      ),
+      body: Column(
+        children: [
+          _stepIndicator(),
+          Expanded(
+            child: Form(
+              key: _formKey,
+              child: IndexedStack(
+                index: _step,
+                children: [
+                  _basicsStep(),
+                  _rolesStep(),
+                  _detailsStep(),
+                ],
+              ),
+            ),
+          ),
+          _bottomBar(),
+        ],
+      ),
+    );
+  }
+
+  Widget _stepIndicator() {
+    final labels = ['Basics', 'Roles', 'Details'];
+    return Container(
+      color: Colors.white,
+      padding: const EdgeInsets.fromLTRB(16, 6, 16, 14),
+      child: Row(
+        children: List.generate(labels.length, (i) {
+          final active = i <= _step;
+          return Expanded(
+            child: Row(
+              children: [
+                Container(
+                  width: 26,
+                  height: 26,
+                  decoration: BoxDecoration(
+                    color: active ? CAppTheme.primaryColor : CAppTheme.borderColor,
+                    shape: BoxShape.circle,
+                  ),
+                  alignment: Alignment.center,
+                  child: Text('${i + 1}',
+                      style: GoogleFonts.poppins(
+                          color: active ? Colors.white : CAppTheme.textTertiary,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700)),
+                ),
+                const SizedBox(width: 6),
+                Text(labels[i],
+                    style: GoogleFonts.poppins(
+                        fontSize: 12.5,
+                        fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                        color: active ? CAppTheme.textPrimary : CAppTheme.textTertiary)),
+                if (i < labels.length - 1)
+                  Expanded(
+                    child: Container(
+                      height: 2,
+                      margin: const EdgeInsets.symmetric(horizontal: 6),
+                      color: i < _step ? CAppTheme.primaryColor : CAppTheme.borderColor,
+                    ),
+                  ),
+              ],
+            ),
+          );
+        }),
+      ),
+    );
+  }
+
+  // ----------------------------------------------------------- step 1
+  Widget _basicsStep() {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        GestureDetector(
+          onTap: _uploadingCover ? null : _pickCover,
+          child: Container(
+            height: 150,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+              border: Border.all(color: CAppTheme.borderColor),
+              image: _coverImageUrl != null && _coverImageUrl!.isNotEmpty
+                  ? DecorationImage(image: NetworkImage(_coverImageUrl!), fit: BoxFit.cover)
+                  : null,
+            ),
+            child: _uploadingCover
+                ? const Center(child: CircularProgressIndicator())
+                : (_coverImageUrl == null || _coverImageUrl!.isEmpty)
+                    ? Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.add_photo_alternate_rounded,
+                              size: 34, color: CAppTheme.textTertiary),
+                          const SizedBox(height: 8),
+                          Text('Add a cover image (optional)',
+                              style: GoogleFonts.poppins(
+                                  fontSize: 13, color: CAppTheme.textSecondary)),
+                        ],
+                      )
+                    : null,
+          ),
+        ),
+        const SizedBox(height: 16),
+        TextFormField(
+          controller: _titleController,
+          decoration: const InputDecoration(
+            labelText: 'Project title',
+            hintText: 'e.g. Flutter FYP App - need a team',
+          ),
+          validator: FormValidators.collabTitle,
+        ),
+        const SizedBox(height: 14),
+        TextFormField(
+          controller: _descController,
+          minLines: 4,
+          maxLines: 8,
+          decoration: const InputDecoration(
+            labelText: 'Description',
+            hintText: 'Describe the project, goals and what you need...',
+            alignLabelWithHint: true,
+          ),
+          validator: FormValidators.collabDescription,
+        ),
+        const SizedBox(height: 16),
+        Text('Category',
+            style: GoogleFonts.poppins(
+                fontSize: 13.5, fontWeight: FontWeight.w600, color: CAppTheme.textSecondary)),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: _categories.map((c) {
+            final selected = _category == c;
+            return GestureDetector(
+              onTap: () => setState(() => _category = c),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                decoration: BoxDecoration(
+                  color: selected ? CAppTheme.primaryColor : Colors.white,
+                  borderRadius: BorderRadius.circular(CAppTheme.radiusRound),
+                  border: Border.all(
+                      color: selected ? CAppTheme.primaryColor : CAppTheme.borderColor),
+                ),
+                child: Text(c,
+                    style: GoogleFonts.poppins(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w500,
+                        color: selected ? Colors.white : CAppTheme.textPrimary)),
+              ),
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+
+  // ----------------------------------------------------------- step 2
+  Widget _rolesStep() {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: CAppTheme.infoColor.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.info_outline_rounded, color: CAppTheme.infoColor, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Add the open roles you are recruiting for. Each role can have its own skills. There is no limit on team size.',
+                  style: GoogleFonts.poppins(fontSize: 12.5, color: CAppTheme.textSecondary, height: 1.4),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        ..._roles.asMap().entries.map((e) => _roleCard(e.key, e.value)),
+        const SizedBox(height: 4),
+        OutlinedButton.icon(
+          onPressed: _addRole,
+          icon: const Icon(Icons.add),
+          label: const Text('Add a role'),
+        ),
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+
+  Widget _roleCard(int index, _RoleDraft role) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: SectionCard(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(role.title,
+                      style: GoogleFonts.poppins(fontSize: 14.5, fontWeight: FontWeight.w600)),
+                ),
+                IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  icon: const Icon(Icons.delete_outline_rounded,
+                      size: 20, color: CAppTheme.textTertiary),
+                  onPressed: () => setState(() => _roles.removeAt(index)),
+                ),
+              ],
+            ),
+            if (role.skills.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: role.skills.map((s) => SkillChip(label: s)).toList(),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ----------------------------------------------------------- step 3
+  Widget _detailsStep() {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        TextFormField(
+          controller: _timelineController,
+          decoration: const InputDecoration(
+            labelText: 'Timeline (optional)',
+            hintText: 'e.g. 2 months',
+          ),
+          validator: (v) => FormValidators.optionalShortText(v, label: 'Timeline'),
+        ),
+        const SizedBox(height: 14),
+        TextFormField(
+          controller: _budgetController,
+          decoration: const InputDecoration(
+            labelText: 'Budget (optional)',
+            hintText: 'e.g. Volunteer / 50k PKR',
+          ),
+          validator: (v) => FormValidators.optionalShortText(v, label: 'Budget'),
+        ),
+        const SizedBox(height: 20),
+        Text('Visibility',
+            style: GoogleFonts.poppins(
+                fontSize: 13.5, fontWeight: FontWeight.w600, color: CAppTheme.textSecondary)),
+        const SizedBox(height: 10),
+        _visibilityTile('public', Icons.public_rounded, 'Public',
+            'Anyone can discover and apply to this project'),
+        _visibilityTile('invite_only', Icons.lock_rounded, 'Invite only',
+            'Only people with the invite link can apply'),
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+
+  Widget _visibilityTile(String value, IconData icon, String title, String subtitle) {
+    final selected = _visibility == value;
+    return GestureDetector(
+      onTap: () => setState(() => _visibility = value),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: selected ? CAppTheme.primaryColor.withValues(alpha: 0.07) : Colors.white,
+          borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+          border: Border.all(
+            color: selected ? CAppTheme.primaryColor : CAppTheme.borderColor,
+            width: selected ? 1.5 : 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: selected ? CAppTheme.primaryColor : CAppTheme.textSecondary),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: GoogleFonts.poppins(fontSize: 14, fontWeight: FontWeight.w600)),
+                  Text(subtitle,
+                      style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary)),
+                ],
+              ),
+            ),
+            if (selected)
+              const Icon(Icons.check_circle_rounded, color: CAppTheme.primaryColor, size: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _bottomBar() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: Colors.white, boxShadow: CAppTheme.softShadow),
+      child: SafeArea(
+        top: false,
+        child: Row(
+          children: [
+            if (_step > 0)
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => setState(() => _step--),
+                  child: const Text('Back'),
+                ),
+              ),
+            if (_step > 0) const SizedBox(width: 12),
+            Expanded(
+              flex: 2,
+              child: ElevatedButton(
+                onPressed: _isLoading ? null : _next,
+                child: _isLoading
+                    ? const SizedBox(
+                        width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : Text(_step < 2 ? 'Continue' : (_isEdit ? 'Save changes' : 'Publish project')),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------ actions
+  void _next() {
+    if (_step == 0) {
+      if (!(_formKey.currentState?.validate() ?? false)) return;
+      if (_category == null) {
+        _toast('Please pick a category', isError: true);
+        return;
+      }
+      setState(() => _step = 1);
+    } else if (_step == 1) {
+      if (_roles.isEmpty && !_isEdit) {
+        _toast('Add at least one role', isError: true);
+        return;
+      }
+      setState(() => _step = 2);
+    } else {
+      _submit();
     }
   }
 
-  void _removeSkill(String skill) {
-    setState(() {
-      _requiredSkills.remove(skill);
-    });
+  Future<void> _addRole() async {
+    final result = await showModalBottomSheet<_RoleDraft>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _AddRoleSheet(suggestedSkills: _suggestedSkills),
+    );
+    if (result != null) setState(() => _roles.add(result));
   }
 
-  Future<void> _submitForm() async {
-    if (!_formKey.currentState!.validate()) return;
-    if (_requiredSkills.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please add at least one required skill')),
-      );
-      return;
-    }
-
-    setState(() => _isLoading = true);
-
+  Future<void> _pickCover() async {
     try {
-      final authController = context.read<AuthController>();
-      final user = authController.currentUser;
-      if (user == null) {
-        throw Exception('User not logged in');
+      final picked = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 80);
+      if (picked == null) return;
+      setState(() => _uploadingCover = true);
+      final bytes = await picked.readAsBytes();
+      final id = widget.collaboration?.id ?? 'draft_${DateTime.now().millisecondsSinceEpoch}';
+      final url = await StorageService().uploadProjectCover(
+        collaborationId: id,
+        bytes: bytes,
+        fileName: picked.name,
+      );
+      setState(() {
+        _coverImageUrl = url;
+        _uploadingCover = false;
+      });
+    } catch (e) {
+      setState(() => _uploadingCover = false);
+      _toast('Cover upload failed: $e', isError: true);
+    }
+  }
+
+  Future<void> _submit() async {
+    final user = context.read<AuthController>().currentUser;
+    if (user == null) return;
+    setState(() => _isLoading = true);
+    try {
+      final allSkills = <String>{};
+      for (final r in _roles) {
+        allSkills.addAll(r.skills);
       }
 
       final collaboration = CollaborationModel(
@@ -140,773 +501,273 @@ class _CollaborationCreateScreenState extends State<CollaborationCreateScreen>
         userEmail: user.email,
         userProfileImage: user.profileImageUrl,
         title: _titleController.text.trim(),
-        description: _descriptionController.text.trim(),
-        requiredSkills: _requiredSkills,
-        collaborationType: _collaborationType,
-        projectType: _projectType,
-        budget: _budgetController.text.trim().isEmpty
-            ? null
-            : _budgetController.text.trim(),
-        timeline: _timelineController.text.trim().isEmpty
-            ? null
-            : _timelineController.text.trim(),
+        description: _descController.text.trim(),
+        requiredSkills: allSkills.toList(),
+        collaborationType: 'need_help',
+        projectMode: 'team_project',
+        projectType: _category,
+        budget: _budgetController.text.trim().isEmpty ? null : _budgetController.text.trim(),
+        timeline: _timelineController.text.trim().isEmpty ? null : _timelineController.text.trim(),
+        status: 'recruiting',
+        visibility: _visibility,
+        coverImageUrl: _coverImageUrl,
         createdAt: widget.collaboration?.createdAt ?? DateTime.now(),
         updatedAt: DateTime.now(),
       );
 
-      if (widget.collaboration != null) {
-        await _collaborationService.updateCollaboration(collaboration);
+      if (_isEdit) {
+        await _collab.updateCollaboration(collaboration);
       } else {
-        await _collaborationService.createCollaboration(collaboration);
+        await _collab.createCollaboration(collaboration);
+        for (var i = 0; i < _roles.length; i++) {
+          await _hub.addRole(CollaborationRole(
+            id: _uuid.v4(),
+            collaborationId: collaboration.id,
+            title: _roles[i].title,
+            requiredSkills: _roles[i].skills,
+            sortOrder: i,
+            createdAt: DateTime.now(),
+          ));
+        }
       }
 
       if (!mounted) return;
       Navigator.pop(context, true);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            widget.collaboration != null
-                ? 'Collaboration updated successfully!'
-                : 'Collaboration created successfully!',
-          ),
-          backgroundColor: CAppTheme.successColor,
-        ),
-      );
+      _toast(_isEdit ? 'Project updated!' : 'Project published! Start reviewing applicants.');
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error: ${e.toString()}'),
-          backgroundColor: CAppTheme.errorColor,
-        ),
-      );
+      _toast('Error: $e', isError: true);
     } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  void _updateStep() {
-    int step = 0;
-    if (_collaborationType.isNotEmpty) step = 1;
-    if (_titleController.text.isNotEmpty && _descriptionController.text.isNotEmpty) step = 2;
-    if (_requiredSkills.isNotEmpty) step = 3;
-    if (_currentStep != step) {
-      setState(() => _currentStep = step);
+  void _toast(String msg, {bool isError = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg),
+      backgroundColor: isError ? CAppTheme.errorColor : CAppTheme.successColor,
+    ));
+  }
+}
+
+// =========================================================================
+// Add role bottom sheet
+// =========================================================================
+class _AddRoleSheet extends StatefulWidget {
+  final List<String> suggestedSkills;
+  const _AddRoleSheet({required this.suggestedSkills});
+
+  @override
+  State<_AddRoleSheet> createState() => _AddRoleSheetState();
+}
+
+class _AddRoleSheetState extends State<_AddRoleSheet> {
+  final _title = TextEditingController();
+  final _skillInput = TextEditingController();
+  final List<String> _skills = [];
+
+  @override
+  void dispose() {
+    _title.dispose();
+    _skillInput.dispose();
+    super.dispose();
+  }
+
+  void _addSkill(String s) {
+    final v = s.trim();
+    if (v.isNotEmpty && !_skills.contains(v)) {
+      setState(() {
+        _skills.add(v);
+        _skillInput.clear();
+      });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: CAppTheme.backgroundColor,
-      appBar: AppBar(
-        elevation: 0,
-        backgroundColor: Colors.white,
-        surfaceTintColor: Colors.transparent,
-        title: Text(
-          widget.collaboration != null ? 'Edit Collaboration' : 'Create Collaboration',
-          style: GoogleFonts.poppins(
-            fontWeight: FontWeight.bold,
-            color: CAppTheme.textPrimary,
-          ),
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    final screenWidth = MediaQuery.of(context).size.width;
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottomInset),
+      child: Container(
+        constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.88),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
         ),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: CAppTheme.textPrimary, size: 20),
-          onPressed: () => Navigator.pop(context),
-        ),
-      ),
-      body: FadeTransition(
-        opacity: _fadeAnim,
-        child: Form(
-          key: _formKey,
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildStepIndicator(),
-                const SizedBox(height: 20),
-                _buildTypeSelection(),
-                const SizedBox(height: 16),
-                _buildDetailsCard(),
-                const SizedBox(height: 16),
-                _buildSkillsCard(),
-                const SizedBox(height: 16),
-                _buildAdditionalDetailsCard(),
-                const SizedBox(height: 24),
-                _buildSubmitButton(),
-                const SizedBox(height: 24),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildStepIndicator() {
-    final steps = [
-      _StepData('Type', Icons.category_rounded),
-      _StepData('Details', Icons.edit_note_rounded),
-      _StepData('Skills', Icons.auto_awesome_rounded),
-    ];
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16),
-      child: Row(
-        children: List.generate(steps.length, (index) {
-          final isActive = index <= _currentStep;
-          final isCompleted = index < _currentStep;
-          return Expanded(
-            child: Row(
-              children: [
-                if (index > 0)
-                  Expanded(
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 300),
-                      height: 3,
-                      decoration: BoxDecoration(
-                        color: isActive
-                            ? CAppTheme.primaryColor
-                            : CAppTheme.borderColor,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                  ),
-                Column(
-                  children: [
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 300),
-                      width: 40,
-                      height: 40,
-                      decoration: BoxDecoration(
-                        gradient: isActive ? CAppTheme.primaryGradient : null,
-                        color: isActive ? null : CAppTheme.borderColor.withValues(alpha: 0.5),
-                        shape: BoxShape.circle,
-                        boxShadow: isActive
-                            ? [
-                                BoxShadow(
-                                  color: CAppTheme.primaryColor.withValues(alpha: 0.3),
-                                  blurRadius: 8,
-                                  offset: const Offset(0, 2),
-                                ),
-                              ]
-                            : null,
-                      ),
-                      child: Icon(
-                        isCompleted ? Icons.check_rounded : steps[index].icon,
-                        size: 20,
-                        color: isActive ? Colors.white : CAppTheme.textTertiary,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      steps[index].label,
-                      style: GoogleFonts.poppins(
-                        fontSize: 11,
-                        fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
-                        color: isActive ? CAppTheme.primaryColor : CAppTheme.textTertiary,
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          );
-        }),
-      ),
-    );
-  }
-
-  Widget _buildTypeSelection() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-        boxShadow: CAppTheme.softShadow,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: CAppTheme.primaryColor.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
-                ),
-                child: const Icon(
-                  Icons.category_rounded,
-                  size: 18,
-                  color: CAppTheme.primaryColor,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Text(
-                'I want to:',
-                style: GoogleFonts.poppins(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: CAppTheme.textPrimary,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildTypeOption(
-                  'Need Help',
-                  'need_help',
-                  Icons.help_outline_rounded,
-                  const Color(0xFFEF8B2C),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildTypeOption(
-                  'Offer Help',
-                  'offering_help',
-                  Icons.handshake_outlined,
-                  CAppTheme.successColor,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDetailsCard() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-        boxShadow: CAppTheme.softShadow,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: CAppTheme.secondaryColor.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
-                ),
-                child: const Icon(
-                  Icons.edit_note_rounded,
-                  size: 18,
-                  color: CAppTheme.secondaryColor,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Text(
-                'Details',
-                style: GoogleFonts.poppins(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: CAppTheme.textPrimary,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          TextFormField(
-            controller: _titleController,
-            decoration: const InputDecoration(
-              labelText: 'Title *',
-              hintText: 'e.g., Need Flutter Developer for Mobile App',
-            ),
-            onChanged: (_) => _updateStep(),
-            validator: (value) {
-              if (value == null || value.trim().isEmpty) {
-                return 'Please enter a title';
-              }
-              return null;
-            },
-          ),
-          const SizedBox(height: 16),
-          TextFormField(
-            controller: _descriptionController,
-            decoration: const InputDecoration(
-              labelText: 'Description *',
-              hintText: 'Describe your project or what you need...',
-            ),
-            maxLines: 5,
-            onChanged: (_) => _updateStep(),
-            validator: (value) {
-              if (value == null || value.trim().isEmpty) {
-                return 'Please enter a description';
-              }
-              return null;
-            },
-          ),
-          const SizedBox(height: 16),
-          DropdownButtonFormField<String>(
-            value: _projectType,
-            decoration: const InputDecoration(
-              labelText: 'Project Type',
-              hintText: 'Select project type',
-            ),
-            items: _projectTypes.map((type) {
-              return DropdownMenuItem(
-                value: type,
-                child: Text(type),
-              );
-            }).toList(),
-            onChanged: (value) {
-              setState(() => _projectType = value);
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSkillsCard() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-        boxShadow: CAppTheme.softShadow,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: CAppTheme.infoColor.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
-                ),
-                child: const Icon(
-                  Icons.auto_awesome_rounded,
-                  size: 18,
-                  color: CAppTheme.infoColor,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Text(
-                'Required Skills *',
-                style: GoogleFonts.poppins(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: CAppTheme.textPrimary,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _skillController,
-                  decoration: InputDecoration(
-                    hintText: 'Add a custom skill',
-                    isDense: true,
-                    hintStyle: GoogleFonts.poppins(color: CAppTheme.textTertiary, fontSize: 14),
-                  ),
-                  style: GoogleFonts.poppins(fontSize: 14),
-                  onSubmitted: (value) {
-                    _addSkill(value);
-                    _updateStep();
-                  },
-                ),
-              ),
-              const SizedBox(width: 8),
-              Container(
-                decoration: BoxDecoration(
-                  gradient: CAppTheme.primaryGradient,
-                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                ),
-                child: IconButton(
-                  icon: const Icon(Icons.add_rounded, color: Colors.white),
-                  onPressed: () {
-                    _addSkill(_skillController.text);
-                    _updateStep();
-                  },
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'Popular Skills',
-            style: GoogleFonts.poppins(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: CAppTheme.textSecondary,
-            ),
-          ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: _commonSkills.map((skill) {
-              final isSelected = _requiredSkills.contains(skill);
-              return GestureDetector(
-                onTap: () {
-                  if (isSelected) {
-                    _removeSkill(skill);
-                  } else {
-                    _addSkill(skill);
-                  }
-                  _updateStep();
-                },
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
                   decoration: BoxDecoration(
-                    gradient: isSelected ? CAppTheme.primaryGradient : null,
-                    color: isSelected ? null : CAppTheme.backgroundColor,
-                    borderRadius: BorderRadius.circular(CAppTheme.radiusXL),
-                    border: isSelected
-                        ? null
-                        : Border.all(color: CAppTheme.borderColor, width: 1),
-                    boxShadow: isSelected
-                        ? [
-                            BoxShadow(
-                              color: CAppTheme.primaryColor.withValues(alpha: 0.25),
-                              blurRadius: 6,
-                              offset: const Offset(0, 2),
-                            ),
-                          ]
-                        : null,
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (isSelected) ...[
-                        const Icon(Icons.check_rounded, size: 14, color: Colors.white),
-                        const SizedBox(width: 4),
-                      ],
-                      Text(
-                        skill,
-                        style: GoogleFonts.poppins(
-                          fontSize: 12,
-                          color: isSelected ? Colors.white : CAppTheme.textPrimary,
-                          fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            }).toList(),
-          ),
-          if (_requiredSkills.isNotEmpty) ...[
-            const SizedBox(height: 20),
-            Divider(color: CAppTheme.borderColor.withValues(alpha: 0.5), height: 1),
-            const SizedBox(height: 14),
-            Row(
-              children: [
-                Text(
-                  'Selected Skills',
-                  style: GoogleFonts.poppins(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: CAppTheme.textPrimary,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                  decoration: BoxDecoration(
-                    gradient: CAppTheme.primaryGradient,
-                    borderRadius: BorderRadius.circular(CAppTheme.radiusXL),
-                  ),
-                  child: Text(
-                    '${_requiredSkills.length}',
-                    style: GoogleFonts.poppins(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: _requiredSkills.map((skill) {
-                return Container(
-                  padding: const EdgeInsets.only(left: 12, right: 4, top: 4, bottom: 4),
-                  decoration: BoxDecoration(
-                    color: CAppTheme.primaryColor.withValues(alpha: 0.08),
-                    borderRadius: BorderRadius.circular(CAppTheme.radiusXL),
-                    border: Border.all(
-                      color: CAppTheme.primaryColor.withValues(alpha: 0.2),
-                      width: 1,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        skill,
-                        style: GoogleFonts.poppins(
-                          fontSize: 12,
-                          color: CAppTheme.primaryColor,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(width: 2),
-                      InkWell(
-                        onTap: () {
-                          _removeSkill(skill);
-                          _updateStep();
-                        },
-                        borderRadius: BorderRadius.circular(CAppTheme.radiusXL),
-                        child: Container(
-                          padding: const EdgeInsets.all(4),
-                          decoration: BoxDecoration(
-                            color: CAppTheme.primaryColor.withValues(alpha: 0.1),
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(
-                            Icons.close_rounded,
-                            size: 14,
-                            color: CAppTheme.primaryColor,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              }).toList(),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildAdditionalDetailsCard() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-        boxShadow: CAppTheme.softShadow,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: CAppTheme.warningColor.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
-                ),
-                child: Icon(
-                  Icons.tune_rounded,
-                  size: 18,
-                  color: CAppTheme.warningColor.withValues(alpha: 0.9),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Text(
-                'Additional Details',
-                style: GoogleFonts.poppins(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: CAppTheme.textPrimary,
-                ),
-              ),
-              const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: CAppTheme.textTertiary.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
-                ),
-                child: Text(
-                  'Optional',
-                  style: GoogleFonts.poppins(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                    color: CAppTheme.textTertiary,
+                    color: CAppTheme.borderColor,
+                    borderRadius: BorderRadius.circular(2),
                   ),
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          TextFormField(
-            controller: _budgetController,
-            decoration: const InputDecoration(
-              labelText: 'Budget',
-              hintText: 'e.g., \$500-\$1000',
-              prefixIcon: Icon(Icons.attach_money_rounded),
-            ),
-          ),
-          const SizedBox(height: 16),
-          TextFormField(
-            controller: _timelineController,
-            decoration: const InputDecoration(
-              labelText: 'Timeline',
-              hintText: 'e.g., 2-3 weeks',
-              prefixIcon: Icon(Icons.schedule_rounded),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSubmitButton() {
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        gradient: CAppTheme.primaryGradient,
-        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-        boxShadow: [
-          BoxShadow(
-            color: CAppTheme.primaryColor.withValues(alpha: 0.35),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: ElevatedButton(
-        onPressed: _isLoading ? null : _submitForm,
-        style: ElevatedButton.styleFrom(
-          backgroundColor: Colors.transparent,
-          shadowColor: Colors.transparent,
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-          ),
-        ),
-        child: _isLoading
-            ? const SizedBox(
-                height: 20,
-                width: 20,
-                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-              )
-            : Row(
-                mainAxisAlignment: MainAxisAlignment.center,
+              const SizedBox(height: 16),
+              Text('Add a role',
+                  style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 4),
+              Text('Define the position and skills you need on your team.',
+                  style: GoogleFonts.poppins(fontSize: 12.5, color: CAppTheme.textSecondary)),
+              const SizedBox(height: 18),
+              TextField(
+                controller: _title,
+                textCapitalization: TextCapitalization.sentences,
+                decoration: const InputDecoration(
+                  labelText: 'Role title',
+                  hintText: 'e.g. Flutter Developer',
+                  prefixIcon: Icon(Icons.work_outline_rounded),
+                ),
+              ),
+              const SizedBox(height: 20),
+              Row(
                 children: [
-                  Icon(
-                    widget.collaboration != null ? Icons.save_rounded : Icons.rocket_launch_rounded,
-                    size: 20,
-                    color: Colors.white,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    widget.collaboration != null ? 'Update Collaboration' : 'Create Collaboration',
-                    style: GoogleFonts.poppins(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white,
+                  Text('Required skills',
+                      style: GoogleFonts.poppins(
+                          fontSize: 13.5, fontWeight: FontWeight.w600, color: CAppTheme.textPrimary)),
+                  const Spacer(),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: _skills.isEmpty
+                          ? CAppTheme.warningColor.withValues(alpha: 0.12)
+                          : CAppTheme.successColor.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(CAppTheme.radiusRound),
+                    ),
+                    child: Text(
+                      _skills.isEmpty ? 'Add at least 1' : '${_skills.length} selected',
+                      style: GoogleFonts.poppins(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                        color: _skills.isEmpty ? CAppTheme.warningColor : CAppTheme.successColor,
+                      ),
                     ),
                   ),
                 ],
               ),
-      ),
-    );
-  }
-
-  Widget _buildTypeOption(String label, String value, IconData icon, Color accentColor) {
-    final isSelected = _collaborationType == value;
-    return GestureDetector(
-      onTap: () {
-        setState(() => _collaborationType = value);
-        _updateStep();
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 250),
-        curve: Curves.easeOut,
-        padding: const EdgeInsets.all(18),
-        decoration: BoxDecoration(
-          gradient: isSelected
-              ? LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    accentColor,
-                    accentColor.withValues(alpha: 0.8),
-                  ],
-                )
-              : null,
-          color: isSelected ? null : CAppTheme.backgroundColor,
-          borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-          border: isSelected
-              ? null
-              : Border.all(color: CAppTheme.borderColor, width: 1.5),
-          boxShadow: isSelected
-              ? [
-                  BoxShadow(
-                    color: accentColor.withValues(alpha: 0.35),
-                    blurRadius: 12,
-                    offset: const Offset(0, 4),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _skillInput,
+                textCapitalization: TextCapitalization.words,
+                decoration: InputDecoration(
+                  hintText: 'Type a skill and tap Add',
+                  prefixIcon: const Icon(Icons.search_rounded, size: 20),
+                  suffixIcon: IconButton(
+                    tooltip: 'Add skill',
+                    icon: const Icon(Icons.add_circle_rounded, color: CAppTheme.primaryColor),
+                    onPressed: () => _addSkill(_skillInput.text),
                   ),
-                ]
-              : null,
-        ),
-        child: Column(
-          children: [
-            Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: isSelected
-                    ? Colors.white.withValues(alpha: 0.2)
-                    : accentColor.withValues(alpha: 0.1),
-                shape: BoxShape.circle,
+                ),
+                onSubmitted: _addSkill,
               ),
-              child: Icon(
-                icon,
-                color: isSelected ? Colors.white : accentColor,
-                size: 26,
+              if (_skills.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text('Selected skills',
+                    style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: _skills
+                      .map((s) => InputChip(
+                            label: Text(s, style: GoogleFonts.poppins(fontSize: 12.5)),
+                            deleteIcon: const Icon(Icons.close_rounded, size: 16),
+                            onDeleted: () => setState(() => _skills.remove(s)),
+                            backgroundColor: CAppTheme.primaryColor.withValues(alpha: 0.1),
+                            side: BorderSide(color: CAppTheme.primaryColor.withValues(alpha: 0.25)),
+                            labelStyle: GoogleFonts.poppins(
+                              color: CAppTheme.primaryColor,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ))
+                      .toList(),
+                ),
+              ],
+              const SizedBox(height: 14),
+              Text('Suggested skills',
+                  style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary)),
+              const SizedBox(height: 8),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final chipWidth = screenWidth < 360 ? constraints.maxWidth : (constraints.maxWidth - 8) / 2;
+                  final available = widget.suggestedSkills.where((s) => !_skills.contains(s)).toList();
+                  return Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: available.map((s) {
+                      return SizedBox(
+                        width: screenWidth < 360 ? null : chipWidth,
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: () => _addSkill(s),
+                            borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              decoration: BoxDecoration(
+                                color: CAppTheme.backgroundColor,
+                                borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
+                                border: Border.all(color: CAppTheme.borderColor),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.add_rounded, size: 16, color: CAppTheme.primaryColor),
+                                  const SizedBox(width: 6),
+                                  Flexible(
+                                    child: Text(
+                                      s,
+                                      style: GoogleFonts.poppins(
+                                        fontSize: 12.5,
+                                        fontWeight: FontWeight.w500,
+                                        color: CAppTheme.textPrimary,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  );
+                },
               ),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              label,
-              style: GoogleFonts.poppins(
-                fontWeight: FontWeight.w600,
-                fontSize: 14,
-                color: isSelected ? Colors.white : CAppTheme.textPrimary,
-              ),
-            ),
-            if (isSelected) ...[
-              const SizedBox(height: 4),
-              Container(
-                width: 20,
-                height: 3,
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.6),
-                  borderRadius: BorderRadius.circular(2),
+              const SizedBox(height: 22),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () {
+                    if (_title.text.trim().isEmpty) return;
+                    if (_skills.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: const Text('Please add at least one required skill'),
+                          backgroundColor: CAppTheme.warningColor,
+                        ),
+                      );
+                      return;
+                    }
+                    Navigator.pop(context, _RoleDraft(_title.text.trim(), List.from(_skills)));
+                  },
+                  child: const Text('Add role'),
                 ),
               ),
             ],
-          ],
+          ),
         ),
       ),
     );
   }
-}
-
-class _StepData {
-  final String label;
-  final IconData icon;
-  const _StepData(this.label, this.icon);
 }

@@ -195,26 +195,137 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
             future: _getUserRole(otherId),
             builder: (context, snapshot) {
               final role = snapshot.data ?? 'user';
-              return _ChatRoomCard(
-                chatRoom: chatRoom,
-                otherUserName: otherUserName ?? 'User',
-                otherUserProfileImage: otherUserProfileImage,
-                unreadCount: unreadCount,
-                role: role,
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => ChatScreen(chatRoomId: chatRoom.id),
-                    ),
-                  ).then((_) => _loadChatRooms());
-                },
+              return Dismissible(
+                key: ValueKey(chatRoom.id),
+                direction: DismissDirection.endToStart,
+                background: Container(
+                  alignment: Alignment.centerRight,
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  decoration: BoxDecoration(
+                    color: CAppTheme.errorColor,
+                    borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+                  ),
+                  child: const Icon(Icons.delete_outline_rounded, color: Colors.white, size: 28),
+                ),
+                confirmDismiss: (_) => _confirmDeleteChat(otherUserName ?? 'User'),
+                onDismissed: (_) => _deleteChatRoom(chatRoom.id),
+                child: _ChatRoomCard(
+                  chatRoom: chatRoom,
+                  otherUserName: otherUserName ?? 'User',
+                  otherUserProfileImage: otherUserProfileImage,
+                  unreadCount: unreadCount,
+                  role: role,
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ChatScreen(chatRoomId: chatRoom.id),
+                      ),
+                    ).then((_) => _loadChatRooms());
+                  },
+                  onLongPress: () => _showChatOptions(chatRoom.id, otherUserName ?? 'User'),
+                ),
               );
             },
           );
         },
       ),
     );
+  }
+
+  Future<bool> _confirmDeleteChat(String userName) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(CAppTheme.radiusLarge)),
+        title: Text('Delete Chat', style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
+        content: Text(
+          'Are you sure you want to delete your chat with $userName? This will permanently remove all messages.',
+          style: GoogleFonts.poppins(fontSize: 14, color: CAppTheme.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text('Cancel', style: GoogleFonts.poppins(color: CAppTheme.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: CAppTheme.errorColor),
+            child: Text('Delete', style: GoogleFonts.poppins(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    return result == true;
+  }
+
+  void _showChatOptions(String chatRoomId, String userName) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 8),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: CAppTheme.borderColor,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline_rounded, color: CAppTheme.errorColor),
+              title: Text(
+                'Delete Chat',
+                style: GoogleFonts.poppins(
+                  color: CAppTheme.errorColor,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              onTap: () async {
+                Navigator.of(ctx).pop();
+                final confirm = await _confirmDeleteChat(userName);
+                if (confirm) await _deleteChatRoom(chatRoomId);
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _deleteChatRoom(String chatRoomId) async {
+    setState(() {
+      _chatRooms = _chatRooms.where((c) => c.id != chatRoomId).toList();
+    });
+    try {
+      await _chatService.deleteChatRoom(chatRoomId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Chat deleted', style: GoogleFonts.poppins()),
+          backgroundColor: CAppTheme.successColor,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to delete chat', style: GoogleFonts.poppins()),
+          backgroundColor: CAppTheme.errorColor,
+        ),
+      );
+      _loadChatRooms();
+    }
   }
 
   Widget _buildEmptyState() {
@@ -312,6 +423,7 @@ class _ChatRoomCard extends StatelessWidget {
   final int unreadCount;
   final String role;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
 
   const _ChatRoomCard({
     required this.chatRoom,
@@ -320,6 +432,7 @@ class _ChatRoomCard extends StatelessWidget {
     required this.unreadCount,
     required this.role,
     required this.onTap,
+    this.onLongPress,
   });
 
   @override
@@ -333,6 +446,7 @@ class _ChatRoomCard extends StatelessWidget {
       ),
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
         child: Padding(
           padding: const EdgeInsets.all(16),

@@ -18,6 +18,8 @@ import 'package:cwc/services/review_service.dart';
 import 'package:cwc/models/review_model.dart';
 import 'package:cwc/views/screens/chat/chat_screen.dart';
 import 'package:cwc/views/screens/payment/payment_screen.dart';
+import 'package:cwc/views/widgets/location_picker_map.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class WorkspaceDetailScreen extends StatefulWidget {
   final String workspaceId;
@@ -36,8 +38,17 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
   List<WorkspaceTimeSlotTemplate> _selectedSlots = [];
   List<String> _selectedSlotIds = [];
   int _selectedSeats = 1;
-  bool _isPerDayBooking = false;
+  // Booking mode: 'hourly' | 'daily' | 'monthly'
+  String _bookingMode = 'hourly';
+  int _monthCount = 1;
   DateTime _selectedDate = DateTime.now();
+
+  bool get _isPerDayBooking => _bookingMode == 'daily';
+  bool get _isMonthlyBooking => _bookingMode == 'monthly';
+
+  /// Monthly rate derived from the daily price (30 days per month).
+  double get _monthlyRate =>
+      (_selectedCategory?.pricePerDay ?? 0) * 30;
   Map<String, Map<String, int>> _slotSeatUsage = {};
   final PageController _pageController = PageController();
   final ReviewService _reviewService = ReviewService();
@@ -73,6 +84,19 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
       final reviews = await _reviewService.getWorkspaceReviews(widget.workspaceId);
       if (mounted) setState(() => _reviews = reviews);
     } catch (_) {}
+  }
+
+  Future<void> _openInExternalMaps() async {
+    if (_workspace == null) return;
+    final lat = _workspace!.latitude;
+    final lng = _workspace!.longitude;
+    final label = Uri.encodeComponent(_workspace!.name);
+    final uri = Uri.parse(
+      'https://www.google.com/maps/search/?api=1&query=$lat,$lng&query_place_id=$label',
+    );
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
   }
 
   WorkspaceCategoryOption? _getInitialCategory(WorkspaceModel? workspace) {
@@ -149,7 +173,9 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
     final controller = context.read<WorkspaceController>();
     bool ok;
 
-    if (_isPerDayBooking) {
+    if (_isMonthlyBooking) {
+      ok = await _bookMonthly(user, controller);
+    } else if (_isPerDayBooking) {
       ok = await _bookFullDay(user, controller);
     } else {
       if (_selectedSlots.isEmpty) { _msg('Select at least one time slot', true); return; }
@@ -163,11 +189,27 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
       Navigator.of(context).push(MaterialPageRoute(builder: (_) => PaymentScreen(booking: _lastBooking!))).then((paymentSuccess) {
         if (paymentSuccess == true) _msg('Booking confirmed! Payment successful.', false);
       });
-      setState(() { _selectedSlots.clear(); _selectedSlotIds.clear(); _isPerDayBooking = false; });
+      setState(() { _selectedSlots.clear(); _selectedSlotIds.clear(); _bookingMode = 'hourly'; _monthCount = 1; });
       await _loadAvailability();
     } else {
       _msg(controller.errorMessage ?? 'Failed to create booking.', true);
     }
+  }
+
+  Future<bool> _bookMonthly(user, WorkspaceController controller) async {
+    final start = DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
+    final days = 30 * _monthCount;
+    final end = start.add(Duration(days: days));
+    final price = _monthlyRate * _monthCount;
+    final booking = BookingModel(
+      id: const Uuid().v4(), userId: user.id, workspaceId: _workspace!.id,
+      workspaceName: _workspace!.name, startDate: start, endDate: end,
+      numberOfDays: days, durationHours: 24 * days, totalPrice: price,
+      status: AppConstants.bookingStatusPending, createdAt: DateTime.now(), isHourlyBooking: false,
+      bookingDateKey: DateFormat('yyyy-MM-dd').format(_selectedDate), categoryType: _selectedCategory!.type,
+      seatCount: 1, pricePerDay: _selectedCategory!.pricePerDay, pricePerHour: _selectedCategory!.pricePerHour);
+    setState(() => _lastBooking = booking);
+    return await controller.bookWorkspaceTimeslot(booking: booking, workspace: _workspace!);
   }
 
   Future<bool> _bookFullDay(user, WorkspaceController controller) async {
@@ -335,6 +377,26 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
                 ),
               ],
             ),
+            if (_workspace!.latitude != 0 || _workspace!.longitude != 0) ...[
+              const SizedBox(height: 12),
+              WorkspaceMapView(
+                latitude: _workspace!.latitude,
+                longitude: _workspace!.longitude,
+                label: _workspace!.name,
+              ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: _openInExternalMaps,
+                  icon: const Icon(Icons.directions_rounded, size: 18),
+                  label: Text(
+                    'Open in Maps',
+                    style: GoogleFonts.poppins(fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(height: 20),
 
             // Description
@@ -378,11 +440,15 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
             _buildDateSelector(),
             const SizedBox(height: 20),
 
-            // Time slots
-            if (!_isPerDayBooking) _buildTimeSlotsSection(),
-            if (_selectedCategory != null) _buildFullDaySwitch(),
+            // Booking mode (Hourly / Daily / Monthly)
+            if (_selectedCategory != null) _buildBookingModeSelector(),
+            const SizedBox(height: 16),
+
+            // Time slots (hourly only)
+            if (_bookingMode == 'hourly') _buildTimeSlotsSection(),
+            if (_isMonthlyBooking && _selectedCategory != null) _buildMonthCountSelector(),
             const SizedBox(height: 12),
-            if (_selectedSlots.isNotEmpty && !_isPerDayBooking && _selectedCategory != null) _buildSeatSelector(),
+            if (_selectedSlots.isNotEmpty && _bookingMode == 'hourly' && _selectedCategory != null) _buildSeatSelector(),
             const SizedBox(height: 40),
           ],
         ),
@@ -573,19 +639,110 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
     });
   }
 
-  Widget _buildFullDaySwitch() {
+  Widget _buildBookingModeSelector() {
+    final modes = [
+      ('hourly', 'Hourly', Icons.schedule_rounded,
+          'Rs. ${_selectedCategory!.pricePerHour.toStringAsFixed(0)}/hr'),
+      ('daily', 'Daily', Icons.today_rounded,
+          'Rs. ${_selectedCategory!.pricePerDay.toStringAsFixed(0)}/day'),
+      ('monthly', 'Monthly', Icons.calendar_month_rounded,
+          'Rs. ${_monthlyRate.toStringAsFixed(0)}/mo'),
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Booking Plan',
+            style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w700, color: CAppTheme.textPrimary)),
+        const SizedBox(height: 10),
+        Row(
+          children: modes.map((m) {
+            final on = _bookingMode == m.$1;
+            return Expanded(
+              child: Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: GestureDetector(
+                  onTap: () => setState(() {
+                    _bookingMode = m.$1;
+                    if (m.$1 != 'hourly') {
+                      _selectedSlots.clear();
+                      _selectedSlotIds.clear();
+                      _selectedSeats = 1;
+                    }
+                    if (m.$1 != 'monthly') _monthCount = 1;
+                  }),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+                    decoration: BoxDecoration(
+                      color: on ? CAppTheme.primaryColor : Colors.white,
+                      borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                      border: Border.all(color: on ? CAppTheme.primaryColor : CAppTheme.borderColor),
+                      boxShadow: on ? CAppTheme.cardShadow : null,
+                    ),
+                    child: Column(
+                      children: [
+                        Icon(m.$3, size: 20, color: on ? Colors.white : CAppTheme.primaryColor),
+                        const SizedBox(height: 6),
+                        Text(m.$2,
+                            style: GoogleFonts.poppins(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: on ? Colors.white : CAppTheme.textPrimary)),
+                        const SizedBox(height: 2),
+                        FittedBox(
+                          child: Text(m.$4,
+                              style: GoogleFonts.poppins(
+                                  fontSize: 10,
+                                  color: on ? Colors.white70 : CAppTheme.textTertiary)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMonthCountSelector() {
     return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
         border: Border.all(color: CAppTheme.borderColor),
       ),
-      child: SwitchListTile(
-        title: Text('Book Full Day', style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 14)),
-        subtitle: Text('Rs. ${_selectedCategory!.pricePerDay.toStringAsFixed(0)}', style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.primaryColor)),
-        value: _isPerDayBooking,
-        activeTrackColor: CAppTheme.primaryColor,
-        onChanged: (v) { setState(() { _isPerDayBooking = v; if (v) { _selectedSlots.clear(); _selectedSlotIds.clear(); } }); },
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Number of months',
+                  style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 14)),
+              Text('Starts ${DateFormat.yMMMd().format(_selectedDate)}',
+                  style: GoogleFonts.poppins(fontSize: 11, color: CAppTheme.textSecondary)),
+            ],
+          ),
+          Row(
+            children: [
+              IconButton(
+                onPressed: _monthCount > 1 ? () => setState(() => _monthCount--) : null,
+                icon: const Icon(Icons.remove_circle_outline_rounded),
+                color: CAppTheme.primaryColor,
+              ),
+              Text('$_monthCount',
+                  style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.w700)),
+              IconButton(
+                onPressed: _monthCount < 12 ? () => setState(() => _monthCount++) : null,
+                icon: const Icon(Icons.add_circle_outline_rounded),
+                color: CAppTheme.primaryColor,
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -614,7 +771,7 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
   }
 
   Widget _buildDualBottomBar(bool isBooking) {
-    final canBook = (_selectedSlots.isNotEmpty || _isPerDayBooking) && _selectedCategory != null;
+    final canBook = (_selectedSlots.isNotEmpty || _isPerDayBooking || _isMonthlyBooking) && _selectedCategory != null;
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
       decoration: BoxDecoration(
@@ -633,9 +790,11 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
                 children: [
                   Text(DateFormat.yMMMd().format(_selectedDate), style: GoogleFonts.poppins(fontSize: 13, color: CAppTheme.textSecondary)),
                   Text(
-                    _isPerDayBooking
-                        ? 'Rs. ${_selectedCategory!.pricePerDay.toStringAsFixed(0)}'
-                        : 'Rs. ${_selectedSlots.fold<double>(0.0, (s, slot) => s + (_selectedCategory!.pricePerHour * (slot.endHour - slot.startHour) * _selectedSeats)).toStringAsFixed(0)}',
+                    _isMonthlyBooking
+                        ? 'Rs. ${(_monthlyRate * _monthCount).toStringAsFixed(0)}'
+                        : _isPerDayBooking
+                            ? 'Rs. ${_selectedCategory!.pricePerDay.toStringAsFixed(0)}'
+                            : 'Rs. ${_selectedSlots.fold<double>(0.0, (s, slot) => s + (_selectedCategory!.pricePerHour * (slot.endHour - slot.startHour) * _selectedSeats)).toStringAsFixed(0)}',
                     style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.bold, color: CAppTheme.primaryColor),
                   ),
                 ],
@@ -666,7 +825,13 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
                     child: isBooking
                         ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white))
                         : Text(
-                            !canBook ? 'Select slots' : _isPerDayBooking ? 'Book Full Day' : 'Book ${_selectedSlots.length} Slot(s)',
+                            _isMonthlyBooking
+                                ? 'Book $_monthCount Month${_monthCount > 1 ? 's' : ''}'
+                                : !canBook
+                                    ? 'Select slots'
+                                    : _isPerDayBooking
+                                        ? 'Book Full Day'
+                                        : 'Book ${_selectedSlots.length} Slot(s)',
                             style: GoogleFonts.poppins(fontSize: 15, fontWeight: FontWeight.w600),
                           ),
                   ),

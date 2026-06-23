@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import 'package:cwc/controllers/auth_controller.dart';
 import 'package:cwc/services/payment_service.dart';
 import 'package:cwc/models/payment_model.dart';
+import 'package:cwc/utils/constants/app_constants.dart';
 import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/utils/helpers/snackbar_helper.dart';
 
@@ -19,6 +20,7 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
   final PaymentService _paymentService = PaymentService();
   List<PaymentModel> _payments = [];
   bool _isLoading = true;
+  bool _isOwner = false;
 
   @override
   void initState() {
@@ -27,16 +29,27 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
   }
 
   Future<void> _loadPayments() async {
-    final userId = context.read<AuthController>().currentUser?.id;
-    if (userId == null) { setState(() => _isLoading = false); return; }
+    final user = context.read<AuthController>().currentUser;
+    if (user == null) { setState(() => _isLoading = false); return; }
+    final isOwner = user.role == AppConstants.roleOwner;
     try {
-      final payments = await _paymentService.getUserPayments(userId);
-      setState(() { _payments = payments; _isLoading = false; });
+      final payments = isOwner
+          ? await _paymentService.getOwnerReceivedPayments(user.id)
+          : await _paymentService.getUserPayments(user.id);
+      setState(() {
+        _payments = payments;
+        _isOwner = isOwner;
+        _isLoading = false;
+      });
     } catch (e) {
       setState(() => _isLoading = false);
       if (mounted) showErrorSnackBar(context, 'Failed to load payments');
     }
   }
+
+  double get _totalEarnings => _payments
+      .where((p) => p.status == 'completed')
+      .fold(0.0, (sum, p) => sum + p.amount);
 
   Color _statusColor(String status) {
     switch (status) {
@@ -59,7 +72,10 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: CAppTheme.backgroundColor,
-      appBar: AppBar(title: Text('Payment History', style: GoogleFonts.poppins(fontWeight: FontWeight.w700))),
+      appBar: AppBar(
+        title: Text(_isOwner ? 'Payments Received' : 'Payment History',
+            style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
+      ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _payments.isEmpty
@@ -68,14 +84,49 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                   children: [
                     Icon(Icons.payment_outlined, size: 56, color: CAppTheme.textTertiary),
                     const SizedBox(height: 12),
-                    Text('No payments yet', style: GoogleFonts.poppins(fontSize: 16, color: CAppTheme.textSecondary)),
+                    Text(_isOwner ? 'No payments received yet' : 'No payments yet',
+                        style: GoogleFonts.poppins(fontSize: 16, color: CAppTheme.textSecondary)),
                   ],
                 ))
               : RefreshIndicator(
                   onRefresh: _loadPayments,
                   color: CAppTheme.primaryColor,
-                  child: _buildGroupedList(),
+                  child: Column(
+                    children: [
+                      if (_isOwner) _buildEarningsCard(),
+                      Expanded(child: _buildGroupedList()),
+                    ],
+                  ),
                 ),
+    );
+  }
+
+  Widget _buildEarningsCard() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [CAppTheme.primaryColor, CAppTheme.primaryDark],
+        ),
+        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+        boxShadow: CAppTheme.softShadow,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Total earnings',
+              style: GoogleFonts.poppins(fontSize: 13, color: Colors.white70)),
+          const SizedBox(height: 6),
+          Text('PKR ${_totalEarnings.toStringAsFixed(0)}',
+              style: GoogleFonts.poppins(
+                  fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white)),
+          const SizedBox(height: 4),
+          Text('${_payments.where((p) => p.status == 'completed').length} completed of ${_payments.length} payments',
+              style: GoogleFonts.poppins(fontSize: 12, color: Colors.white70)),
+        ],
+      ),
     );
   }
 

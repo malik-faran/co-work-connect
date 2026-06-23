@@ -17,6 +17,11 @@ class PaymentModel {
   final DateTime? expiresAt; // Payment expiry time (30 minutes from creation)
   final String? failureReason;
   final Map<String, dynamic>? metadata;
+  final String? receiptUrl;
+  final String? receiptStatus;
+  final String? ownerAccountId;
+  final String? transferReference;
+  final DateTime? ownerVerifiedAt;
 
   PaymentModel({
     required this.id,
@@ -33,7 +38,19 @@ class PaymentModel {
     this.expiresAt,
     this.failureReason,
     this.metadata,
+    this.receiptUrl,
+    this.receiptStatus,
+    this.ownerAccountId,
+    this.transferReference,
+    this.ownerVerifiedAt,
   });
+
+  bool get isManual => paymentMethod == 'manual';
+
+  bool get isAwaitingReceiptReview =>
+      receiptStatus == 'awaiting_verification' && status == 'pending';
+
+  bool get isReceiptRejected => receiptStatus == 'rejected';
 
   /// Check if payment has expired (30 minutes passed)
   bool get isExpired {
@@ -80,6 +97,13 @@ class PaymentModel {
     if (metadata != null) {
       map['metadata'] = metadata;
     }
+    if (receiptUrl != null) map['receipt_url'] = receiptUrl;
+    if (receiptStatus != null) map['receipt_status'] = receiptStatus;
+    if (ownerAccountId != null) map['owner_account_id'] = ownerAccountId;
+    if (transferReference != null) map['transfer_reference'] = transferReference;
+    if (ownerVerifiedAt != null) {
+      map['owner_verified_at'] = ownerVerifiedAt!.toIso8601String();
+    }
 
     return map;
   }
@@ -109,6 +133,13 @@ class PaymentModel {
       metadata: map['metadata'] != null
           ? Map<String, dynamic>.from(map['metadata'])
           : null,
+      receiptUrl: getStringFromMap(map, 'receipt_url', 'receiptUrl'),
+      receiptStatus: getStringFromMap(map, 'receipt_status', 'receiptStatus'),
+      ownerAccountId: getStringFromMap(map, 'owner_account_id', 'ownerAccountId'),
+      transferReference: getStringFromMap(map, 'transfer_reference', 'transferReference'),
+      ownerVerifiedAt: getStringFromMap(map, 'owner_verified_at', 'ownerVerifiedAt') != null
+          ? DateTime.parse(getStringFromMap(map, 'owner_verified_at', 'ownerVerifiedAt')!)
+          : null,
     );
   }
 
@@ -127,6 +158,11 @@ class PaymentModel {
     DateTime? expiresAt,
     String? failureReason,
     Map<String, dynamic>? metadata,
+    String? receiptUrl,
+    String? receiptStatus,
+    String? ownerAccountId,
+    String? transferReference,
+    DateTime? ownerVerifiedAt,
   }) {
     return PaymentModel(
       id: id ?? this.id,
@@ -143,6 +179,11 @@ class PaymentModel {
       expiresAt: expiresAt ?? this.expiresAt,
       failureReason: failureReason ?? this.failureReason,
       metadata: metadata ?? this.metadata,
+      receiptUrl: receiptUrl ?? this.receiptUrl,
+      receiptStatus: receiptStatus ?? this.receiptStatus,
+      ownerAccountId: ownerAccountId ?? this.ownerAccountId,
+      transferReference: transferReference ?? this.transferReference,
+      ownerVerifiedAt: ownerVerifiedAt ?? this.ownerVerifiedAt,
     );
   }
 }

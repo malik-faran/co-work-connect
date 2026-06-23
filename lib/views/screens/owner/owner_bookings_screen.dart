@@ -17,6 +17,7 @@ import 'package:cwc/services/chat_service.dart';
 import 'package:cwc/services/supabase_service.dart';
 import 'package:cwc/models/chat_model.dart';
 import 'package:cwc/models/workspace_model.dart';
+import 'package:cwc/views/screens/owner/owner_receipts_screen.dart';
 import 'package:uuid/uuid.dart';
 import 'package:intl/intl.dart';
 
@@ -27,12 +28,26 @@ class OwnerBookingsScreen extends StatefulWidget {
   State<OwnerBookingsScreen> createState() => _OwnerBookingsScreenState();
 }
 
-class _OwnerBookingsScreenState extends State<OwnerBookingsScreen> {
+class _OwnerBookingsScreenState extends State<OwnerBookingsScreen>
+    with SingleTickerProviderStateMixin {
   final BookingService _bookingService = BookingService();
   final AuthService _authService = AuthService();
   final PaymentService _paymentService = PaymentService();
   final Map<String, UserModel?> _userCache = {};
   final Map<String, PaymentModel?> _paymentCache = {};
+  late TabController _tabController;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
 
   Future<void> _updateBookingStatus(String bookingId, String status) async {
     try {
@@ -81,7 +96,8 @@ class _OwnerBookingsScreenState extends State<OwnerBookingsScreen> {
 
     return Scaffold(
       backgroundColor: CAppTheme.backgroundColor,
-      floatingActionButton: FloatingActionButton.extended(
+      floatingActionButton: _tabController.index == 0
+          ? FloatingActionButton.extended(
         onPressed: () => _showManualBookingDialog(context, ownerId),
         backgroundColor: CAppTheme.primaryColor,
         foregroundColor: Colors.white,
@@ -94,8 +110,37 @@ class _OwnerBookingsScreenState extends State<OwnerBookingsScreen> {
           'Reserve Seat',
           style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
         ),
+      )
+          : null,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        title: Text('Bookings', style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
+        bottom: TabBar(
+          controller: _tabController,
+          labelColor: CAppTheme.primaryColor,
+          unselectedLabelColor: CAppTheme.textSecondary,
+          indicatorColor: CAppTheme.primaryColor,
+          labelStyle: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 13),
+          onTap: (_) => setState(() {}),
+          tabs: const [
+            Tab(text: 'All Bookings'),
+            Tab(text: 'Receipts'),
+          ],
+        ),
       ),
-      body: StreamBuilder<List<BookingModel>>(
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          _buildBookingsList(ownerId),
+          const OwnerReceiptsScreen(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBookingsList(String ownerId) {
+    return StreamBuilder<List<BookingModel>>(
         stream: _bookingService.getOwnerBookingsStream(ownerId),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
@@ -355,14 +400,24 @@ class _OwnerBookingsScreenState extends State<OwnerBookingsScreen> {
                                         String statusText;
 
                                         if (payment != null) {
-                                          payStatusColor = payment.status == 'completed'
-                                              ? CAppTheme.successColor
-                                              : payment.status == 'pending'
-                                                  ? CAppTheme.warningColor
-                                                  : CAppTheme.errorColor;
-                                          statusText = payment.status == 'completed'
-                                              ? 'Paid'
-                                              : payment.status.toUpperCase();
+                                          if (payment.isAwaitingReceiptReview) {
+                                            payStatusColor = CAppTheme.warningColor;
+                                            statusText = 'Receipt pending review';
+                                          } else if (payment.status == 'completed') {
+                                            payStatusColor = CAppTheme.successColor;
+                                            statusText = payment.isManual ? 'Paid (verified)' : 'Paid';
+                                          } else if (payment.isManual && payment.isReceiptRejected) {
+                                            payStatusColor = CAppTheme.errorColor;
+                                            statusText = 'Receipt rejected';
+                                          } else if (payment.status == 'pending') {
+                                            payStatusColor = CAppTheme.warningColor;
+                                            statusText = payment.isManual
+                                                ? 'Awaiting transfer'
+                                                : payment.status.toUpperCase();
+                                          } else {
+                                            payStatusColor = CAppTheme.errorColor;
+                                            statusText = payment.status.toUpperCase();
+                                          }
                                         } else if (booking.status == 'confirmed') {
                                           payStatusColor = CAppTheme.successColor;
                                           statusText = 'Paid';
@@ -420,7 +475,6 @@ class _OwnerBookingsScreenState extends State<OwnerBookingsScreen> {
             ),
           );
         },
-      ),
     );
   }
 
