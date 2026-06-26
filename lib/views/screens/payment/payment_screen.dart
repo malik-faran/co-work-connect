@@ -9,6 +9,7 @@ import 'package:cwc/models/payment_model.dart';
 import 'package:cwc/services/owner_payment_account_service.dart';
 import 'package:cwc/services/payment_service.dart';
 import 'package:cwc/services/storage_service.dart';
+import 'package:cwc/services/supabase_service.dart';
 import 'package:cwc/utils/constants/app_constants.dart';
 import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/utils/helpers/snackbar_helper.dart';
@@ -19,7 +20,13 @@ import 'package:cwc/views/screens/booking/booking_confirmation_screen.dart';
 
 class PaymentScreen extends StatefulWidget {
   final BookingModel booking;
-  const PaymentScreen({super.key, required this.booking});
+  final List<String> groupBookingIds;
+
+  const PaymentScreen({
+    super.key,
+    required this.booking,
+    this.groupBookingIds = const [],
+  });
 
   @override
   State<PaymentScreen> createState() => _PaymentScreenState();
@@ -154,6 +161,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
 
   Future<void> _selectMethod(String method) async {
     if (_selectedMethod == method) return;
+    final previousMethod = _selectedMethod;
     setState(() {
       _selectedMethod = method;
       _isProcessing = true;
@@ -168,14 +176,14 @@ class _PaymentScreenState extends State<PaymentScreen> {
       } else if (method == AppConstants.paymentMethodStripe) {
         payment = await _paymentService.createPayment(
           bookingId: widget.booking.id,
-          userId: widget.booking.userId,
+          userId: _payerUserId,
           amount: widget.booking.totalPrice,
         );
         Stripe.publishableKey = PaymentService.stripePublishableKey;
       } else {
         payment = await _paymentService.createManualPayment(
           bookingId: widget.booking.id,
-          userId: widget.booking.userId,
+          userId: _payerUserId,
           amount: widget.booking.totalPrice,
         );
       }
@@ -189,11 +197,18 @@ class _PaymentScreenState extends State<PaymentScreen> {
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _isProcessing = false);
-        showErrorSnackBar(context, 'Failed to switch payment method');
+        setState(() {
+          _isProcessing = false;
+          _selectedMethod = previousMethod;
+        });
+        final message = e.toString().replaceFirst('Exception: ', '');
+        showErrorSnackBar(context, message.isEmpty ? 'Failed to switch payment method' : message);
       }
     }
   }
+
+  String get _payerUserId =>
+      SupabaseService.client.auth.currentUser?.id ?? widget.booking.userId;
 
   Future<void> _processCardPayment() async {
     if (_payment == null || _payment!.stripeClientSecret == null) {
@@ -215,6 +230,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
           _payment!.stripePaymentIntentId ?? '',
           isDummyPayment: true,
           bookingId: bId,
+          additionalBookingIds: widget.groupBookingIds,
         );
       } else {
         await Stripe.instance.initPaymentSheet(
@@ -229,6 +245,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
           _payment!.id,
           _payment!.stripePaymentIntentId ?? '',
           bookingId: bId,
+          additionalBookingIds: widget.groupBookingIds,
         );
       }
       if (mounted) {
@@ -240,7 +257,12 @@ class _PaymentScreenState extends State<PaymentScreen> {
         );
       }
     } catch (e) {
-      if (mounted) showErrorSnackBar(context, 'Payment failed');
+      if (mounted) {
+        final refreshed = await _paymentService.getPaymentByBookingId(widget.booking.id);
+        setState(() => _payment = refreshed ?? _payment);
+        final message = e.toString().replaceFirst('Exception: ', '');
+        showErrorSnackBar(context, message.isEmpty ? 'Payment failed' : message);
+      }
     } finally {
       if (mounted) setState(() => _isProcessing = false);
     }
@@ -276,7 +298,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
       if (_receiptFile != null) {
         final bytes = await _receiptFile!.readAsBytes();
         receiptUrl = await _storageService.uploadPaymentReceipt(
-          userId: widget.booking.userId,
+          userId: _payerUserId,
           bookingId: widget.booking.id,
           bytes: bytes,
           fileName: _receiptFile!.name,
@@ -293,6 +315,8 @@ class _PaymentScreenState extends State<PaymentScreen> {
       );
 
       if (!mounted) return;
+      final updated = await _paymentService.getPaymentById(_payment!.id);
+      if (updated != null) setState(() => _payment = updated);
       await showDialog(
         context: context,
         builder: (ctx) => AlertDialog(

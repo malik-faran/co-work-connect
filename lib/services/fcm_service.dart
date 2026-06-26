@@ -2,9 +2,11 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:cwc/firebase_options.dart';
+import 'package:cwc/services/active_chat_tracker.dart';
 import 'package:cwc/services/auth_service.dart';
 import 'package:cwc/services/fcm_background.dart';
 import 'package:cwc/services/local_notification_service.dart';
+import 'package:cwc/services/navigation_service.dart';
 
 /// Firebase Cloud Messaging — push notifications when app is closed/background.
 class FcmService {
@@ -51,6 +53,11 @@ class FcmService {
       FirebaseMessaging.onMessage.listen(_onForegroundMessage);
       FirebaseMessaging.onMessageOpenedApp.listen(_onMessageOpenedApp);
 
+      final initialMessage = await _messaging.getInitialMessage();
+      if (initialMessage != null) {
+        _openChatFromMessage(initialMessage);
+      }
+
       _messaging.onTokenRefresh.listen((token) async {
         _cachedToken = token;
         final userId = _authService.currentAuthUser?.id;
@@ -91,18 +98,39 @@ class FcmService {
   }
 
   Future<void> _onForegroundMessage(RemoteMessage message) async {
+    final data = message.data;
+    final chatRoomId = data['chat_room_id']?.toString();
     final notification = message.notification;
+
+    if (chatRoomId != null && chatRoomId.isNotEmpty) {
+      if (ActiveChatTracker.isActive(chatRoomId)) return;
+      await LocalNotificationService.instance.showChatMessage(
+        id: message.messageId ?? DateTime.now().millisecondsSinceEpoch.toString(),
+        title: notification?.title ?? data['title']?.toString() ?? 'New message',
+        body: notification?.body ?? data['body']?.toString() ?? '',
+        chatRoomId: chatRoomId,
+      );
+      return;
+    }
+
     if (notification == null) return;
 
     await LocalNotificationService.instance.show(
       id: message.messageId ?? DateTime.now().millisecondsSinceEpoch.toString(),
       title: notification.title ?? 'CWC',
       body: notification.body ?? '',
-      payload: message.data['notification_id']?.toString(),
+      payload: data['notification_id']?.toString(),
     );
   }
 
   void _onMessageOpenedApp(RemoteMessage message) {
-    debugPrint('FCM opened app: ${message.data}');
+    _openChatFromMessage(message);
+  }
+
+  void _openChatFromMessage(RemoteMessage message) {
+    final chatRoomId = message.data['chat_room_id']?.toString();
+    if (chatRoomId != null && chatRoomId.isNotEmpty) {
+      NavigationService.openChatFromNotification(chatRoomId);
+    }
   }
 }

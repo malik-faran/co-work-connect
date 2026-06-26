@@ -7,14 +7,29 @@ import 'package:cwc/models/collaboration_hub_models.dart';
 import 'package:cwc/models/notification_model.dart';
 import 'package:cwc/services/collaboration_hub_service.dart';
 import 'package:cwc/services/notification_service.dart';
+import 'package:cwc/utils/notification_scope.dart';
 import 'package:cwc/utils/themes/theme.dart';
+import 'package:cwc/services/navigation_service.dart';
+import 'package:cwc/views/screens/user/booking_history_screen.dart';
 import 'package:cwc/views/screens/collaboration/collaboration_detail_screen.dart';
 import 'package:intl/intl.dart';
 
-/// Notifications Screen
-/// Shows all notifications for the current user
+enum InviteCardState {
+  actionable,
+  expired,
+  accepted,
+  declined,
+  unavailable,
+}
+
+/// Notifications Screen — filtered by [scope] (projects vs workspaces).
 class NotificationsScreen extends StatefulWidget {
-  const NotificationsScreen({super.key});
+  final NotificationScope scope;
+
+  const NotificationsScreen({
+    super.key,
+    this.scope = NotificationScope.all,
+  });
 
   @override
   State<NotificationsScreen> createState() => _NotificationsScreenState();
@@ -28,7 +43,14 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   String? _errorMessage;
   int _unreadCount = 0;
   final Set<String> _respondingInviteIds = {};
+  final Map<String, InviteCardState> _inviteStates = {};
   StreamSubscription<List<NotificationModel>>? _notificationStreamSubscription;
+
+  List<NotificationModel> get _visibleNotifications =>
+      NotificationScopeHelper.filter(_notifications, widget.scope);
+
+  int get _visibleUnreadCount =>
+      _visibleNotifications.where((n) => !n.isRead).length;
 
   @override
   void initState() {
@@ -49,13 +71,19 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       if (currentUser == null) return;
 
       final notifications = await _notificationService.getUserNotifications(currentUser.id);
-      final unreadCount = await _notificationService.getUnreadCount(currentUser.id);
 
       setState(() {
         _notifications = notifications;
-        _unreadCount = unreadCount;
+        _unreadCount = NotificationScopeHelper.unreadCount(
+          notifications,
+          widget.scope,
+        );
         _isLoading = false;
       });
+      if (widget.scope == NotificationScope.projects ||
+          widget.scope == NotificationScope.all) {
+        await _refreshInviteStates(_visibleNotifications, currentUser.id);
+      }
     } catch (e) {
       setState(() {
         _errorMessage = e.toString();
@@ -72,12 +100,19 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     _notificationStreamSubscription?.cancel();
 
     _notificationStreamSubscription = _notificationService.getNotificationsStream(currentUser.id).listen(
-      (notifications) {
+      (notifications) async {
         if (mounted) {
           setState(() {
             _notifications = notifications;
-            _unreadCount = notifications.where((n) => !n.isRead).length;
+            _unreadCount = NotificationScopeHelper.unreadCount(
+              notifications,
+              widget.scope,
+            );
           });
+          if (widget.scope == NotificationScope.projects ||
+              widget.scope == NotificationScope.all) {
+            await _refreshInviteStates(_visibleNotifications, currentUser.id);
+          }
         }
       },
       onError: (_) {},
@@ -89,6 +124,89 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   void dispose() {
     _notificationStreamSubscription?.cancel();
     super.dispose();
+  }
+
+  Future<void> _refreshInviteStates(
+    List<NotificationModel> notifications,
+    String userId,
+  ) async {
+    final inviteNotifications =
+        notifications.where((n) => n.type == 'collaboration_invite').toList();
+    if (inviteNotifications.isEmpty) {
+      if (mounted) setState(() => _inviteStates.clear());
+      return;
+    }
+
+    try {
+      final invites = await _hub.getAllUserInvites(userId);
+      final byId = {for (final invite in invites) invite.id: invite};
+      final byCollab = <String, CollaborationInvite>{};
+      for (final invite in invites) {
+        byCollab.putIfAbsent(invite.collaborationId, () => invite);
+      }
+
+      final collabIds = inviteNotifications
+          .map((n) => n.metadata?['collaboration_id'] as String?)
+          .whereType<String>()
+          .toSet();
+      final projectStatuses = await _hub.getCollaborationStatuses(collabIds);
+
+      final states = <String, InviteCardState>{};
+      for (final notification in inviteNotifications) {
+        final inviteId = notification.metadata?['invite_id'] as String?;
+        final collaborationId =
+            notification.metadata?['collaboration_id'] as String?;
+
+        CollaborationInvite? invite;
+        if (inviteId != null) invite = byId[inviteId];
+        if (invite == null && collaborationId != null) {
+          invite = byCollab[collaborationId];
+        }
+
+        states[notification.id] = _inviteStateFor(
+          invite: invite,
+          notification: notification,
+          projectStatus: collaborationId != null
+              ? projectStatuses[collaborationId]
+              : null,
+        );
+      }
+
+      if (mounted) setState(() => _inviteStates..clear()..addAll(states));
+    } catch (_) {}
+  }
+
+  InviteCardState _inviteStateFor({
+    required CollaborationInvite? invite,
+    required NotificationModel notification,
+    String? projectStatus,
+  }) {
+    if (invite == null) return InviteCardState.unavailable;
+    if (invite.status == 'accepted') return InviteCardState.accepted;
+    if (invite.status == 'declined') return InviteCardState.declined;
+    if (_hub.isInviteExpired(
+      invite,
+      projectStatus: projectStatus,
+    )) {
+      return InviteCardState.expired;
+    }
+    if (invite.status == 'pending') return InviteCardState.actionable;
+    return InviteCardState.unavailable;
+  }
+
+  String _inviteStateMessage(InviteCardState state) {
+    switch (state) {
+      case InviteCardState.expired:
+        return 'This invitation has expired';
+      case InviteCardState.accepted:
+        return 'You already accepted this invitation';
+      case InviteCardState.declined:
+        return 'You declined this invitation';
+      case InviteCardState.unavailable:
+        return 'This invitation is no longer available';
+      case InviteCardState.actionable:
+        return '';
+    }
   }
 
   Future<void> _markAsRead(NotificationModel notification) async {
@@ -115,7 +233,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       final currentUser = authController.currentUser;
       if (currentUser == null) return;
 
-      await _notificationService.markAllAsRead(currentUser.id);
+      for (final notification in _visibleNotifications.where((n) => !n.isRead)) {
+        await _notificationService.markAsRead(notification.id);
+      }
       if (!mounted) return;
       _loadNotifications();
     } catch (e) {
@@ -131,23 +251,66 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
   Future<void> _openNotification(NotificationModel notification) async {
     await _markAsRead(notification);
-    final collaborationId = notification.metadata?['collaboration_id'] as String?;
-    if (collaborationId == null || !mounted) return;
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => CollaborationDetailScreen(collaborationId: collaborationId),
-      ),
-    );
+    if (!mounted) return;
+
+    if (NotificationScopeHelper.isProjectType(notification.type)) {
+      final collaborationId =
+          notification.metadata?['collaboration_id'] as String?;
+      if (collaborationId == null) return;
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) =>
+              CollaborationDetailScreen(collaborationId: collaborationId),
+        ),
+      );
+      return;
+    }
+
+    if (NotificationScopeHelper.isWorkspaceType(notification.type)) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const BookingHistoryScreen()),
+      );
+      return;
+    }
+
+    if (notification.type == 'chat_message') {
+      final chatRoomId = notification.metadata?['chat_room_id'] as String?;
+      if (chatRoomId != null) {
+        NavigationService.openChatFromNotification(chatRoomId);
+      }
+    }
   }
 
   Future<void> _respondToInvite(NotificationModel notification, bool accept) async {
     final user = context.read<AuthController>().currentUser;
     if (user == null) return;
 
+    final cachedState = _inviteStates[notification.id];
+    if (cachedState != null && cachedState != InviteCardState.actionable) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_inviteStateMessage(cachedState)),
+          backgroundColor: CAppTheme.warningColor,
+        ),
+      );
+      return;
+    }
+
     final inviteId = notification.metadata?['invite_id'] as String?;
     final collaborationId = notification.metadata?['collaboration_id'] as String?;
-    if (inviteId == null && collaborationId == null) return;
+    if (inviteId == null && collaborationId == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Invalid invitation — please open the project from Collaborate'),
+          backgroundColor: CAppTheme.errorColor,
+        ),
+      );
+      return;
+    }
 
     setState(() => _respondingInviteIds.add(notification.id));
     try {
@@ -156,10 +319,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         invite = await _hub.getInviteById(inviteId);
       }
       invite ??= collaborationId != null
-          ? await _hub.getPendingInviteForProject(collaborationId, user.id)
+          ? await _hub.getInviteForUserOnProject(collaborationId, user.id)
           : null;
 
-      if (invite == null || invite.status != 'pending') {
+      if (invite == null) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -168,7 +331,30 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           ),
         );
         await _markAsRead(notification);
-        _loadNotifications();
+        await _refreshInviteStates(_notifications, user.id);
+        return;
+      }
+
+      final projectStatuses =
+          await _hub.getCollaborationStatuses({invite.collaborationId});
+      final projectStatus = projectStatuses[invite.collaborationId];
+
+      if (invite.status != 'pending' ||
+          _hub.isInviteExpired(invite, projectStatus: projectStatus)) {
+        if (!mounted) return;
+        final state = _inviteStateFor(
+          invite: invite,
+          notification: notification,
+          projectStatus: projectStatus,
+        );
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_inviteStateMessage(state)),
+            backgroundColor: CAppTheme.warningColor,
+          ),
+        );
+        await _markAsRead(notification);
+        await _refreshInviteStates(_notifications, user.id);
         return;
       }
 
@@ -204,12 +390,12 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         );
       }
 
-      _loadNotifications();
+      await _loadNotifications();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Error: ${e.toString()}'),
+          content: Text(e.toString().replaceFirst('Exception: ', '')),
           backgroundColor: CAppTheme.errorColor,
         ),
       );
@@ -220,7 +406,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
   Map<String, List<NotificationModel>> _groupByDate() {
     final grouped = <String, List<NotificationModel>>{};
-    for (final n in _notifications) {
+    for (final n in _visibleNotifications) {
       final now = DateTime.now();
       final diff = now.difference(n.createdAt);
       String key;
@@ -247,7 +433,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         elevation: 0,
         backgroundColor: Colors.white,
         title: Text(
-          'Notifications',
+          NotificationScopeHelper.titleFor(widget.scope),
           style: GoogleFonts.poppins(
             fontWeight: FontWeight.bold,
             color: CAppTheme.textPrimary,
@@ -261,7 +447,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
               )
             : null,
         actions: [
-          if (_unreadCount > 0)
+          if (_visibleUnreadCount > 0)
             TextButton.icon(
               onPressed: _markAllAsRead,
               icon: const Icon(Icons.done_all_rounded, size: 18),
@@ -276,7 +462,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           ? const Center(child: CircularProgressIndicator(color: CAppTheme.primaryColor))
           : _errorMessage != null
               ? _buildErrorState()
-              : _notifications.isEmpty
+              : _visibleNotifications.isEmpty
                   ? _buildEmptyState()
                   : _buildNotificationsList(),
     );
@@ -315,6 +501,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
               ),
               ...items.map((notification) => _NotificationCard(
                     notification: notification,
+                    inviteState: notification.type == 'collaboration_invite'
+                        ? _inviteStates[notification.id]
+                        : null,
                     isResponding: _respondingInviteIds.contains(notification.id),
                     onTap: () => _openNotification(notification),
                     onAcceptInvite: () => _respondToInvite(notification, true),
@@ -349,7 +538,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             ),
             const SizedBox(height: 20),
             Text(
-              'No notifications',
+              NotificationScopeHelper.emptyMessageFor(widget.scope),
               style: GoogleFonts.poppins(
                 fontSize: 18,
                 fontWeight: FontWeight.w600,
@@ -358,7 +547,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'You\'re all caught up!',
+              widget.scope == NotificationScope.projects
+                  ? 'Invites and project updates will appear here'
+                  : widget.scope == NotificationScope.workspaces
+                      ? 'Bookings and payment updates will appear here'
+                      : 'You\'re all caught up!',
               style: GoogleFonts.poppins(
                 color: CAppTheme.textSecondary,
                 fontSize: 14,
@@ -416,6 +609,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 /// Notification Card Widget
 class _NotificationCard extends StatelessWidget {
   final NotificationModel notification;
+  final InviteCardState? inviteState;
   final VoidCallback onTap;
   final VoidCallback? onAcceptInvite;
   final VoidCallback? onDeclineInvite;
@@ -423,6 +617,7 @@ class _NotificationCard extends StatelessWidget {
 
   const _NotificationCard({
     required this.notification,
+    this.inviteState,
     required this.onTap,
     this.onAcceptInvite,
     this.onDeclineInvite,
@@ -430,6 +625,8 @@ class _NotificationCard extends StatelessWidget {
   });
 
   bool get _isInvite => notification.type == 'collaboration_invite';
+  bool get _canRespondToInvite =>
+      _isInvite && inviteState == InviteCardState.actionable;
 
   @override
   Widget build(BuildContext context) {
@@ -523,41 +720,78 @@ class _NotificationCard extends StatelessWidget {
               ),
               if (_isInvite) ...[
                 const SizedBox(height: 14),
-                Row(
-                  children: [
-                    Expanded(
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: CAppTheme.successColor,
-                          padding: const EdgeInsets.symmetric(vertical: 10),
+                if (_canRespondToInvite) ...[
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: CAppTheme.successColor,
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                          ),
+                          onPressed: isResponding ? null : onAcceptInvite,
+                          child: isResponding
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : const Text('Accept'),
                         ),
-                        onPressed: isResponding ? null : onAcceptInvite,
-                        child: isResponding
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
-                              )
-                            : const Text('Accept'),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            foregroundColor: CAppTheme.errorColor,
+                            side: const BorderSide(color: CAppTheme.errorColor),
+                          ),
+                          onPressed: isResponding ? null : onDeclineInvite,
+                          child: const Text('Decline'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ] else ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
+                    decoration: BoxDecoration(
+                      color: _inviteStatusColor(inviteState).withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                      border: Border.all(
+                        color: _inviteStatusColor(inviteState).withValues(alpha: 0.25),
                       ),
                     ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: OutlinedButton(
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 10),
-                          foregroundColor: CAppTheme.errorColor,
-                          side: const BorderSide(color: CAppTheme.errorColor),
+                    child: Row(
+                      children: [
+                        Icon(
+                          _inviteStatusIcon(inviteState),
+                          size: 18,
+                          color: _inviteStatusColor(inviteState),
                         ),
-                        onPressed: isResponding ? null : onDeclineInvite,
-                        child: const Text('Decline'),
-                      ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _inviteStatusLabel(inviteState),
+                            style: GoogleFonts.poppins(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: _inviteStatusColor(inviteState),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
+                  ),
+                ],
                 const SizedBox(height: 4),
                 Align(
                   alignment: Alignment.centerRight,
@@ -572,6 +806,52 @@ class _NotificationCard extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  String _inviteStatusLabel(InviteCardState? state) {
+    switch (state) {
+      case InviteCardState.expired:
+        return 'Invitation expired';
+      case InviteCardState.accepted:
+        return 'Invitation accepted';
+      case InviteCardState.declined:
+        return 'Invitation declined';
+      case InviteCardState.unavailable:
+        return 'Invitation no longer available';
+      case InviteCardState.actionable:
+      case null:
+        return 'Checking invitation...';
+    }
+  }
+
+  Color _inviteStatusColor(InviteCardState? state) {
+    switch (state) {
+      case InviteCardState.expired:
+      case InviteCardState.unavailable:
+        return CAppTheme.warningColor;
+      case InviteCardState.accepted:
+        return CAppTheme.successColor;
+      case InviteCardState.declined:
+        return CAppTheme.errorColor;
+      case InviteCardState.actionable:
+      case null:
+        return CAppTheme.textSecondary;
+    }
+  }
+
+  IconData _inviteStatusIcon(InviteCardState? state) {
+    switch (state) {
+      case InviteCardState.expired:
+      case InviteCardState.unavailable:
+        return Icons.schedule_rounded;
+      case InviteCardState.accepted:
+        return Icons.check_circle_outline_rounded;
+      case InviteCardState.declined:
+        return Icons.cancel_outlined;
+      case InviteCardState.actionable:
+      case null:
+        return Icons.hourglass_empty_rounded;
+    }
   }
 
   IconData _getIconForType(String type) {

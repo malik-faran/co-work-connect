@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'package:cwc/controllers/auth_controller.dart';
 import 'package:cwc/controllers/workspace_controller.dart';
 import 'package:cwc/models/workspace_model.dart';
+import 'package:cwc/utils/notification_scope.dart';
 import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/views/screens/owner/add_workspace_screen.dart';
 import 'package:cwc/views/screens/owner/owner_analytics_screen.dart';
@@ -248,7 +249,7 @@ class _OwnerHomeScreenState extends State<OwnerHomeScreen> {
             _BookingsTab(),
             _AnalyticsTab(),
             ChatListScreen(),
-            NotificationsScreen(),
+            NotificationsScreen(scope: NotificationScope.workspaces),
           ],
         ),
         bottomNavigationBar: Container(

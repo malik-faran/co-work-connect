@@ -257,6 +257,39 @@ class CollaborationHubService {
   }
 
   // --------------------------------------------------------------- INVITES
+  /// Invitations expire after this duration (shown as expired in notifications).
+  static const Duration inviteValidity = Duration(hours: 48);
+
+  bool isInviteExpired(
+    CollaborationInvite invite, {
+    String? projectStatus,
+  }) {
+    if (invite.status != 'pending') return false;
+    if (DateTime.now().difference(invite.createdAt) > inviteValidity) {
+      return true;
+    }
+    if (projectStatus == 'completed' ||
+        projectStatus == 'cancelled' ||
+        projectStatus == 'draft') {
+      return true;
+    }
+    return false;
+  }
+
+  Future<Map<String, String>> getCollaborationStatuses(
+    Set<String> collaborationIds,
+  ) async {
+    if (collaborationIds.isEmpty) return {};
+    final rows = await _supabase
+        .from('collaborations')
+        .select('id, status')
+        .inFilter('id', collaborationIds.toList());
+    return {
+      for (final row in rows)
+        row['id'] as String: row['status'] as String? ?? 'recruiting',
+    };
+  }
+
   Future<List<CollaborationInvite>> getUserInvites(String userId) async {
     final rows = await _supabase
         .from('collaboration_invites')
@@ -300,6 +333,32 @@ class CollaborationHubService {
     return CollaborationInvite.fromMap(row);
   }
 
+  /// Latest invite for a user on a project (any status).
+  Future<CollaborationInvite?> getInviteForUserOnProject(
+    String collaborationId,
+    String userId,
+  ) async {
+    final rows = await _supabase
+        .from('collaboration_invites')
+        .select()
+        .eq('collaboration_id', collaborationId)
+        .eq('invited_user', userId)
+        .order('created_at', ascending: false)
+        .limit(1);
+    if (rows.isEmpty) return null;
+    return CollaborationInvite.fromMap(rows.first);
+  }
+
+  /// All invites received by a user (pending, accepted, declined).
+  Future<List<CollaborationInvite>> getAllUserInvites(String userId) async {
+    final rows = await _supabase
+        .from('collaboration_invites')
+        .select()
+        .eq('invited_user', userId)
+        .order('created_at', ascending: false);
+    return rows.map((r) => CollaborationInvite.fromMap(r)).toList();
+  }
+
   Future<void> sendInvite(CollaborationInvite invite) async {
     final data = invite.toMap()..removeWhere((k, v) => v == null);
     await _supabase
@@ -335,14 +394,27 @@ class CollaborationHubService {
     String? userImage,
     List<String> userSkills = const [],
   }) async {
-    await respondToInvite(invite, true);
     final project = await _supabase
         .from('collaborations')
         .select()
         .eq('id', invite.collaborationId)
         .maybeSingle();
-    if (project == null) return;
+    if (project == null) {
+      throw Exception('This project no longer exists');
+    }
     final model = CollaborationModel.fromCollaborationMap(project);
+
+    if (invite.status != 'pending') {
+      throw Exception('This invitation is no longer available');
+    }
+    if (isInviteExpired(invite, projectStatus: model.status)) {
+      throw Exception('This invitation has expired');
+    }
+    if (!model.isActive && !model.isRecruiting) {
+      throw Exception('This project is no longer accepting members');
+    }
+
+    await respondToInvite(invite, true);
 
     if (model.isActive) {
       await joinActiveProject(

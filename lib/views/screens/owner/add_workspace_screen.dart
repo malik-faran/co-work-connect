@@ -56,6 +56,7 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
   final _descriptionController = TextEditingController();
+  final _policiesController = TextEditingController();
   final _addressController = TextEditingController();
   final _phoneController = TextEditingController();
   final _emailController = TextEditingController();
@@ -93,6 +94,7 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
       final workspace = widget.workspaceToEdit!;
       _nameController.text = workspace.name;
       _descriptionController.text = workspace.description;
+      _policiesController.text = workspace.officePolicies ?? '';
       _addressController.text = workspace.address;
       _selectedCity = workspace.city;
       _latitude = workspace.latitude;
@@ -137,6 +139,7 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
   void dispose() {
     _nameController.dispose();
     _descriptionController.dispose();
+    _policiesController.dispose();
     _addressController.dispose();
     _phoneController.dispose();
     _emailController.dispose();
@@ -765,6 +768,9 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
       operatingHours: [
         '${_formatTimeOfDay(_openingTime)} - ${_formatTimeOfDay(_closingTime)}',
       ],
+      officePolicies: _policiesController.text.trim().isEmpty
+          ? null
+          : _policiesController.text.trim(),
     );
 
     try {
@@ -884,6 +890,14 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
                 icon: Icons.description_outlined,
                 maxLines: 4,
                 validator: FormValidators.description,
+              ),
+              const SizedBox(height: 16),
+              _buildThemedTextField(
+                controller: _policiesController,
+                label: 'Office Policies (visible to users)',
+                icon: Icons.policy_outlined,
+                maxLines: 6,
+                hint: 'e.g. No smoking, quiet hours 6–9 PM, bring your own laptop...',
               ),
               const SizedBox(height: 16),
               _buildMapLocationPicker(),
@@ -1213,6 +1227,7 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
     required String label,
     required IconData icon,
     int maxLines = 1,
+    String? hint,
     String? Function(String?)? validator,
   }) {
     return TextFormField(
@@ -1221,6 +1236,7 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
       style: GoogleFonts.poppins(color: CAppTheme.textPrimary),
       decoration: InputDecoration(
         labelText: label,
+        hintText: hint,
         labelStyle: GoogleFonts.poppins(color: CAppTheme.textSecondary),
         prefixIcon: Icon(icon, color: CAppTheme.textSecondary),
         filled: true,

@@ -29,6 +29,7 @@ class WorkspaceModel {
   final List<String>? operatingHours;
   final double? rating;
   final int? totalReviews;
+  final String? officePolicies;
 
   WorkspaceModel({
     required this.id,
@@ -59,6 +60,7 @@ class WorkspaceModel {
     this.operatingHours,
     this.rating,
     this.totalReviews,
+    this.officePolicies,
   });
 
   Map<String, dynamic> toWorkspaceMap() {
@@ -91,6 +93,9 @@ class WorkspaceModel {
     if (operatingHours != null) map['operating_hours'] = operatingHours;
     if (rating != null) map['rating'] = rating;
     if (totalReviews != null) map['total_reviews'] = totalReviews;
+    if (officePolicies != null && officePolicies!.trim().isNotEmpty) {
+      map['office_policies'] = officePolicies;
+    }
 
     if (categoryOptions.isNotEmpty) {
       map['category_options'] = categoryOptions.map((e) {
@@ -204,6 +209,7 @@ class WorkspaceModel {
           : null,
       rating: map['rating'] != null ? convertToDouble(map['rating'], 0.0) : null,
       totalReviews: map['total_reviews'] != null ? convertToInt(map['total_reviews'], 0) : null,
+      officePolicies: getStringFromMap(map, 'office_policies', 'officePolicies'),
     );
   }
 
@@ -236,6 +242,7 @@ class WorkspaceModel {
     List<String>? operatingHours,
     double? rating,
     int? totalReviews,
+    String? officePolicies,
   }) {
     return WorkspaceModel(
       id: id ?? this.id,
@@ -266,6 +273,7 @@ class WorkspaceModel {
       operatingHours: operatingHours ?? this.operatingHours,
       rating: rating ?? this.rating,
       totalReviews: totalReviews ?? this.totalReviews,
+      officePolicies: officePolicies ?? this.officePolicies,
     );
   }
 }

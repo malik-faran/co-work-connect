@@ -12,9 +12,11 @@ import 'package:cwc/utils/constants/app_constants.dart';
 import 'package:cwc/utils/helpers/model_helpers.dart';
 import 'package:cwc/utils/helpers/snackbar_helper.dart';
 import 'package:cwc/utils/themes/theme.dart';
+import 'package:cwc/services/booking_service.dart';
 import 'package:cwc/services/chat_service.dart';
 import 'package:cwc/services/supabase_service.dart';
 import 'package:cwc/services/review_service.dart';
+import 'package:cwc/services/workspace_interaction_service.dart';
 import 'package:cwc/models/review_model.dart';
 import 'package:cwc/views/screens/chat/chat_screen.dart';
 import 'package:cwc/views/screens/payment/payment_screen.dart';
@@ -41,7 +43,17 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
   // Booking mode: 'hourly' | 'daily' | 'monthly'
   String _bookingMode = 'hourly';
   int _monthCount = 1;
-  DateTime _selectedDate = DateTime.now();
+  final Set<String> _selectedDateKeys = {
+    DateFormat('yyyy-MM-dd').format(DateTime.now()),
+  };
+  Map<String, Map<String, Map<String, int>>> _usageByDate = {};
+  final PageController _pageController = PageController();
+  final ReviewService _reviewService = ReviewService();
+  final WorkspaceInteractionService _interactionService =
+      WorkspaceInteractionService();
+  List<ReviewModel> _reviews = [];
+  BookingModel? _lastBooking;
+  List<BookingModel> _pendingBookings = [];
 
   bool get _isPerDayBooking => _bookingMode == 'daily';
   bool get _isMonthlyBooking => _bookingMode == 'monthly';
@@ -49,11 +61,19 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
   /// Monthly rate derived from the daily price (30 days per month).
   double get _monthlyRate =>
       (_selectedCategory?.pricePerDay ?? 0) * 30;
-  Map<String, Map<String, int>> _slotSeatUsage = {};
-  final PageController _pageController = PageController();
-  final ReviewService _reviewService = ReviewService();
-  List<ReviewModel> _reviews = [];
-  BookingModel? _lastBooking;
+
+  DateTime get _primarySelectedDate {
+    if (_selectedDateKeys.isEmpty) return DateTime.now();
+    final sorted = _selectedDateKeys.toList()..sort();
+    return _parseDateKey(sorted.first);
+  }
+
+  String _dateKey(DateTime d) => DateFormat('yyyy-MM-dd').format(d);
+
+  DateTime _parseDateKey(String key) {
+    final p = key.split('-');
+    return DateTime(int.parse(p[0]), int.parse(p[1]), int.parse(p[2]));
+  }
 
   @override
   void initState() {
@@ -75,8 +95,19 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
       _selectedCategory = _getInitialCategory(workspace);
       _isLoading = false;
     });
+    _logWorkspaceView();
     await _loadAvailability();
     await _loadReviews();
+  }
+
+  Future<void> _logWorkspaceView() async {
+    final user = context.read<AuthController>().currentUser;
+    if (user == null || _workspace == null) return;
+    await _interactionService.logInteraction(
+      userId: user.id,
+      workspaceId: _workspace!.id,
+      action: WorkspaceInteractionService.actionView,
+    );
   }
 
   Future<void> _loadReviews() async {
@@ -114,21 +145,34 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
     if (_workspace == null) return;
     setState(() => _isSlotsLoading = true);
     try {
-      final bookings = await context.read<WorkspaceController>().getBookingsForWorkspaceDate(_workspace!.id, _selectedDate);
-      final usage = <String, Map<String, int>>{};
-      for (final b in bookings) {
-        if (b.timeSlotId != null && b.categoryType != null) {
-          usage.putIfAbsent(b.timeSlotId!, () => {});
-          usage[b.timeSlotId!]![b.categoryType!] = (usage[b.timeSlotId!]![b.categoryType!] ?? 0) + b.seatCount;
+      final controller = context.read<WorkspaceController>();
+      final datesToLoad = _selectedDateKeys.isEmpty
+          ? [_dateKey(DateTime.now())]
+          : _selectedDateKeys.toList();
+      final usageByDate = <String, Map<String, Map<String, int>>>{};
+      for (final key in datesToLoad) {
+        final bookings = await controller.getBookingsForWorkspaceDate(
+          _workspace!.id,
+          _parseDateKey(key),
+        );
+        final usage = <String, Map<String, int>>{};
+        for (final b in bookings) {
+          if (b.timeSlotId != null && b.categoryType != null) {
+            usage.putIfAbsent(b.timeSlotId!, () => {});
+            usage[b.timeSlotId!]![b.categoryType!] =
+                (usage[b.timeSlotId!]![b.categoryType!] ?? 0) + b.seatCount;
+          }
         }
+        usageByDate[key] = usage;
       }
-      if (mounted) setState(() => _slotSeatUsage = usage);
+      if (mounted) setState(() => _usageByDate = usageByDate);
     } finally {
       if (mounted) setState(() => _isSlotsLoading = false);
     }
   }
 
-  List<DateTime> get _upcomingDates => List.generate(7, (i) => DateTime.now().add(Duration(days: i)));
+  List<DateTime> get _upcomingDates =>
+      List.generate(14, (i) => DateTime.now().add(Duration(days: i)));
 
   List<WorkspaceTimeSlotTemplate> get timeSlots =>
       _workspace?.timeSlots.isEmpty ?? true ? _generateTimeSlotsFromHours() : _workspace!.timeSlots;
@@ -158,19 +202,31 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
     }
   }
 
-  int _availableSeatsForSlot(WorkspaceTimeSlotTemplate slot) {
+  int _availableSeatsForSlotOnDate(WorkspaceTimeSlotTemplate slot, String dateKey) {
     if (_selectedCategory == null) return 0;
-    final booked = _slotSeatUsage[slot.id]?[_selectedCategory!.type] ?? 0;
+    final booked = _usageByDate[dateKey]?[slot.id]?[_selectedCategory!.type] ?? 0;
     final selected = _selectedSlotIds.contains(slot.id) ? _selectedSeats : 0;
     return (_selectedCategory!.capacity - booked - selected).clamp(0, double.infinity).toInt();
+  }
+
+  int _availableSeatsForSlot(WorkspaceTimeSlotTemplate slot) {
+    if (_selectedCategory == null || _selectedDateKeys.isEmpty) return 0;
+    var minAvail = _selectedCategory!.capacity;
+    for (final dateKey in _selectedDateKeys) {
+      final avail = _availableSeatsForSlotOnDate(slot, dateKey);
+      if (avail < minAvail) minAvail = avail;
+    }
+    return minAvail;
   }
 
   Future<void> _handleBooking() async {
     final user = context.read<AuthController>().currentUser;
     if (user == null) { _msg('Please login to book a workspace', true); return; }
     if (_selectedCategory == null) { _msg('Select a category to continue', true); return; }
+    if (_selectedDateKeys.isEmpty) { _msg('Select at least one date', true); return; }
 
     final controller = context.read<WorkspaceController>();
+    _pendingBookings = [];
     bool ok;
 
     if (_isMonthlyBooking) {
@@ -184,20 +240,54 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
 
     if (!mounted) return;
 
-    if (ok) {
+    if (ok && _lastBooking != null) {
+      final user = context.read<AuthController>().currentUser;
+      if (user != null) {
+        await _interactionService.logInteraction(
+          userId: user.id,
+          workspaceId: _workspace!.id,
+          action: WorkspaceInteractionService.actionClick,
+        );
+      }
+      final groupIds = _pendingBookings.map((b) => b.id).toList();
       Navigator.of(context).pop();
-      Navigator.of(context).push(MaterialPageRoute(builder: (_) => PaymentScreen(booking: _lastBooking!))).then((paymentSuccess) {
+      Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => PaymentScreen(
+          booking: _lastBooking!,
+          groupBookingIds: groupIds,
+        ),
+      )).then((paymentSuccess) {
         if (paymentSuccess == true) _msg('Booking confirmed! Payment successful.', false);
       });
-      setState(() { _selectedSlots.clear(); _selectedSlotIds.clear(); _bookingMode = 'hourly'; _monthCount = 1; });
+      setState(() {
+        _selectedSlots.clear();
+        _selectedSlotIds.clear();
+        _bookingMode = 'hourly';
+        _monthCount = 1;
+        _pendingBookings = [];
+      });
       await _loadAvailability();
     } else {
       _msg(controller.errorMessage ?? 'Failed to create booking.', true);
     }
   }
 
+  Future<void> _finalizeGroupBookings() async {
+    if (_pendingBookings.isEmpty) return;
+    final ids = _pendingBookings.map((b) => b.id).toList();
+    if (ids.length > 1) {
+      await BookingService().updateBookingNotes(ids.first, 'group:${ids.join(',')}');
+    }
+    final total = _pendingBookings.fold<double>(0, (s, b) => s + b.totalPrice);
+    _lastBooking = _pendingBookings.first.copyBooking(totalPrice: total);
+  }
+
   Future<bool> _bookMonthly(user, WorkspaceController controller) async {
-    final start = DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
+    final start = DateTime(
+      _primarySelectedDate.year,
+      _primarySelectedDate.month,
+      _primarySelectedDate.day,
+    );
     final days = 30 * _monthCount;
     final end = start.add(Duration(days: days));
     final price = _monthlyRate * _monthCount;
@@ -206,51 +296,110 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
       workspaceName: _workspace!.name, startDate: start, endDate: end,
       numberOfDays: days, durationHours: 24 * days, totalPrice: price,
       status: AppConstants.bookingStatusPending, createdAt: DateTime.now(), isHourlyBooking: false,
-      bookingDateKey: DateFormat('yyyy-MM-dd').format(_selectedDate), categoryType: _selectedCategory!.type,
+      bookingDateKey: _dateKey(_primarySelectedDate), categoryType: _selectedCategory!.type,
       seatCount: 1, pricePerDay: _selectedCategory!.pricePerDay, pricePerHour: _selectedCategory!.pricePerHour);
-    setState(() => _lastBooking = booking);
+    _pendingBookings = [booking];
+    _lastBooking = booking;
     return await controller.bookWorkspaceTimeslot(booking: booking, workspace: _workspace!);
   }
 
   Future<bool> _bookFullDay(user, WorkspaceController controller) async {
-    final booking = _createBooking(userId: user.id,
-      startDate: DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day),
-      endDate: DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day, 23, 59),
-      durationHours: 24, totalPrice: _selectedCategory!.pricePerDay, isHourlyBooking: false, seatCount: 1);
-    setState(() => _lastBooking = booking);
-    return await controller.bookWorkspaceTimeslot(booking: booking, workspace: _workspace!);
-  }
-
-  Future<bool> _bookTimeSlots(user, WorkspaceController controller) async {
-    for (var slot in _selectedSlots) {
-      if (_availableSeatsForSlot(slot) < _selectedSeats) {
-        _msg('Slot ${slot.label} does not have enough seats', true);
-        return false;
+    bool ok = true;
+    for (final dateKey in _selectedDateKeys) {
+      final date = _parseDateKey(dateKey);
+      final booking = _createBooking(
+        userId: user.id,
+        dateKey: dateKey,
+        startDate: DateTime(date.year, date.month, date.day),
+        endDate: DateTime(date.year, date.month, date.day, 23, 59),
+        durationHours: 24,
+        totalPrice: _selectedCategory!.pricePerDay,
+        isHourlyBooking: false,
+        seatCount: 1,
+      );
+      _pendingBookings.add(booking);
+      if (!await controller.bookWorkspaceTimeslot(booking: booking, workspace: _workspace!)) {
+        ok = false;
       }
     }
-    bool ok = true;
-    for (var slot in _selectedSlots) {
-      final dur = slot.endHour - slot.startHour;
-      final start = DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day, slot.startHour);
-      final booking = _createBooking(userId: user.id, startDate: start, endDate: start.add(Duration(hours: dur)),
-        durationHours: dur, totalPrice: _selectedCategory!.pricePerHour * dur * _selectedSeats,
-        isHourlyBooking: true, seatCount: _selectedSeats, timeSlotId: slot.id, timeSlotLabel: slot.label);
-      _lastBooking ??= booking;
-      if (!await controller.bookWorkspaceTimeslot(booking: booking, workspace: _workspace!)) ok = false;
-    }
+    await _finalizeGroupBookings();
     return ok;
   }
 
-  BookingModel _createBooking({required String userId, required DateTime startDate, required DateTime endDate,
-    required int durationHours, required double totalPrice, required bool isHourlyBooking,
-    required int seatCount, String? timeSlotId, String? timeSlotLabel}) {
-    return BookingModel(id: const Uuid().v4(), userId: userId, workspaceId: _workspace!.id,
-      workspaceName: _workspace!.name, startDate: startDate, endDate: endDate,
-      numberOfDays: isHourlyBooking ? 0 : 1, durationHours: durationHours, totalPrice: totalPrice,
-      status: AppConstants.bookingStatusPending, createdAt: DateTime.now(), isHourlyBooking: isHourlyBooking,
-      bookingDateKey: DateFormat('yyyy-MM-dd').format(_selectedDate), categoryType: _selectedCategory!.type,
-      seatCount: seatCount, pricePerDay: _selectedCategory!.pricePerDay, pricePerHour: _selectedCategory!.pricePerHour,
-      timeSlotId: timeSlotId, timeSlotLabel: timeSlotLabel);
+  Future<bool> _bookTimeSlots(user, WorkspaceController controller) async {
+    for (final dateKey in _selectedDateKeys) {
+      for (var slot in _selectedSlots) {
+        if (_availableSeatsForSlotOnDate(slot, dateKey) < _selectedSeats) {
+          final date = _parseDateKey(dateKey);
+          _msg(
+            'Not enough seats on ${DateFormat.MMMd().format(date)} for ${slot.label}',
+            true,
+          );
+          return false;
+        }
+      }
+    }
+    bool ok = true;
+    for (final dateKey in _selectedDateKeys) {
+      final date = _parseDateKey(dateKey);
+      for (var slot in _selectedSlots) {
+        final dur = slot.endHour - slot.startHour;
+        final start = DateTime(date.year, date.month, date.day, slot.startHour);
+        final booking = _createBooking(
+          userId: user.id,
+          dateKey: dateKey,
+          startDate: start,
+          endDate: start.add(Duration(hours: dur)),
+          durationHours: dur,
+          totalPrice: _selectedCategory!.pricePerHour * dur * _selectedSeats,
+          isHourlyBooking: true,
+          seatCount: _selectedSeats,
+          timeSlotId: slot.id,
+          timeSlotLabel: slot.label,
+        );
+        _pendingBookings.add(booking);
+        if (!await controller.bookWorkspaceTimeslot(booking: booking, workspace: _workspace!)) {
+          ok = false;
+        }
+      }
+    }
+    await _finalizeGroupBookings();
+    return ok;
+  }
+
+  BookingModel _createBooking({
+    required String userId,
+    required String dateKey,
+    required DateTime startDate,
+    required DateTime endDate,
+    required int durationHours,
+    required double totalPrice,
+    required bool isHourlyBooking,
+    required int seatCount,
+    String? timeSlotId,
+    String? timeSlotLabel,
+  }) {
+    return BookingModel(
+      id: const Uuid().v4(),
+      userId: userId,
+      workspaceId: _workspace!.id,
+      workspaceName: _workspace!.name,
+      startDate: startDate,
+      endDate: endDate,
+      numberOfDays: isHourlyBooking ? 0 : 1,
+      durationHours: durationHours,
+      totalPrice: totalPrice,
+      status: AppConstants.bookingStatusPending,
+      createdAt: DateTime.now(),
+      isHourlyBooking: isHourlyBooking,
+      bookingDateKey: dateKey,
+      categoryType: _selectedCategory!.type,
+      seatCount: seatCount,
+      pricePerDay: _selectedCategory!.pricePerDay,
+      pricePerHour: _selectedCategory!.pricePerHour,
+      timeSlotId: timeSlotId,
+      timeSlotLabel: timeSlotLabel,
+    );
   }
 
   void _msg(String text, bool isError) {
@@ -405,6 +554,38 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
             Text(_workspace!.description, style: GoogleFonts.poppins(fontSize: 13, color: CAppTheme.textSecondary, height: 1.6)),
             const SizedBox(height: 20),
 
+            if (_workspace!.officePolicies != null &&
+                _workspace!.officePolicies!.trim().isNotEmpty) ...[
+              Text('Office Policies',
+                  style: GoogleFonts.poppins(
+                      fontSize: 16, fontWeight: FontWeight.w700, color: CAppTheme.textPrimary)),
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8F9FF),
+                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                  border: Border.all(color: CAppTheme.borderColor),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.policy_outlined, size: 20, color: CAppTheme.primaryColor),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        _workspace!.officePolicies!,
+                        style: GoogleFonts.poppins(
+                            fontSize: 13, color: CAppTheme.textSecondary, height: 1.5),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+            ],
+
             // Amenities
             Text('Amenities', style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w700, color: CAppTheme.textPrimary)),
             const SizedBox(height: 10),
@@ -546,7 +727,20 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Select Date', style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w700, color: CAppTheme.textPrimary)),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('Select Dates',
+                style: GoogleFonts.poppins(
+                    fontSize: 16, fontWeight: FontWeight.w700, color: CAppTheme.textPrimary)),
+            if (_selectedDateKeys.length > 1)
+              Text('${_selectedDateKeys.length} selected',
+                  style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.primaryColor)),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text('Tap to select multiple days',
+            style: GoogleFonts.poppins(fontSize: 11, color: CAppTheme.textTertiary)),
         const SizedBox(height: 10),
         SizedBox(
           height: 74,
@@ -555,11 +749,21 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
             itemCount: _upcomingDates.length,
             itemBuilder: (ctx, i) {
               final date = _upcomingDates[i];
-              final on = DateUtils.isSameDay(date, _selectedDate);
+              final key = _dateKey(date);
+              final on = _selectedDateKeys.contains(key);
               return Padding(
                 padding: const EdgeInsets.only(right: 10),
                 child: GestureDetector(
-                  onTap: () async { setState(() => _selectedDate = date); await _loadAvailability(); },
+                  onTap: () async {
+                    setState(() {
+                      if (on) {
+                        if (_selectedDateKeys.length > 1) _selectedDateKeys.remove(key);
+                      } else {
+                        _selectedDateKeys.add(key);
+                      }
+                    });
+                    await _loadAvailability();
+                  },
                   child: Container(
                     width: 56,
                     decoration: BoxDecoration(
@@ -570,9 +774,22 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Text(DateFormat.E().format(date), style: GoogleFonts.poppins(fontSize: 12, color: on ? Colors.white70 : CAppTheme.textTertiary, fontWeight: FontWeight.w500)),
+                        Text(DateFormat.E().format(date),
+                            style: GoogleFonts.poppins(
+                                fontSize: 12,
+                                color: on ? Colors.white70 : CAppTheme.textTertiary,
+                                fontWeight: FontWeight.w500)),
                         const SizedBox(height: 4),
-                        Text(DateFormat.d().format(date), style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.bold, color: on ? Colors.white : CAppTheme.textPrimary)),
+                        Text(DateFormat.d().format(date),
+                            style: GoogleFonts.poppins(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: on ? Colors.white : CAppTheme.textPrimary)),
+                        if (on)
+                          const Padding(
+                            padding: EdgeInsets.only(top: 2),
+                            child: Icon(Icons.check, size: 12, color: Colors.white70),
+                          ),
                       ],
                     ),
                   ),
@@ -722,7 +939,7 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
             children: [
               Text('Number of months',
                   style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 14)),
-              Text('Starts ${DateFormat.yMMMd().format(_selectedDate)}',
+              Text('Starts ${DateFormat.yMMMd().format(_primarySelectedDate)}',
                   style: GoogleFonts.poppins(fontSize: 11, color: CAppTheme.textSecondary)),
             ],
           ),
@@ -771,7 +988,26 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
   }
 
   Widget _buildDualBottomBar(bool isBooking) {
-    final canBook = (_selectedSlots.isNotEmpty || _isPerDayBooking || _isMonthlyBooking) && _selectedCategory != null;
+    final dayCount = _isMonthlyBooking ? 1 : _selectedDateKeys.length;
+    final canBook = (_selectedSlots.isNotEmpty || _isPerDayBooking || _isMonthlyBooking) &&
+        _selectedCategory != null &&
+        _selectedDateKeys.isNotEmpty;
+
+    final hourlyTotal = _selectedSlots.fold<double>(
+      0.0,
+      (s, slot) => s + (_selectedCategory!.pricePerHour * (slot.endHour - slot.startHour) * _selectedSeats),
+    );
+
+    final priceLabel = _isMonthlyBooking
+        ? 'Rs. ${(_monthlyRate * _monthCount).toStringAsFixed(0)}'
+        : _isPerDayBooking
+            ? 'Rs. ${(_selectedCategory!.pricePerDay * dayCount).toStringAsFixed(0)}'
+            : 'Rs. ${(hourlyTotal * dayCount).toStringAsFixed(0)}';
+
+    final dateLabel = _selectedDateKeys.length == 1
+        ? DateFormat.yMMMd().format(_parseDateKey(_selectedDateKeys.first))
+        : '$dayCount days selected';
+
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
       decoration: BoxDecoration(
@@ -788,13 +1024,9 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(DateFormat.yMMMd().format(_selectedDate), style: GoogleFonts.poppins(fontSize: 13, color: CAppTheme.textSecondary)),
+                  Text(dateLabel, style: GoogleFonts.poppins(fontSize: 13, color: CAppTheme.textSecondary)),
                   Text(
-                    _isMonthlyBooking
-                        ? 'Rs. ${(_monthlyRate * _monthCount).toStringAsFixed(0)}'
-                        : _isPerDayBooking
-                            ? 'Rs. ${_selectedCategory!.pricePerDay.toStringAsFixed(0)}'
-                            : 'Rs. ${_selectedSlots.fold<double>(0.0, (s, slot) => s + (_selectedCategory!.pricePerHour * (slot.endHour - slot.startHour) * _selectedSeats)).toStringAsFixed(0)}',
+                    priceLabel,
                     style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.bold, color: CAppTheme.primaryColor),
                   ),
                 ],
@@ -830,8 +1062,12 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
                                 : !canBook
                                     ? 'Select slots'
                                     : _isPerDayBooking
-                                        ? 'Book Full Day'
-                                        : 'Book ${_selectedSlots.length} Slot(s)',
+                                        ? dayCount > 1
+                                            ? 'Book $dayCount Days'
+                                            : 'Book Full Day'
+                                        : dayCount > 1
+                                            ? 'Book ${_selectedSlots.length} Slot(s) × $dayCount Days'
+                                            : 'Book ${_selectedSlots.length} Slot(s)',
                             style: GoogleFonts.poppins(fontSize: 15, fontWeight: FontWeight.w600),
                           ),
                   ),

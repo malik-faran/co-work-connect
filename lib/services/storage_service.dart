@@ -327,7 +327,11 @@ class StorageService {
 
     await _supabase.storage
         .from('payment_receipts')
-        .uploadBinary(filePath, bytes);
+        .uploadBinary(filePath, bytes)
+        .timeout(
+          const Duration(seconds: 60),
+          onTimeout: () => throw Exception('Receipt upload timed out'),
+        );
 
     return _supabase.storage.from('payment_receipts').getPublicUrl(filePath);
   }

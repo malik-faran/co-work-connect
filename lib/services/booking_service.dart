@@ -191,4 +191,27 @@ class BookingService {
 
     return rows.map((b) => BookingModel.fromBookingMap(b)).toList();
   }
+
+  Future<void> updateBookingNotes(String bookingId, String notes) async {
+    await _supabase.from('bookings').update({
+      'notes': notes,
+      'updated_at': DateTime.now().toIso8601String(),
+    }).eq('id', bookingId);
+  }
+
+  List<String> parseGroupBookingIds(String? notes, String primaryId) {
+    if (notes == null || !notes.startsWith('group:')) return [primaryId];
+    final ids = notes.substring(6).split(',').where((id) => id.isNotEmpty).toList();
+    if (!ids.contains(primaryId)) ids.insert(0, primaryId);
+    return ids;
+  }
+
+  Future<void> confirmBookings(List<String> bookingIds) async {
+    for (final id in bookingIds) {
+      await _supabase.from('bookings').update({
+        'status': 'confirmed',
+        'updated_at': DateTime.now().toIso8601String(),
+      }).eq('id', id);
+    }
+  }
 }

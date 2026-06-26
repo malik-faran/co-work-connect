@@ -60,6 +60,12 @@ begin
   end if;
 end $$;
 
+alter table public.payments drop constraint if exists payments_payment_method_check;
+
+alter table public.payments
+  add constraint payments_payment_method_check
+  check (payment_method in ('stripe', 'manual', 'cash'));
+
 -- -------------------------------------------------------------------------
 -- 3) Notification types for payment receipt flow
 -- -------------------------------------------------------------------------

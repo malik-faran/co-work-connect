@@ -140,7 +140,8 @@ class NotificationService {
     await createNotification(notification);
   }
 
-  /// Send chat message notification to the receiver
+  /// Send chat message notification to the receiver.
+  /// Keeps one unread notification per chat room (updates in place).
   Future<void> sendChatMessageNotification({
     required String receiverUserId,
     required String senderName,
@@ -152,6 +153,44 @@ class NotificationService {
           ? '${message.substring(0, 100)}...'
           : message;
 
+      final rows = await _supabase
+          .from('notifications')
+          .select()
+          .eq('user_id', receiverUserId)
+          .eq('type', 'chat_message')
+          .eq('is_read', false);
+
+      String? existingId;
+      final duplicateIds = <String>[];
+
+      for (final row in rows) {
+        final meta = row['metadata'];
+        if (meta is Map && meta['chat_room_id'] == chatRoomId) {
+          if (existingId == null) {
+            existingId = row['id'] as String;
+          } else {
+            duplicateIds.add(row['id'] as String);
+          }
+        }
+      }
+
+      for (final dupId in duplicateIds) {
+        await deleteNotification(dupId);
+      }
+
+      final now = DateTime.now().toIso8601String();
+      final metadata = {'chat_room_id': chatRoomId, 'sender_name': senderName};
+
+      if (existingId != null) {
+        await _supabase.from('notifications').update({
+          'title': 'New message from $senderName',
+          'message': truncatedMessage,
+          'metadata': metadata,
+          'created_at': now,
+        }).eq('id', existingId);
+        return;
+      }
+
       final notification = NotificationModel(
         id: _uuid.v4(),
         userId: receiverUserId,
@@ -159,12 +198,36 @@ class NotificationService {
         message: truncatedMessage,
         type: 'chat_message',
         createdAt: DateTime.now(),
-        metadata: {'chat_room_id': chatRoomId, 'sender_name': senderName},
+        metadata: metadata,
       );
 
       await createNotification(notification);
     } catch (e) {
       debugPrint('Chat notification error: $e');
+    }
+  }
+
+  /// Mark all unread chat notifications for a room as read.
+  Future<void> markChatNotificationsAsReadForRoom(
+    String userId,
+    String chatRoomId,
+  ) async {
+    try {
+      final rows = await _supabase
+          .from('notifications')
+          .select('id, metadata')
+          .eq('user_id', userId)
+          .eq('type', 'chat_message')
+          .eq('is_read', false);
+
+      for (final row in rows) {
+        final meta = row['metadata'];
+        if (meta is Map && meta['chat_room_id'] == chatRoomId) {
+          await markAsRead(row['id'] as String);
+        }
+      }
+    } catch (e) {
+      debugPrint('Mark chat notifications read failed: $e');
     }
   }
 

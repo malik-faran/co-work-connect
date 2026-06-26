@@ -1,5 +1,12 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:cwc/services/chat_service.dart';
+import 'package:cwc/services/navigation_service.dart';
+import 'package:cwc/services/supabase_service.dart';
+import 'package:cwc/models/chat_model.dart';
+import 'package:uuid/uuid.dart';
 
 /// Shows alerts in the phone status bar with sound.
 class LocalNotificationService {
@@ -8,9 +15,12 @@ class LocalNotificationService {
 
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
+  final _uuid = const Uuid();
 
   static const _androidChannelId = 'cwc_notifications';
   static const _androidChannelName = 'CWC Notifications';
+  static const _androidChatChannelId = 'cwc_chat_messages';
+  static const _androidChatChannelName = 'Chat Messages';
 
   bool _initialized = false;
 
@@ -30,6 +40,7 @@ class LocalNotificationService {
         iOS: iosSettings,
       ),
       onDidReceiveNotificationResponse: _onNotificationTapped,
+      onDidReceiveBackgroundNotificationResponse: _onBackgroundNotificationTapped,
     );
 
     final androidPlugin =
@@ -37,15 +48,24 @@ class LocalNotificationService {
             AndroidFlutterLocalNotificationsPlugin>();
 
     if (androidPlugin != null) {
-      const channel = AndroidNotificationChannel(
+      const generalChannel = AndroidNotificationChannel(
         _androidChannelId,
         _androidChannelName,
-        description: 'Booking, chat, and app alerts',
+        description: 'Booking and app alerts',
         importance: Importance.high,
         playSound: true,
         enableVibration: true,
       );
-      await androidPlugin.createNotificationChannel(channel);
+      const chatChannel = AndroidNotificationChannel(
+        _androidChatChannelId,
+        _androidChatChannelName,
+        description: 'New chat messages',
+        importance: Importance.high,
+        playSound: true,
+        enableVibration: true,
+      );
+      await androidPlugin.createNotificationChannel(generalChannel);
+      await androidPlugin.createNotificationChannel(chatChannel);
       await androidPlugin.requestNotificationsPermission();
     }
 
@@ -61,8 +81,64 @@ class LocalNotificationService {
     _initialized = true;
   }
 
+  @pragma('vm:entry-point')
+  static void _onBackgroundNotificationTapped(NotificationResponse response) {
+    LocalNotificationService.instance._handleNotificationResponse(response);
+  }
+
   void _onNotificationTapped(NotificationResponse response) {
-    debugPrint('Notification tapped: ${response.payload}');
+    _handleNotificationResponse(response);
+  }
+
+  void _handleNotificationResponse(NotificationResponse response) {
+    final payload = response.payload;
+    if (payload == null || payload.isEmpty) return;
+
+    try {
+      final data = jsonDecode(payload) as Map<String, dynamic>;
+      final type = data['type'] as String?;
+      final chatRoomId = data['chat_room_id'] as String?;
+
+      if (type == 'chat_message' && chatRoomId != null) {
+        if (response.actionId == 'reply' &&
+            response.input != null &&
+            response.input!.trim().isNotEmpty) {
+          _sendQuickReply(chatRoomId, response.input!.trim());
+        } else {
+          NavigationService.openChatFromNotification(chatRoomId);
+        }
+      }
+    } catch (_) {
+      // Legacy payload: plain notification id — ignore navigation.
+    }
+  }
+
+  Future<void> _sendQuickReply(String chatRoomId, String text) async {
+    try {
+      final user = SupabaseService.client.auth.currentUser;
+      if (user == null) return;
+
+      final profile = await SupabaseService.client
+          .from('users')
+          .select('name, profile_image_url')
+          .eq('id', user.id)
+          .maybeSingle();
+
+      final message = ChatMessageModel(
+        id: _uuid.v4(),
+        chatRoomId: chatRoomId,
+        senderId: user.id,
+        senderName: profile?['name'] as String? ?? 'User',
+        senderProfileImage: profile?['profile_image_url'] as String?,
+        message: text,
+        createdAt: DateTime.now(),
+      );
+
+      await ChatService().sendMessage(message);
+      NavigationService.openChatFromNotification(chatRoomId);
+    } catch (e) {
+      debugPrint('Quick reply failed: $e');
+    }
   }
 
   Future<void> show({
@@ -76,7 +152,7 @@ class LocalNotificationService {
     const androidDetails = AndroidNotificationDetails(
       _androidChannelId,
       _androidChannelName,
-      channelDescription: 'Booking, chat, and app alerts',
+      channelDescription: 'Booking and app alerts',
       importance: Importance.high,
       priority: Priority.high,
       playSound: true,
@@ -96,6 +172,67 @@ class LocalNotificationService {
       body,
       const NotificationDetails(android: androidDetails, iOS: iosDetails),
       payload: payload ?? id,
+    );
+  }
+
+  Future<void> cancelChatNotification(String chatRoomId) async {
+    if (kIsWeb || !_initialized) return;
+    await _plugin.cancel('chat_$chatRoomId'.hashCode);
+  }
+
+  /// Chat message with Open + Reply actions (Android).
+  Future<void> showChatMessage({
+    required String id,
+    required String title,
+    required String body,
+    required String chatRoomId,
+  }) async {
+    if (kIsWeb || !_initialized) return;
+
+    final payload = jsonEncode({
+      'type': 'chat_message',
+      'chat_room_id': chatRoomId,
+      'notification_id': id,
+    });
+
+    const androidDetails = AndroidNotificationDetails(
+      _androidChatChannelId,
+      _androidChatChannelName,
+      channelDescription: 'New chat messages',
+      importance: Importance.high,
+      priority: Priority.high,
+      category: AndroidNotificationCategory.message,
+      playSound: true,
+      enableVibration: true,
+      icon: '@mipmap/ic_launcher',
+      actions: [
+        AndroidNotificationAction(
+          'reply',
+          'Reply',
+          inputs: [AndroidNotificationActionInput(label: 'Message')],
+          showsUserInterface: true,
+        ),
+        AndroidNotificationAction(
+          'open_chat',
+          'Open',
+          showsUserInterface: true,
+        ),
+      ],
+    );
+
+    const iosDetails = DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: true,
+      presentSound: true,
+      categoryIdentifier: 'chat_message',
+    );
+
+    await _plugin.show(
+      'chat_$chatRoomId'.hashCode,
+      title,
+      body,
+      const NotificationDetails(android: androidDetails, iOS: iosDetails),
+      payload: payload,
     );
   }
 }

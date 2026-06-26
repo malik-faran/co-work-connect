@@ -7,7 +7,10 @@ import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:cwc/controllers/auth_controller.dart';
 import 'package:cwc/models/chat_model.dart';
+import 'package:cwc/services/active_chat_tracker.dart';
 import 'package:cwc/services/chat_service.dart';
+import 'package:cwc/services/local_notification_service.dart';
+import 'package:cwc/services/notification_service.dart';
 import 'package:cwc/services/storage_service.dart';
 import 'package:cwc/utils/helpers/model_helpers.dart';
 import 'package:cwc/utils/themes/theme.dart';
@@ -49,6 +52,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    ActiveChatTracker.setActive(widget.chatRoomId);
     WidgetsBinding.instance.addObserver(this);
     _loadChatRoom();
     _setupMessageStream();
@@ -56,6 +60,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    if (ActiveChatTracker.isActive(widget.chatRoomId)) {
+      ActiveChatTracker.setActive(null);
+    }
     WidgetsBinding.instance.removeObserver(this);
     _messageStreamSubscription?.cancel();
     _messageController.dispose();
@@ -71,6 +78,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _clearChatAlerts() async {
+    final currentUser = context.read<AuthController>().currentUser;
+    if (currentUser == null) return;
+    await _chatService.markMessagesAsRead(widget.chatRoomId, currentUser.id);
+    await NotificationService().markChatNotificationsAsReadForRoom(
+      currentUser.id,
+      widget.chatRoomId,
+    );
+    await LocalNotificationService.instance
+        .cancelChatNotification(widget.chatRoomId);
+  }
+
   Future<void> _reloadMessages() async {
     try {
       final messages = await _chatService.getChatMessages(widget.chatRoomId, limit: 100);
@@ -83,7 +102,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         final authController = context.read<AuthController>();
         final currentUser = authController.currentUser;
         if (currentUser != null) {
-          await _chatService.markMessagesAsRead(widget.chatRoomId, currentUser.id);
+          await _clearChatAlerts();
         }
       }
     } catch (_) {}
@@ -128,7 +147,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         _isLoading = false;
       });
 
-      await _chatService.markMessagesAsRead(widget.chatRoomId, currentUser.id);
+      await _clearChatAlerts();
     } catch (e) {
       setState(() {
         _errorMessage = e.toString();
@@ -251,6 +270,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     setState(() => _isUploadingImage = true);
 
+    ChatMessageModel? pendingMessage;
     try {
       final bytes = await file.readAsBytes();
       final imageUrl = await _storageService.uploadChatImage(
@@ -259,7 +279,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         fileName: fileName,
       );
 
-      final message = ChatMessageModel(
+      pendingMessage = ChatMessageModel(
         id: _uuid.v4(),
         chatRoomId: widget.chatRoomId,
         senderId: currentUser.id,
@@ -273,16 +293,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
       if (!mounted) return;
       setState(() {
-        _messages = [..._messages, message];
+        _messages = [..._messages, pendingMessage!];
         _isUploadingImage = false;
       });
       _scrollToBottom();
 
-      await _chatService.sendMessage(message);
+      await _chatService.sendMessage(pendingMessage!);
       await _chatService.markMessagesAsRead(widget.chatRoomId, currentUser.id);
     } catch (e) {
       if (!mounted) return;
-      setState(() => _isUploadingImage = false);
+      setState(() {
+        if (pendingMessage != null) {
+          _messages.removeWhere((m) => m.id == pendingMessage!.id);
+        }
+        _isUploadingImage = false;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -290,6 +315,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             style: GoogleFonts.poppins(),
           ),
           backgroundColor: CAppTheme.errorColor,
+          duration: const Duration(seconds: 5),
         ),
       );
     }

@@ -7,6 +7,7 @@ import 'package:cwc/services/local_notification_service.dart';
 import 'package:cwc/services/fcm_service.dart';
 import 'package:cwc/controllers/auth_controller.dart';
 import 'package:cwc/controllers/workspace_controller.dart';
+import 'package:cwc/services/navigation_service.dart';
 import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/views/screens/splash_screen.dart';
 import 'package:flutter_stripe/flutter_stripe.dart';
@@ -35,6 +36,7 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => WorkspaceController()),
       ],
       child: MaterialApp(
+        navigatorKey: NavigationService.navigatorKey,
         title: 'CWL - Coworking Spaces',
         debugShowCheckedModeBanner: false,
         themeMode: ThemeMode.light,

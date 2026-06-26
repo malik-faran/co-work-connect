@@ -19,7 +19,13 @@ import 'package:cwc/views/screens/notifications/notifications_screen.dart';
 import 'package:cwc/views/screens/sos/sos_screen.dart';
 import 'package:cwc/views/screens/chat/chat_list_screen.dart';
 import 'package:cwc/services/notification_service.dart';
+import 'package:cwc/services/chat_service.dart';
+import 'package:cwc/services/recommendation_service.dart';
+import 'package:cwc/services/workspace_service.dart';
+import 'package:cwc/models/workspace_recommendation.dart';
+import 'package:cwc/models/chat_model.dart';
 import 'package:cwc/models/notification_model.dart';
+import 'package:cwc/utils/notification_scope.dart';
 import 'package:cwc/views/widgets/workspaces_map_view.dart';
 
 class UserHomeScreen extends StatefulWidget {
@@ -42,10 +48,13 @@ class UserHomeScreen extends StatefulWidget {
 class _UserHomeScreenState extends State<UserHomeScreen> {
   final TextEditingController _searchController = TextEditingController();
   final NotificationService _notificationService = NotificationService();
+  final ChatService _chatService = ChatService();
   Timer? _refreshTimer;
   int _selectedTab = 0;
-  int _unreadNotificationCount = 0;
+  int _unreadWorkspaceNotifications = 0;
+  int _unreadMessageCount = 0;
   StreamSubscription<List<NotificationModel>>? _notifSub;
+  StreamSubscription<List<ChatRoomModel>>? _chatSub;
 
   @override
   void initState() {
@@ -53,7 +62,9 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
     UserHomeScreen.tabRequest.addListener(_onTabRequest);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadNotificationCount();
+      _loadUnreadMessageCount();
       _setupNotificationStream();
+      _setupChatUnreadStream();
       context.read<WorkspaceController>().loadWorkspaces();
     });
   }
@@ -62,12 +73,35 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
     if (mounted) setState(() => _selectedTab = UserHomeScreen.tabRequest.value);
   }
 
+  Future<void> _loadUnreadMessageCount() async {
+    final user = context.read<AuthController>().currentUser;
+    if (user == null) return;
+    try {
+      final count = await _chatService.getTotalUnreadCount(user.id);
+      if (mounted) setState(() => _unreadMessageCount = count);
+    } catch (_) {}
+  }
+
+  void _setupChatUnreadStream() {
+    final user = context.read<AuthController>().currentUser;
+    if (user == null) return;
+    _chatSub?.cancel();
+    _chatSub = _chatService.getChatRoomsStream(user.id).listen(
+      (_) => _loadUnreadMessageCount(),
+      onError: (_) {},
+      cancelOnError: false,
+    );
+  }
+
   Future<void> _loadNotificationCount() async {
     final user = context.read<AuthController>().currentUser;
     if (user == null) return;
     try {
-      final count = await _notificationService.getUnreadCount(user.id);
-      if (mounted) setState(() => _unreadNotificationCount = count);
+      final count = NotificationScopeHelper.unreadCount(
+        await _notificationService.getUserNotifications(user.id),
+        NotificationScope.workspaces,
+      );
+      if (mounted) setState(() => _unreadWorkspaceNotifications = count);
     } catch (_) {}
   }
 
@@ -81,9 +115,11 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
           (notifs) {
             if (mounted) {
               setState(
-                () => _unreadNotificationCount = notifs
-                    .where((n) => !n.isRead)
-                    .length,
+                () => _unreadWorkspaceNotifications =
+                    NotificationScopeHelper.unreadCount(
+                  notifs,
+                  NotificationScope.workspaces,
+                ),
               );
             }
           },
@@ -96,6 +132,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   void dispose() {
     UserHomeScreen.tabRequest.removeListener(_onTabRequest);
     _notifSub?.cancel();
+    _chatSub?.cancel();
     _refreshTimer?.cancel();
     _searchController.dispose();
     super.dispose();
@@ -150,12 +187,14 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
             const CollaborationListScreen(),
             _HomeTab(
               searchController: _searchController,
-              unreadCount: _unreadNotificationCount,
+              unreadCount: _unreadWorkspaceNotifications,
               onNotificationTap: () {
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (_) => const NotificationsScreen(),
+                    builder: (_) => const NotificationsScreen(
+                      scope: NotificationScope.workspaces,
+                    ),
                   ),
                 ).then((_) => _loadNotificationCount());
               },
@@ -197,7 +236,11 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                     icon: Icons.chat_bubble_outline_rounded,
                     label: 'Messages',
                     isActive: _selectedTab == 2,
-                    onTap: () => setState(() => _selectedTab = 2),
+                    badgeCount: _unreadMessageCount,
+                    onTap: () {
+                      setState(() => _selectedTab = 2);
+                      _loadUnreadMessageCount();
+                    },
                   ),
                   _NavItem(
                     icon: Icons.person_outline_rounded,
@@ -219,12 +262,14 @@ class _NavItem extends StatelessWidget {
   final IconData icon;
   final String label;
   final bool isActive;
+  final int badgeCount;
   final VoidCallback onTap;
 
   const _NavItem({
     required this.icon,
     required this.label,
     required this.isActive,
+    this.badgeCount = 0,
     required this.onTap,
   });
 
@@ -245,10 +290,40 @@ class _NavItem extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              icon,
-              color: isActive ? CAppTheme.primaryColor : CAppTheme.textTertiary,
-              size: 24,
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Icon(
+                  icon,
+                  color: isActive ? CAppTheme.primaryColor : CAppTheme.textTertiary,
+                  size: 24,
+                ),
+                if (badgeCount > 0)
+                  Positioned(
+                    right: -8,
+                    top: -6,
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: const BoxDecoration(
+                        color: CAppTheme.errorColor,
+                        shape: BoxShape.circle,
+                      ),
+                      constraints: const BoxConstraints(
+                        minWidth: 16,
+                        minHeight: 16,
+                      ),
+                      child: Text(
+                        badgeCount > 9 ? '9+' : '$badgeCount',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ),
+              ],
             ),
             const SizedBox(height: 4),
             Text(
@@ -286,6 +361,8 @@ class _HomeTab extends StatefulWidget {
 
 class _HomeTabState extends State<_HomeTab> {
   bool _showMapView = false;
+  List<WorkspaceRecommendation> _recommendations = [];
+  bool _loadingRecommendations = false;
 
   static const _categories = <_CategoryDef>[
     _CategoryDef(label: 'All', icon: Icons.grid_view_rounded, value: null),
@@ -305,6 +382,94 @@ class _HomeTabState extends State<_HomeTab> {
       value: 'shared',
     ),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadRecommendations());
+  }
+
+  Future<void> _loadRecommendations() async {
+    final user = context.read<AuthController>().currentUser;
+    if (user == null || !mounted) return;
+
+    setState(() => _loadingRecommendations = true);
+    try {
+      final controller = context.read<WorkspaceController>();
+      var workspaces = controller.workspaces;
+      if (workspaces.isEmpty) {
+        workspaces = await WorkspaceService().getAllWorkspaces();
+      }
+      final recs = await RecommendationService().getRecommendations(
+        userId: user.id,
+        workspaces: workspaces,
+      );
+      if (mounted) setState(() => _recommendations = recs);
+    } catch (_) {
+      if (mounted) setState(() => _recommendations = []);
+    } finally {
+      if (mounted) setState(() => _loadingRecommendations = false);
+    }
+  }
+
+  bool _hasActiveFilters(WorkspaceController controller) =>
+      controller.selectedCategory != null ||
+      controller.selectedAmenities.isNotEmpty ||
+      widget.searchController.text.trim().isNotEmpty;
+
+  Widget _buildRecommendedSection() {
+    if (_loadingRecommendations) {
+      return const Padding(
+        padding: EdgeInsets.fromLTRB(20, 8, 20, 16),
+        child: SizedBox(
+          height: 100,
+          child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+        ),
+      );
+    }
+    if (_recommendations.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+          child: Row(
+            children: [
+              const Icon(Icons.auto_awesome, size: 20, color: CAppTheme.primaryColor),
+              const SizedBox(width: 8),
+              Text(
+                'Recommended for you',
+                style: GoogleFonts.poppins(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: CAppTheme.textPrimary,
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(
+          height: 210,
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            itemCount: _recommendations.length,
+            itemBuilder: (context, index) {
+              final rec = _recommendations[index];
+              return Padding(
+                padding: EdgeInsets.only(
+                  right: index < _recommendations.length - 1 ? 14 : 0,
+                ),
+                child: _RecommendedWorkspaceCard(recommendation: rec),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 8),
+      ],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -580,49 +745,56 @@ class _HomeTabState extends State<_HomeTab> {
                   (byCity[ws.city] ??= []).add(ws);
                 }
 
+                final showRecommendations = !_hasActiveFilters(controller);
+
                 return RefreshIndicator(
-                  onRefresh: () => controller.loadWorkspaces(),
+                  onRefresh: () async {
+                    await controller.loadWorkspaces();
+                    await _loadRecommendations();
+                  },
                   color: CAppTheme.primaryColor,
-                  child: ListView.builder(
+                  child: ListView(
                     padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
                     physics: const AlwaysScrollableScrollPhysics(),
-                    itemCount: byCity.length,
-                    itemBuilder: (context, index) {
-                      final city = byCity.keys.elementAt(index);
-                      final list = byCity[city]!;
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.only(top: 8, bottom: 12),
-                            child: Row(
-                              children: [
-                                const Icon(
-                                  Icons.location_city_rounded,
-                                  size: 18,
-                                  color: CAppTheme.primaryColor,
-                                ),
-                                const SizedBox(width: 6),
-                                Text(
-                                  city,
-                                  style: GoogleFonts.poppins(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.w700,
-                                    color: CAppTheme.textPrimary,
+                    children: [
+                      if (showRecommendations) _buildRecommendedSection(),
+                      ...byCity.entries.map((entry) {
+                        final city = entry.key;
+                        final list = entry.value;
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.only(top: 8, bottom: 12),
+                              child: Row(
+                                children: [
+                                  const Icon(
+                                    Icons.location_city_rounded,
+                                    size: 18,
+                                    color: CAppTheme.primaryColor,
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    city,
+                                    style: GoogleFonts.poppins(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w700,
+                                      color: CAppTheme.textPrimary,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                          ),
-                          ...list.map(
-                            (ws) => Padding(
-                              padding: const EdgeInsets.only(bottom: 16),
-                              child: _WorkspaceCard(workspace: ws),
+                            ...list.map(
+                              (ws) => Padding(
+                                padding: const EdgeInsets.only(bottom: 16),
+                                child: _WorkspaceCard(workspace: ws),
+                              ),
                             ),
-                          ),
-                        ],
-                      );
-                    },
+                          ],
+                        );
+                      }),
+                    ],
                   ),
                 );
               },
@@ -768,6 +940,137 @@ class _CategoryChip extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── RECOMMENDED WORKSPACE CARD ─────────────────────────────
+class _RecommendedWorkspaceCard extends StatelessWidget {
+  final WorkspaceRecommendation recommendation;
+
+  const _RecommendedWorkspaceCard({required this.recommendation});
+
+  @override
+  Widget build(BuildContext context) {
+    final ws = recommendation.workspace;
+    return GestureDetector(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => WorkspaceDetailScreen(workspaceId: ws.id),
+        ),
+      ),
+      child: Container(
+        width: 200,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(CAppTheme.radiusXL),
+          boxShadow: CAppTheme.softShadow,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ClipRRect(
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+              child: SizedBox(
+                height: 110,
+                width: double.infinity,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    ws.imageUrls.isNotEmpty
+                        ? Image.network(
+                            ws.imageUrls.first,
+                            fit: BoxFit.cover,
+                            cacheWidth: kIsWeb ? 300 : 500,
+                            errorBuilder: (_, __, ___) => Container(
+                              color: CAppTheme.borderColor,
+                              child: const Icon(Icons.workspaces_outlined),
+                            ),
+                          )
+                        : Container(
+                            color: CAppTheme.borderColor,
+                            child: const Icon(Icons.workspaces_outlined),
+                          ),
+                    Positioned(
+                      top: 8,
+                      left: 8,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: CAppTheme.primaryColor,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          recommendation.reason,
+                          style: GoogleFonts.poppins(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    ws.name,
+                    style: GoogleFonts.poppins(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: CAppTheme.textPrimary,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    ws.city,
+                    style: GoogleFonts.poppins(
+                      fontSize: 11,
+                      color: CAppTheme.textSecondary,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Rs. ${ws.pricePerDay.toStringAsFixed(0)}/day',
+                        style: GoogleFonts.poppins(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: CAppTheme.primaryColor,
+                        ),
+                      ),
+                      if ((ws.rating ?? 0) > 0)
+                        Row(
+                          children: [
+                            const Icon(Icons.star, size: 12, color: Colors.amber),
+                            const SizedBox(width: 2),
+                            Text(
+                              (ws.rating ?? 0).toStringAsFixed(1),
+                              style: GoogleFonts.poppins(fontSize: 11),
+                            ),
+                          ],
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );

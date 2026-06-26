@@ -216,6 +216,19 @@ class ChatService {
     }
   }
 
+  /// Total unread messages across all chat rooms (direct + group).
+  Future<int> getTotalUnreadCount(String userId) async {
+    try {
+      final rooms = await getUserChatRooms(userId);
+      return rooms.fold<int>(
+        0,
+        (sum, room) => sum + room.getUnreadCount(userId),
+      );
+    } catch (_) {
+      return 0;
+    }
+  }
+
   /// Send a message
   Future<String> sendMessage(ChatMessageModel message) async {
     try {

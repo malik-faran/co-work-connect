@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:cwc/models/notification_model.dart';
 import 'package:cwc/models/payment_model.dart';
 import 'package:cwc/utils/constants/app_constants.dart';
+import 'package:cwc/services/booking_service.dart';
 import 'package:cwc/services/notification_service.dart';
 import 'package:cwc/services/supabase_service.dart';
 import 'package:http/http.dart' as http;
@@ -18,6 +19,32 @@ class PaymentService {
   static const String stripePublishableKey = 'pk_test_51T3jkzGWYJoNa16xYiXyZ7XOrDQYCrNEgQgtjIQB0sDdpq97ZHeJvj5MbQkEm2rGw12edram8Jpy4gOj8NAVfFF900IMUpuwVY';
   static const String stripeSecretKey = 'sk_test_51T3jkzGWYJoNa16x2kUEiL1KRUCtTSXPPlDbpwZBMFRjuiws6pwd12X6jGcOJb1pPXZ1327UwXg959daMLr7dtTb00eytD3EBo';
   static const String stripeApiUrl = 'https://api.stripe.com/v1';
+
+  /// Stripe test mode does not support PKR — charge in USD at this approximate rate.
+  static const double _pkrPerUsd = 280.0;
+
+  static int _pkrToUsdCents(double pkrAmount) {
+    final usd = pkrAmount / _pkrPerUsd;
+    return (usd * 100).round().clamp(50, 99999999);
+  }
+
+  Future<PaymentModel> _requireUpdatedPayment(
+    String paymentId,
+    Map<String, dynamic> patch,
+  ) async {
+    final rows = await _supabase
+        .from('payments')
+        .update(patch)
+        .eq('id', paymentId)
+        .select();
+
+    if (rows.isEmpty) {
+      throw Exception(
+        'Could not update payment. Please sign in again or contact support.',
+      );
+    }
+    return PaymentModel.fromPaymentMap(rows.first);
+  }
 
   /// Create manual payment (bank / EasyPaisa) — no Stripe.
   ///
@@ -39,7 +66,7 @@ class PaymentService {
       final keepReceipt =
           existing.receiptStatus == AppConstants.receiptAwaitingVerification ||
               existing.receiptStatus == AppConstants.receiptApproved;
-      await _supabase.from('payments').update({
+      return _requireUpdatedPayment(existing.id, {
         'payment_method': AppConstants.paymentMethodManual,
         'status': 'pending',
         'receipt_status': keepReceipt
@@ -47,10 +74,13 @@ class PaymentService {
             : AppConstants.receiptAwaitingUpload,
         'stripe_payment_intent_id': null,
         'stripe_client_secret': null,
+        'failure_reason': null,
+        if (!keepReceipt) 'owner_account_id': null,
+        if (!keepReceipt) 'receipt_url': null,
+        if (!keepReceipt) 'transfer_reference': null,
         'expires_at': expiresAt.toIso8601String(),
         'updated_at': DateTime.now().toIso8601String(),
-      }).eq('id', existing.id);
-      return (await getPaymentById(existing.id)) ?? existing;
+      });
     }
 
     final payment = PaymentModel(
@@ -80,18 +110,16 @@ class PaymentService {
     required String receiptUrl,
     String? transferReference,
   }) async {
-    await _supabase.from('payments').update({
+    final payment = await _requireUpdatedPayment(paymentId, {
       'payment_method': AppConstants.paymentMethodManual,
       'status': 'pending',
       'owner_account_id': ownerAccountId,
       'receipt_url': receiptUrl,
       'receipt_status': AppConstants.receiptAwaitingVerification,
       'transfer_reference': transferReference,
+      'failure_reason': null,
       'updated_at': DateTime.now().toIso8601String(),
-    }).eq('id', paymentId);
-
-    final payment = await getPaymentById(paymentId);
-    if (payment == null) return;
+    });
 
     try {
       final bookingData = await _supabase
@@ -149,6 +177,17 @@ class PaymentService {
     }).eq('id', paymentId);
 
     await _confirmBookingAfterPayment(payment.bookingId);
+
+    final booking = await BookingService().getBookingById(payment.bookingId);
+    final groupIds = BookingService().parseGroupBookingIds(
+      booking?.notes,
+      payment.bookingId,
+    );
+    for (final id in groupIds) {
+      if (id != payment.bookingId) {
+        await _confirmBookingAfterPayment(id, sendNotification: false);
+      }
+    }
   }
 
   /// Owner rejects receipt — user can re-upload.
@@ -227,11 +266,16 @@ class PaymentService {
     return rows.map((r) => PaymentModel.fromPaymentMap(r)).toList();
   }
 
-  Future<void> _confirmBookingAfterPayment(String bookingId) async {
+  Future<void> _confirmBookingAfterPayment(
+    String bookingId, {
+    bool sendNotification = true,
+  }) async {
     await _supabase.from('bookings').update({
       'status': 'confirmed',
       'updated_at': DateTime.now().toIso8601String(),
     }).eq('id', bookingId);
+
+    if (!sendNotification) return;
 
     try {
       final bookingData = await _supabase
@@ -261,10 +305,10 @@ class PaymentService {
     String currency = 'PKR',
   }) async {
     try {
-      // Create Stripe Payment Intent
+      // Stripe test/live accounts do not support PKR — charge USD equivalent.
       final paymentIntent = await _createStripePaymentIntent(
-        amount: (amount * 100).toInt(), // Convert to cents/paisa
-        currency: currency.toLowerCase(),
+        amount: _pkrToUsdCents(amount),
+        currency: 'usd',
       );
 
       // Create payment record in database
@@ -274,7 +318,7 @@ class PaymentService {
       // never end up with duplicate rows when the user toggles methods.
       final existing = await getPaymentByBookingId(bookingId);
       if (existing != null && existing.status != 'completed') {
-        await _supabase.from('payments').update({
+        return _requireUpdatedPayment(existing.id, {
           'payment_method': AppConstants.paymentMethodStripe,
           'status': 'pending',
           'stripe_payment_intent_id': paymentIntent['id'],
@@ -282,16 +326,11 @@ class PaymentService {
           'receipt_status': null,
           'owner_account_id': null,
           'receipt_url': null,
+          'transfer_reference': null,
+          'failure_reason': null,
           'expires_at': expiresAt.toIso8601String(),
           'updated_at': DateTime.now().toIso8601String(),
-        }).eq('id', existing.id);
-        return (await getPaymentById(existing.id)) ??
-            existing.copyPayment(
-              paymentMethod: AppConstants.paymentMethodStripe,
-              stripePaymentIntentId: paymentIntent['id'],
-              stripeClientSecret: paymentIntent['client_secret'],
-              expiresAt: expiresAt,
-            );
+        });
       }
 
       final payment = PaymentModel(
@@ -343,17 +382,12 @@ class PaymentService {
 
       if (response.statusCode == 200) {
         return json.decode(response.body);
-      } else {
-        throw Exception('Stripe API error: ${response.body}');
       }
+      throw Exception('Stripe API error: ${response.body}');
     } catch (e) {
-      // For demo/testing purposes, return a mock payment intent
-      // In production, remove this and handle errors properly
-      return {
-        'id': 'pi_test_${_uuid.v4()}',
-        'client_secret': 'pi_test_${_uuid.v4()}_secret_${_uuid.v4()}',
-        'status': 'requires_payment_method',
-      };
+      throw Exception(
+        'Card payment is unavailable right now. Please use bank transfer.',
+      );
     }
   }
 
@@ -363,6 +397,7 @@ class PaymentService {
     String stripePaymentIntentId, {
     bool isDummyPayment = false,
     String? bookingId,
+    List<String> additionalBookingIds = const [],
   }) async {
     try {
       String status = 'completed';
@@ -391,28 +426,25 @@ class PaymentService {
       final resolvedBookingId = payment?.bookingId ?? bookingId;
 
       // Update payment record in database
-      try {
-        await _supabase
-            .from('payments')
-            .update({
-              'status': status,
-              'updated_at': DateTime.now().toIso8601String(),
-              if (failureReason != null) 'failure_reason': failureReason,
-            })
-            .eq('id', paymentId);
-      } catch (_) {}
+      await _supabase
+          .from('payments')
+          .update({
+            'status': status,
+            'updated_at': DateTime.now().toIso8601String(),
+            if (failureReason != null) 'failure_reason': failureReason,
+          })
+          .eq('id', paymentId);
 
       // Update booking status if payment successful
       if (status == 'completed' && resolvedBookingId != null) {
-        await _supabase
-            .from('bookings')
-            .update({
-              'status': 'confirmed',
-              'updated_at': DateTime.now().toIso8601String(),
-            })
-            .eq('id', resolvedBookingId);
+        await _confirmBookingAfterPayment(resolvedBookingId);
+        for (final extraId in additionalBookingIds) {
+          if (extraId != resolvedBookingId) {
+            await _confirmBookingAfterPayment(extraId, sendNotification: false);
+          }
+        }
 
-        // Send booking confirmed notification to user and owner
+        // Notify workspace owner (user notification sent in _confirmBookingAfterPayment)
         try {
           final bookingData = await _supabase
               .from('bookings')
@@ -427,13 +459,6 @@ class PaymentService {
             final workspaceId = b['workspace_id'] ?? '';
             final notificationService = NotificationService();
 
-            await notificationService.sendBookingConfirmedNotification(
-              userId: userId,
-              workspaceName: workspaceName,
-              bookingId: resolvedBookingId,
-            );
-
-            // Also notify the workspace owner
             final wsData = await _supabase
                 .from('workspaces')
                 .select('owner_id')
@@ -478,15 +503,10 @@ class PaymentService {
 
       if (response.statusCode == 200) {
         return json.decode(response.body);
-      } else {
-        throw Exception('Stripe API error: ${response.body}');
       }
+      throw Exception('Stripe API error: ${response.body}');
     } catch (e) {
-      // For demo/testing purposes, return mock data
-      return {
-        'id': paymentIntentId,
-        'status': 'succeeded',
-      };
+      throw Exception('Could not verify card payment with Stripe.');
     }
   }
 

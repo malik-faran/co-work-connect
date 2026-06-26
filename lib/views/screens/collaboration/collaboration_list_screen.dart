@@ -1,17 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
+import 'dart:async';
 
 import 'package:cwc/controllers/auth_controller.dart';
 import 'package:cwc/models/collaboration_hub_models.dart';
 import 'package:cwc/models/collaboration_model.dart';
+import 'package:cwc/models/notification_model.dart';
 import 'package:cwc/services/collaboration_hub_service.dart';
 import 'package:cwc/services/collaboration_service.dart';
+import 'package:cwc/services/notification_service.dart';
+import 'package:cwc/utils/notification_scope.dart';
 import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/views/screens/collaboration/collaboration_create_screen.dart';
 import 'package:cwc/views/screens/collaboration/collaboration_detail_screen.dart';
 import 'package:cwc/views/screens/collaboration/collaboration_join_screen.dart';
 import 'package:cwc/views/screens/collaboration/collaboration_project_screen.dart';
+import 'package:cwc/views/screens/notifications/notifications_screen.dart';
 import 'package:cwc/views/screens/profile/public_profile_screen.dart';
 import 'package:cwc/views/widgets/collaboration_widgets.dart';
 
@@ -27,8 +32,11 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
     with SingleTickerProviderStateMixin {
   final _collab = CollaborationService();
   final _hub = CollaborationHubService();
+  final _notificationService = NotificationService();
   late final TabController _tabController;
   final _searchController = TextEditingController();
+  StreamSubscription<List<NotificationModel>>? _notifSub;
+  int _unreadProjectNotifications = 0;
 
   List<CollaborationModel> _discover = [];
   List<Map<String, dynamic>> _openTeammates = [];
@@ -51,10 +59,66 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
       }
     });
     _loadAll();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadNotificationCount();
+      _setupNotificationStream();
+    });
+  }
+
+  Future<void> _loadNotificationCount() async {
+    final user = context.read<AuthController>().currentUser;
+    if (user == null) return;
+    try {
+      final notifications =
+          await _notificationService.getUserNotifications(user.id);
+      if (mounted) {
+        setState(() {
+          _unreadProjectNotifications = NotificationScopeHelper.unreadCount(
+            notifications,
+            NotificationScope.projects,
+          );
+        });
+      }
+    } catch (_) {}
+  }
+
+  void _setupNotificationStream() {
+    final user = context.read<AuthController>().currentUser;
+    if (user == null) return;
+    _notifSub?.cancel();
+    _notifSub = _notificationService
+        .getNotificationsStream(user.id)
+        .listen(
+          (notifications) {
+            if (mounted) {
+              setState(() {
+                _unreadProjectNotifications =
+                    NotificationScopeHelper.unreadCount(
+                  notifications,
+                  NotificationScope.projects,
+                );
+              });
+            }
+          },
+          onError: (_) {},
+          cancelOnError: false,
+        );
+  }
+
+  void _openProjectNotifications() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const NotificationsScreen(
+          scope: NotificationScope.projects,
+        ),
+      ),
+    ).then((_) => _loadNotificationCount());
   }
 
   @override
   void dispose() {
+    _notifSub?.cancel();
     _tabController.dispose();
     _searchController.dispose();
     super.dispose();
@@ -181,6 +245,48 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
               backgroundColor: CAppTheme.primaryColor.withValues(alpha: 0.1),
               foregroundColor: CAppTheme.primaryColor,
             ),
+          ),
+          const SizedBox(width: 4),
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              IconButton(
+                onPressed: _openProjectNotifications,
+                icon: const Icon(Icons.notifications_outlined),
+                tooltip: 'Project notifications',
+                style: IconButton.styleFrom(
+                  backgroundColor: CAppTheme.primaryColor.withValues(alpha: 0.1),
+                  foregroundColor: CAppTheme.primaryColor,
+                ),
+              ),
+              if (_unreadProjectNotifications > 0)
+                Positioned(
+                  right: 6,
+                  top: 6,
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: const BoxDecoration(
+                      color: CAppTheme.errorColor,
+                      shape: BoxShape.circle,
+                    ),
+                    constraints: const BoxConstraints(
+                      minWidth: 16,
+                      minHeight: 16,
+                    ),
+                    child: Text(
+                      _unreadProjectNotifications > 9
+                          ? '9+'
+                          : '$_unreadProjectNotifications',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+            ],
           ),
         ],
       ),
