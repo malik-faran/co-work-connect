@@ -5,11 +5,14 @@ import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import 'package:cwc/controllers/auth_controller.dart';
 import 'package:cwc/services/booking_service.dart';
-import 'package:cwc/services/review_service.dart';
 import 'package:cwc/services/payment_service.dart';
+import 'package:cwc/services/review_service.dart';
+import 'package:cwc/services/wallet_service.dart';
 import 'package:cwc/models/booking_model.dart';
 import 'package:cwc/models/payment_model.dart';
 import 'package:cwc/utils/constants/app_constants.dart';
+import 'package:cwc/utils/refund_policy.dart';
+import 'package:cwc/utils/helpers/snackbar_helper.dart';
 import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/views/screens/reviews/review_dialog.dart';
 import 'package:cwc/views/screens/payment/payment_screen.dart';
@@ -26,6 +29,7 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> with Single
   final BookingService _bookingService = BookingService();
   final ReviewService _reviewService = ReviewService();
   final PaymentService _paymentService = PaymentService();
+  final WalletService _walletService = WalletService();
   List<BookingModel> _bookings = [];
   bool _isLoading = true;
   String? _errorMessage;
@@ -33,6 +37,7 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> with Single
   final Map<String, bool> _reviewCache = {};
   late TabController _tabController;
   StreamSubscription<List<BookingModel>>? _bookingStreamSub;
+  Timer? _refundTimer;
 
   final _tabs = const ['All', 'Active', 'Completed', 'Cancelled'];
 
@@ -42,6 +47,9 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> with Single
     _tabController = TabController(length: _tabs.length, vsync: this);
     _loadBookings();
     _setupStream();
+    _refundTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
   }
 
   void _setupStream() {
@@ -60,6 +68,7 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> with Single
 
   @override
   void dispose() {
+    _refundTimer?.cancel();
     _bookingStreamSub?.cancel();
     _tabController.dispose();
     super.dispose();
@@ -84,6 +93,13 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> with Single
         catch (_) { payMap[b.id] = null; }
       }
       if (mounted) {
+        bookings.sort((a, b) {
+          final aDate = a.bookingDateKey ?? DateFormat('yyyy-MM-dd').format(a.startDate);
+          final bDate = b.bookingDateKey ?? DateFormat('yyyy-MM-dd').format(b.startDate);
+          final byDate = bDate.compareTo(aDate);
+          if (byDate != 0) return byDate;
+          return b.createdAt.compareTo(a.createdAt);
+        });
         setState(() {
           _bookings = bookings;
           _paymentMap = payMap;
@@ -118,6 +134,17 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> with Single
       case AppConstants.bookingStatusCompleted: return CAppTheme.primaryColor;
       default: return CAppTheme.textTertiary;
     }
+  }
+
+  DateTime _bookingDisplayDate(BookingModel booking) {
+    final key = booking.bookingDateKey;
+    if (key != null && key.length >= 10) {
+      try {
+        final p = key.split('-');
+        return DateTime(int.parse(p[0]), int.parse(p[1]), int.parse(p[2]));
+      } catch (_) {}
+    }
+    return booking.startDate;
   }
 
   @override
@@ -219,6 +246,7 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> with Single
         itemCount: filtered.length,
         itemBuilder: (context, index) => _BookingCard(
           booking: filtered[index],
+          displayDate: _bookingDisplayDate(filtered[index]),
           statusColor: _statusColor(filtered[index].status),
           payment: _paymentMap[filtered[index].id],
           reviewService: _reviewService,
@@ -226,6 +254,7 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> with Single
           onPayTap: () => _navigateToPayment(filtered[index]),
           onReviewTap: () => _showReviewDialog(filtered[index]),
           onViewTicket: () => _viewTicket(filtered[index]),
+          onCancelRefund: () => _requestCancelRefund(filtered[index]),
         ),
       ),
     );
@@ -244,10 +273,62 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> with Single
   void _viewTicket(BookingModel booking) {
     Navigator.push(context, MaterialPageRoute(builder: (_) => BookingConfirmationScreen(booking: booking)));
   }
+
+  Future<void> _requestCancelRefund(BookingModel booking) async {
+    final userId = context.read<AuthController>().currentUser?.id;
+    if (userId == null) return;
+
+    final payment = _paymentMap[booking.id];
+    if (payment == null || payment.status != 'completed') {
+      showErrorSnackBar(context, 'Refund is only available for paid bookings.');
+      return;
+    }
+
+    if (!booking.canCancelWithRefund(isPaid: true)) {
+      showErrorSnackBar(
+        context,
+        'Cancellation window closed. Cancel at least ${RefundPolicy.leadTimeLabel(booking.startDate)} before your booking starts.',
+      );
+      return;
+    }
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Cancel & Request Refund?', style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
+        content: Text(
+          'Your refund of Rs. ${booking.totalPrice.toStringAsFixed(0)} will be reviewed by the CWC team. If approved, it will be credited to your in-app wallet (Profile → My Wallet).\n\nCancel at least ${RefundPolicy.leadTimeLabel(booking.startDate)} before the booking start time.',
+          style: GoogleFonts.poppins(fontSize: 14),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('No')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Request Refund')),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return;
+
+    try {
+      await _walletService.requestRefund(
+        userId: userId,
+        bookingId: booking.id,
+        paymentId: payment.id,
+        amount: booking.totalPrice,
+      );
+      if (mounted) {
+        showSuccessSnackBar(context, 'Refund request submitted. CWC team will review it.');
+      }
+    } catch (e) {
+      if (mounted) {
+        showErrorSnackBar(context, e.toString().replaceFirst('Exception: ', ''));
+      }
+    }
+  }
 }
 
 class _BookingCard extends StatelessWidget {
   final BookingModel booking;
+  final DateTime displayDate;
   final Color statusColor;
   final PaymentModel? payment;
   final ReviewService reviewService;
@@ -255,8 +336,12 @@ class _BookingCard extends StatelessWidget {
   final VoidCallback onPayTap;
   final VoidCallback onReviewTap;
   final VoidCallback onViewTicket;
+  final VoidCallback onCancelRefund;
 
-  const _BookingCard({required this.booking, required this.statusColor, this.payment, required this.reviewService, required this.reviewCache, required this.onPayTap, required this.onReviewTap, required this.onViewTicket});
+  const _BookingCard({
+    required this.booking,
+    required this.displayDate,
+    required this.statusColor, this.payment, required this.reviewService, required this.reviewCache, required this.onPayTap, required this.onReviewTap, required this.onViewTicket, required this.onCancelRefund});
 
   @override
   Widget build(BuildContext context) {
@@ -312,12 +397,31 @@ class _BookingCard extends StatelessWidget {
               children: [
                 const Icon(Icons.calendar_today_outlined, size: 14, color: CAppTheme.textTertiary),
                 const SizedBox(width: 6),
-                Flexible(child: Text(DateFormat('MMM dd, yyyy').format(booking.startDate), style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary))),
+                Flexible(
+                  child: Text(
+                    DateFormat('EEE, MMM dd, yyyy').format(displayDate),
+                    style: GoogleFonts.poppins(
+                      fontSize: 12,
+                      color: CAppTheme.textSecondary,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
                 if (booking.timeSlotLabel != null) ...[
                   const SizedBox(width: 12),
                   const Icon(Icons.schedule_outlined, size: 14, color: CAppTheme.textTertiary),
                   const SizedBox(width: 4),
-                  Flexible(child: Text(booking.timeSlotLabel!, style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary), overflow: TextOverflow.ellipsis)),
+                  Flexible(
+                    child: Text(
+                      booking.timeSlotLabel!,
+                      style: GoogleFonts.poppins(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: CAppTheme.primaryColor,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
                 ],
               ],
             ),
@@ -342,6 +446,65 @@ class _BookingCard extends StatelessWidget {
                   ),
                 ),
               ),
+            ],
+
+            if (booking.status == AppConstants.bookingStatusConfirmed && isPaid) ...[
+              const SizedBox(height: 10),
+              if (booking.canCancelWithRefund(isPaid: true)) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  margin: const EdgeInsets.only(bottom: 8),
+                  decoration: BoxDecoration(
+                    color: CAppTheme.warningColor.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.timer_outlined, size: 16, color: CAppTheme.warningColor),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Refund window: ${RefundPolicy.formatDuration(booking.refundWindowRemaining)} left',
+                          style: GoogleFonts.poppins(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: CAppTheme.warningColor,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                SizedBox(
+                  height: 36,
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: onCancelRefund,
+                    icon: const Icon(Icons.cancel_outlined, size: 16),
+                    label: Text('Cancel & Request Refund', style: GoogleFonts.poppins(fontSize: 12, fontWeight: FontWeight.w600)),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: CAppTheme.errorColor,
+                      side: BorderSide(color: CAppTheme.errorColor.withValues(alpha: 0.5)),
+                    ),
+                  ),
+                ),
+              ] else
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Row(
+                    children: [
+                      Icon(Icons.info_outline, size: 14, color: CAppTheme.textTertiary),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          'Cancellation closed — must cancel ${RefundPolicy.leadTimeLabel(booking.startDate)} before start',
+                          style: GoogleFonts.poppins(fontSize: 11, color: CAppTheme.textTertiary),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
             ],
 
             if (canReview) ...[

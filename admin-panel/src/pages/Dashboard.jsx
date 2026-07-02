@@ -254,13 +254,13 @@ const Dashboard = () => {
     totalOwners: 0,
     totalWorkspaces: 0,
     totalBookings: 0,
-    pendingRequests: 0,
     totalReviews: 0,
     totalCollaborations: 0,
     totalNotifications: 0,
     totalChatRooms: 0,
     totalRevenue: 0,
-    pendingApprovals: 0,
+    pendingOwnerRequests: 0,
+    pendingWorkspaceRequests: 0,
     averageRating: 'N/A'
   })
   const [recentBookings, setRecentBookings] = useState([])
@@ -288,18 +288,18 @@ const Dashboard = () => {
         .select('*', { count: 'exact', head: true })
         .eq('role', 'owner')
 
-      // Pending approvals (admin_approved = false)
-      const { data: pendingApprovalsData } = await supabase
-        .from('users')
-        .select('id')
-        .eq('admin_approved', false)
-
-      // Pending owner requests
+      // Pending owner requests (CNIC verification)
       const { data: pendingData } = await supabase
         .from('users')
         .select('id')
         .eq('role', 'owner')
         .is('owner_approved', null)
+
+      // Pending workspace listing requests
+      const { data: pendingWorkspaceData } = await supabase
+        .from('workspaces')
+        .select('id')
+        .is('workspace_approved', null)
 
       // Total workspaces
       const { count: workspaceCount } = await supabase
@@ -354,13 +354,13 @@ const Dashboard = () => {
         totalOwners: ownerCount || 0,
         totalWorkspaces: workspaceCount || 0,
         totalBookings: bookingCount || 0,
-        pendingRequests: pendingData?.length || 0,
+        pendingOwnerRequests: pendingData?.length || 0,
         totalReviews: reviewCount || 0,
         totalCollaborations: collabCount || 0,
         totalNotifications: notifCount || 0,
         totalChatRooms: chatCount || 0,
         totalRevenue: totalRevenue,
-        pendingApprovals: pendingApprovalsData?.length || 0,
+        pendingWorkspaceRequests: pendingWorkspaceData?.length || 0,
         averageRating: avgRating
       })
 
@@ -474,14 +474,23 @@ const Dashboard = () => {
       textColor: '#6b21a8',
       link: '/bookings'
     },
-    { 
-      label: 'Pending Approvals', 
-      value: stats.pendingApprovals, 
-      icon: UserCheck, 
+    {
+      label: 'Pending Owners',
+      value: stats.pendingOwnerRequests,
+      icon: UserCheck,
       bgColor: '#fef2f2',
       iconColor: '#ef4444',
       textColor: '#991b1b',
       link: '/owner-requests'
+    },
+    {
+      label: 'Workspace Requests',
+      value: stats.pendingWorkspaceRequests,
+      icon: Shield,
+      bgColor: '#fff7ed',
+      iconColor: '#f59e0b',
+      textColor: '#9a3412',
+      link: '/workspace-requests'
     },
     { 
       label: 'Total Reviews', 
@@ -586,6 +595,59 @@ const Dashboard = () => {
           </div>
         </div>
       </div>
+
+      {(stats.pendingOwnerRequests > 0 || stats.pendingWorkspaceRequests > 0) && (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(min(280px, 100%), 1fr))',
+          gap: '16px',
+        }}>
+          {stats.pendingOwnerRequests > 0 && (
+            <Link to="/owner-requests" style={{ textDecoration: 'none' }}>
+              <div style={{
+                padding: '20px 24px',
+                borderRadius: '16px',
+                background: 'linear-gradient(135deg, #fef2f2 0%, #fff 100%)',
+                border: '1px solid #fecaca',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '16px',
+              }}>
+                <div>
+                  <div style={{ fontWeight: 700, color: '#991b1b', marginBottom: 4 }}>
+                    {stats.pendingOwnerRequests} owner CNIC review{stats.pendingOwnerRequests > 1 ? 's' : ''} waiting
+                  </div>
+                  <div style={{ fontSize: 14, color: '#64748b' }}>Verify CNIC before owners can list workspaces</div>
+                </div>
+                <ArrowUpRight size={20} color="#dc2626" />
+              </div>
+            </Link>
+          )}
+          {stats.pendingWorkspaceRequests > 0 && (
+            <Link to="/workspace-requests" style={{ textDecoration: 'none' }}>
+              <div style={{
+                padding: '20px 24px',
+                borderRadius: '16px',
+                background: 'linear-gradient(135deg, #fff7ed 0%, #fff 100%)',
+                border: '1px solid #fed7aa',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '16px',
+              }}>
+                <div>
+                  <div style={{ fontWeight: 700, color: '#9a3412', marginBottom: 4 }}>
+                    {stats.pendingWorkspaceRequests} workspace listing{stats.pendingWorkspaceRequests > 1 ? 's' : ''} waiting
+                  </div>
+                  <div style={{ fontSize: 14, color: '#64748b' }}>Review legal documents before going live</div>
+                </div>
+                <ArrowUpRight size={20} color="#ea580c" />
+              </div>
+            </Link>
+          )}
+        </div>
+      )}
 
       {/* Enhanced Stats Cards */}
       <div style={{

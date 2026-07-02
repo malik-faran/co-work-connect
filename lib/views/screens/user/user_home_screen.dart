@@ -16,13 +16,19 @@ import 'package:cwc/views/screens/user/workspace_detail_screen.dart';
 import 'package:cwc/views/screens/user/booking_history_screen.dart';
 import 'package:cwc/views/screens/collaboration/collaboration_list_screen.dart';
 import 'package:cwc/views/screens/notifications/notifications_screen.dart';
+import 'package:cwc/views/screens/payment/wallet_screen.dart';
+import 'package:cwc/views/screens/payment/payment_history_screen.dart';
+import 'package:cwc/views/screens/report/report_screen.dart';
+import 'package:cwc/views/screens/report/my_reports_screen.dart';
 import 'package:cwc/views/screens/sos/sos_screen.dart';
 import 'package:cwc/views/screens/chat/chat_list_screen.dart';
 import 'package:cwc/services/notification_service.dart';
 import 'package:cwc/services/chat_service.dart';
 import 'package:cwc/services/recommendation_service.dart';
 import 'package:cwc/services/workspace_service.dart';
+import 'package:cwc/services/location_service.dart';
 import 'package:cwc/models/workspace_recommendation.dart';
+import 'package:cwc/utils/helpers/geo_utils.dart';
 import 'package:cwc/models/chat_model.dart';
 import 'package:cwc/models/notification_model.dart';
 import 'package:cwc/utils/notification_scope.dart';
@@ -368,12 +374,12 @@ class _HomeTabState extends State<_HomeTab> {
     _CategoryDef(label: 'All', icon: Icons.grid_view_rounded, value: null),
     _CategoryDef(
       label: 'Private Office',
-      icon: Icons.groups_outlined,
+      icon: Icons.business_outlined,
       value: 'private',
     ),
     _CategoryDef(
       label: 'Meeting Room',
-      icon: Icons.groups_outlined,
+      icon: Icons.meeting_room_outlined,
       value: 'meeting-room',
     ),
     _CategoryDef(
@@ -400,10 +406,15 @@ class _HomeTabState extends State<_HomeTab> {
       if (workspaces.isEmpty) {
         workspaces = await WorkspaceService().getAllWorkspaces();
       }
+
+      final location = await LocationService.instance.getCurrentLocation();
       final recs = await RecommendationService().getRecommendations(
         userId: user.id,
         workspaces: workspaces,
+        userLat: location?.latitude,
+        userLng: location?.longitude,
       );
+
       if (mounted) setState(() => _recommendations = recs);
     } catch (_) {
       if (mounted) setState(() => _recommendations = []);
@@ -450,7 +461,7 @@ class _HomeTabState extends State<_HomeTab> {
           ),
         ),
         SizedBox(
-          height: 210,
+          height: 218,
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -461,13 +472,101 @@ class _HomeTabState extends State<_HomeTab> {
                 padding: EdgeInsets.only(
                   right: index < _recommendations.length - 1 ? 14 : 0,
                 ),
-                child: _RecommendedWorkspaceCard(recommendation: rec),
+                child: _RecommendedWorkspaceCard(
+                  recommendation: rec,
+                  onWhyTap: () => _showRecommendationWhySheet(rec),
+                ),
               );
             },
           ),
         ),
         const SizedBox(height: 8),
       ],
+    );
+  }
+
+  void _showRecommendationWhySheet(WorkspaceRecommendation rec) {
+    showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: CAppTheme.borderColor,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Why recommended?',
+              style: GoogleFonts.poppins(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              rec.workspace.name,
+              style: GoogleFonts.poppins(
+                fontSize: 14,
+                color: CAppTheme.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 16),
+            ...rec.reasons.map(
+              (r) => Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.check_circle,
+                        size: 18, color: CAppTheme.primaryColor),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        r,
+                        style: GoogleFonts.poppins(fontSize: 13, height: 1.4),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => WorkspaceDetailScreen(
+                        workspaceId: rec.workspace.id,
+                      ),
+                    ),
+                  );
+                },
+                child: Text(
+                  'View workspace',
+                  style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -601,25 +700,30 @@ class _HomeTabState extends State<_HomeTab> {
                 decoration: InputDecoration(
                   hintText: 'Search workspaces...',
                   prefixIcon: const Icon(Icons.search_rounded),
-                  suffixIcon: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (widget.searchController.text.isNotEmpty)
+                  suffixIcon: SizedBox(
+                    width: 88,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (widget.searchController.text.isNotEmpty)
+                          IconButton(
+                            icon: const Icon(Icons.clear, size: 20),
+                            onPressed: () {
+                              widget.searchController.clear();
+                              context
+                                  .read<WorkspaceController>()
+                                  .searchWorkspaces('');
+                            },
+                          ),
                         IconButton(
-                          icon: const Icon(Icons.clear, size: 20),
-                          onPressed: () {
-                            widget.searchController.clear();
-                            context
-                                .read<WorkspaceController>()
-                                .searchWorkspaces('');
-                          },
+                          icon: const Icon(Icons.tune_rounded, size: 20),
+                          onPressed: () => _showFilterSheet(context),
                         ),
-                      IconButton(
-                        icon: const Icon(Icons.tune_rounded, size: 20),
-                        onPressed: () => _showFilterSheet(context),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
+                  suffixIconConstraints: const BoxConstraints(minWidth: 0, minHeight: 0),
                   border: InputBorder.none,
                   enabledBorder: InputBorder.none,
                   focusedBorder: InputBorder.none,
@@ -736,7 +840,10 @@ class _HomeTabState extends State<_HomeTab> {
                 }
 
                 if (_showMapView) {
-                  return WorkspacesMapView(workspaces: workspaces);
+                  return WorkspacesMapView(
+                    workspaces: workspaces,
+                    fallbackCity: user?.city,
+                  );
                 }
 
                 // Group by city
@@ -806,13 +913,16 @@ class _HomeTabState extends State<_HomeTab> {
   }
 
   void _showFilterSheet(BuildContext context) {
-    final selected = List<String>.from(
-      context.read<WorkspaceController>().selectedAmenities,
-    );
+    final controller = context.read<WorkspaceController>();
+    final selected = List<String>.from(controller.selectedAmenities);
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (_) => _AmenityFilterSheet(initialSelection: selected),
+      isScrollControlled: true,
+      builder: (_) => _AmenityFilterSheet(
+        initialSelection: selected,
+        availableAmenities: controller.filterAmenityOptions,
+      ),
     );
   }
 }
@@ -949,12 +1059,19 @@ class _CategoryChip extends StatelessWidget {
 // ─── RECOMMENDED WORKSPACE CARD ─────────────────────────────
 class _RecommendedWorkspaceCard extends StatelessWidget {
   final WorkspaceRecommendation recommendation;
+  final VoidCallback? onWhyTap;
 
-  const _RecommendedWorkspaceCard({required this.recommendation});
+  const _RecommendedWorkspaceCard({
+    required this.recommendation,
+    this.onWhyTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     final ws = recommendation.workspace;
+    final distLabel = recommendation.distanceKm != null
+        ? formatRoadDistanceKm(recommendation.distanceKm!)
+        : null;
     return GestureDetector(
       onTap: () => Navigator.push(
         context,
@@ -962,6 +1079,7 @@ class _RecommendedWorkspaceCard extends StatelessWidget {
           builder: (_) => WorkspaceDetailScreen(workspaceId: ws.id),
         ),
       ),
+      onLongPress: onWhyTap,
       child: Container(
         width: 200,
         decoration: BoxDecoration(
@@ -971,11 +1089,12 @@ class _RecommendedWorkspaceCard extends StatelessWidget {
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
             ClipRRect(
               borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
               child: SizedBox(
-                height: 110,
+                height: 100,
                 width: double.infinity,
                 child: Stack(
                   fit: StackFit.expand,
@@ -1013,49 +1132,77 @@ class _RecommendedWorkspaceCard extends StatelessWidget {
                         ),
                       ),
                     ),
+                    if (onWhyTap != null)
+                      Positioned(
+                        top: 6,
+                        right: 6,
+                        child: Material(
+                          color: Colors.black45,
+                          borderRadius: BorderRadius.circular(16),
+                          child: InkWell(
+                            onTap: onWhyTap,
+                            borderRadius: BorderRadius.circular(16),
+                            child: const Padding(
+                              padding: EdgeInsets.all(5),
+                              child: Icon(Icons.info_outline,
+                                  size: 16, color: Colors.white),
+                            ),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
             ),
             Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
                     ws.name,
                     style: GoogleFonts.poppins(
-                      fontSize: 14,
+                      fontSize: 13,
                       fontWeight: FontWeight.w600,
                       color: CAppTheme.textPrimary,
                     ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 3),
                   Text(
-                    ws.city,
+                    distLabel != null ? '${ws.city} · $distLabel' : ws.city,
                     style: GoogleFonts.poppins(
-                      fontSize: 11,
-                      color: CAppTheme.textSecondary,
+                      fontSize: 10,
+                      color: distLabel != null
+                          ? CAppTheme.primaryColor
+                          : CAppTheme.textSecondary,
+                      fontWeight:
+                          distLabel != null ? FontWeight.w500 : FontWeight.normal,
                     ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 5),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(
-                        'Rs. ${ws.pricePerDay.toStringAsFixed(0)}/day',
-                        style: GoogleFonts.poppins(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                          color: CAppTheme.primaryColor,
+                      Flexible(
+                        child: Text(
+                          'Rs. ${ws.pricePerDay.toStringAsFixed(0)}/day',
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: CAppTheme.primaryColor,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                       if ((ws.rating ?? 0) > 0)
                         Row(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
                             const Icon(Icons.star, size: 12, color: Colors.amber),
                             const SizedBox(width: 2),
@@ -1113,7 +1260,7 @@ class _WorkspaceCard extends StatelessWidget {
                   fit: StackFit.expand,
                   children: [
                     Hero(
-                      tag: 'workspace_image_${workspace.id}',
+                      tag: 'workspace_card_image_${workspace.id}',
                       child: workspace.imageUrls.isNotEmpty
                           ? Image.network(
                               workspace.imageUrls.first,
@@ -1440,13 +1587,37 @@ class _ProfileTab extends StatelessWidget {
                 MaterialPageRoute(builder: (_) => const BookingHistoryScreen()),
               ),
             ),
+            if (user?.role == AppConstants.roleUser)
+              _ProfileMenuItem(
+                icon: Icons.account_balance_wallet_outlined,
+                label: 'My Wallet',
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const WalletScreen()),
+                ),
+              ),
             _ProfileMenuItem(
-              icon: Icons.emergency,
-              label: 'Emergency SOS',
-              color: CAppTheme.errorColor,
+              icon: Icons.receipt_long_outlined,
+              label: 'Payment History',
               onTap: () => Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const SosScreen()),
+                MaterialPageRoute(builder: (_) => const PaymentHistoryScreen()),
+              ),
+            ),
+            _ProfileMenuItem(
+              icon: Icons.flag_outlined,
+              label: 'Report an Issue',
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ReportScreen()),
+              ),
+            ),
+            _ProfileMenuItem(
+              icon: Icons.list_alt_rounded,
+              label: 'My Reports',
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const MyReportsScreen()),
               ),
             ),
             const SizedBox(height: 8),
@@ -1528,7 +1699,12 @@ class _ProfileMenuItem extends StatelessWidget {
 // ─── AMENITY FILTER SHEET ───────────────────────────────────
 class _AmenityFilterSheet extends StatefulWidget {
   final List<String> initialSelection;
-  const _AmenityFilterSheet({required this.initialSelection});
+  final List<String> availableAmenities;
+
+  const _AmenityFilterSheet({
+    required this.initialSelection,
+    required this.availableAmenities,
+  });
 
   @override
   State<_AmenityFilterSheet> createState() => _AmenityFilterSheetState();
@@ -1543,9 +1719,19 @@ class _AmenityFilterSheetState extends State<_AmenityFilterSheet> {
     _selected = List.from(widget.initialSelection);
   }
 
+  List<String> get _customAmenities => widget.availableAmenities
+      .where(
+        (a) => !AppConstants.commonAmenities
+            .any((c) => c.toLowerCase() == a.toLowerCase()),
+      )
+      .toList();
+
   @override
   Widget build(BuildContext context) {
+    final maxHeight = MediaQuery.of(context).size.height * 0.75;
+
     return Container(
+      constraints: BoxConstraints(maxHeight: maxHeight),
       decoration: const BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
@@ -1574,40 +1760,38 @@ class _AmenityFilterSheetState extends State<_AmenityFilterSheet> {
             ),
           ),
           const SizedBox(height: 16),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: AppConstants.commonAmenities.map((a) {
-              final on = _selected.any(
-                (s) => s.toLowerCase() == a.toLowerCase(),
-              );
-              return FilterChip(
-                label: Text(
-                  a,
-                  style: GoogleFonts.poppins(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                    color: on ? Colors.white : CAppTheme.primaryColor,
+          Flexible(
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: AppConstants.commonAmenities.map((a) {
+                      return _buildAmenityChip(a);
+                    }).toList(),
                   ),
-                ),
-                selected: on,
-                selectedColor: CAppTheme.primaryColor,
-                checkmarkColor: Colors.white,
-                backgroundColor: const Color(0xFFF0F3FF),
-                side: BorderSide.none,
-                onSelected: (_) {
-                  setState(() {
-                    if (on) {
-                      _selected.removeWhere(
-                        (s) => s.toLowerCase() == a.toLowerCase(),
-                      );
-                    } else {
-                      _selected.add(a);
-                    }
-                  });
-                },
-              );
-            }).toList(),
+                  if (_customAmenities.isNotEmpty) ...[
+                    const SizedBox(height: 20),
+                    Text(
+                      'More amenities',
+                      style: GoogleFonts.poppins(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: CAppTheme.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: _customAmenities.map(_buildAmenityChip).toList(),
+                    ),
+                  ],
+                ],
+              ),
+            ),
           ),
           const SizedBox(height: 24),
           Row(
@@ -1637,6 +1821,45 @@ class _AmenityFilterSheetState extends State<_AmenityFilterSheet> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildAmenityChip(String a) {
+    final on = _selected.any(
+      (s) => s.toLowerCase() == a.toLowerCase(),
+    );
+    final isCustom = !AppConstants.commonAmenities
+        .any((c) => c.toLowerCase() == a.toLowerCase());
+
+    return FilterChip(
+      label: Text(
+        a,
+        style: GoogleFonts.poppins(
+          fontSize: 13,
+          fontWeight: FontWeight.w500,
+          color: on ? Colors.white : CAppTheme.primaryColor,
+        ),
+      ),
+      selected: on,
+      selectedColor: CAppTheme.primaryColor,
+      checkmarkColor: Colors.white,
+      backgroundColor: isCustom
+          ? CAppTheme.primaryColor.withValues(alpha: 0.06)
+          : const Color(0xFFF0F3FF),
+      side: isCustom
+          ? BorderSide(color: CAppTheme.primaryColor.withValues(alpha: 0.25))
+          : BorderSide.none,
+      onSelected: (_) {
+        setState(() {
+          if (on) {
+            _selected.removeWhere(
+              (s) => s.toLowerCase() == a.toLowerCase(),
+            );
+          } else {
+            _selected.add(a);
+          }
+        });
+      },
     );
   }
 }

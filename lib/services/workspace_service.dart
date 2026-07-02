@@ -5,12 +5,17 @@ class WorkspaceService {
   /// Supabase client instance for database operations
   final _supabase = SupabaseService.client;
 
+  static bool _isPubliclyListedMap(Map<String, dynamic> row) {
+    return row['is_available'] == true && row['workspace_approved'] == true;
+  }
+
   /// Retrieves all available workspaces from the database
   Future<List<WorkspaceModel>> getAllWorkspaces() async {
     final response = await _supabase
         .from('workspaces')
         .select()
         .eq('is_available', true)
+        .eq('workspace_approved', true)
         .order('created_at', ascending: false);
 
     return response.map((w) => WorkspaceModel.fromWorkspaceMap(w)).toList();
@@ -25,8 +30,10 @@ class WorkspaceService {
         .eq('is_available', true)
         .order('created_at', ascending: false)
         .map(
-          (data) =>
-              data.map((w) => WorkspaceModel.fromWorkspaceMap(w)).toList(),
+          (data) => data
+              .where(_isPubliclyListedMap)
+              .map((w) => WorkspaceModel.fromWorkspaceMap(w))
+              .toList(),
         )
         .distinct();
   }
@@ -111,6 +118,37 @@ class WorkspaceService {
     }).toList();
   }
 
+  /// Returns a stream of workspaces owned by [ownerId].
+  Stream<List<WorkspaceModel>> getWorkspacesByOwnerIdStream(String ownerId) {
+    return _supabase
+        .from('workspaces')
+        .stream(primaryKey: ['id'])
+        .eq('owner_id', ownerId)
+        .order('created_at', ascending: false)
+        .map(
+          (data) =>
+              data.map((w) => WorkspaceModel.fromWorkspaceMap(w)).toList(),
+        )
+        .distinct(_sameWorkspaceList);
+  }
+
+  static bool _sameWorkspaceList(
+    List<WorkspaceModel> previous,
+    List<WorkspaceModel> next,
+  ) {
+    if (previous.length != next.length) return false;
+    for (var i = 0; i < previous.length; i++) {
+      final a = previous[i];
+      final b = next[i];
+      if (a.id != b.id ||
+          a.updatedAt != b.updatedAt ||
+          a.isAvailable != b.isAvailable) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /// Returns a stream of workspaces sorted by creation date
   Stream<List<WorkspaceModel>> getWorkspacesStream() {
     return _supabase
@@ -119,6 +157,7 @@ class WorkspaceService {
         .eq('is_available', true)
         .map((data) {
           final workspaces = data
+              .where(_isPubliclyListedMap)
               .map((w) => WorkspaceModel.fromWorkspaceMap(w))
               .toList();
           workspaces.sort((a, b) => b.createdAt.compareTo(a.createdAt));

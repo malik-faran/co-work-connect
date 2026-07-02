@@ -133,6 +133,12 @@ serve(async (req) => {
     const title = (record.title as string) ?? "CWC"
     const body = (record.message as string) ?? ""
     const notificationId = (record.id as string) ?? ""
+    const metadata = (record.metadata as Record<string, unknown> | null) ?? {}
+    const bookingId = typeof metadata.booking_id === "string" ? metadata.booking_id : ""
+    const collaborationId =
+      typeof metadata.collaboration_id === "string" ? metadata.collaboration_id : ""
+    const reportId = typeof metadata.report_id === "string" ? metadata.report_id : ""
+    const chatRoomId = typeof metadata.chat_room_id === "string" ? metadata.chat_room_id : ""
 
     if (!userId) {
       return new Response(JSON.stringify({ ok: false, error: "missing user_id" }), {
@@ -161,6 +167,10 @@ serve(async (req) => {
     await sendFcm(accessToken, sa.project_id, user.fcm_token, title, body, {
       notification_id: notificationId,
       type: (record.type as string) ?? "general",
+      ...(bookingId ? { booking_id: bookingId } : {}),
+      ...(collaborationId ? { collaboration_id: collaborationId } : {}),
+      ...(reportId ? { report_id: reportId } : {}),
+      ...(chatRoomId ? { chat_room_id: chatRoomId } : {}),
     })
 
     return new Response(JSON.stringify({ ok: true }), {

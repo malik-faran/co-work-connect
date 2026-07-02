@@ -43,6 +43,7 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
   // Booking mode: 'hourly' | 'daily' | 'monthly'
   String _bookingMode = 'hourly';
   int _monthCount = 1;
+  final Map<String, List<WorkspaceTimeSlotTemplate>> _slotsByDate = {};
   final Set<String> _selectedDateKeys = {
     DateFormat('yyyy-MM-dd').format(DateTime.now()),
   };
@@ -57,6 +58,7 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
 
   bool get _isPerDayBooking => _bookingMode == 'daily';
   bool get _isMonthlyBooking => _bookingMode == 'monthly';
+  bool get _hourlyPerDaySlots => _bookingMode == 'hourly';
 
   /// Monthly rate derived from the daily price (30 days per month).
   double get _monthlyRate =>
@@ -74,6 +76,45 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
     final p = key.split('-');
     return DateTime(int.parse(p[0]), int.parse(p[1]), int.parse(p[2]));
   }
+
+  void _toggleDateSelection(String key) {
+    if (_selectedDateKeys.contains(key)) {
+      if (_selectedDateKeys.length > 1) {
+        _selectedDateKeys.remove(key);
+        _slotsByDate.remove(key);
+      }
+    } else {
+      if (_selectedDateKeys.length >= 30) return;
+      _selectedDateKeys.add(key);
+    }
+  }
+
+  List<WorkspaceTimeSlotTemplate> _slotsForDate(String dateKey) =>
+      _slotsByDate[dateKey] ?? const [];
+
+  bool _isSlotSelectedOnDate(String dateKey, WorkspaceTimeSlotTemplate slot) =>
+      _slotsForDate(dateKey).any((s) => s.id == slot.id);
+
+  void _toggleSlotOnDate(String dateKey, WorkspaceTimeSlotTemplate slot) {
+    final list = List<WorkspaceTimeSlotTemplate>.from(_slotsForDate(dateKey));
+    final idx = list.indexWhere((s) => s.id == slot.id);
+    if (idx >= 0) {
+      list.removeAt(idx);
+    } else {
+      list.add(slot);
+    }
+    if (list.isEmpty) {
+      _slotsByDate.remove(dateKey);
+    } else {
+      _slotsByDate[dateKey] = list;
+    }
+  }
+
+  int get _totalHourlySlotsPicked =>
+      _slotsByDate.values.fold<int>(0, (sum, list) => sum + list.length);
+
+  bool get _hasHourlySlotsPicked =>
+      _slotsByDate.values.any((list) => list.isNotEmpty);
 
   @override
   void initState() {
@@ -172,7 +213,7 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
   }
 
   List<DateTime> get _upcomingDates =>
-      List.generate(14, (i) => DateTime.now().add(Duration(days: i)));
+      List.generate(30, (i) => DateTime.now().add(Duration(days: i)));
 
   List<WorkspaceTimeSlotTemplate> get timeSlots =>
       _workspace?.timeSlots.isEmpty ?? true ? _generateTimeSlotsFromHours() : _workspace!.timeSlots;
@@ -205,7 +246,9 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
   int _availableSeatsForSlotOnDate(WorkspaceTimeSlotTemplate slot, String dateKey) {
     if (_selectedCategory == null) return 0;
     final booked = _usageByDate[dateKey]?[slot.id]?[_selectedCategory!.type] ?? 0;
-    final selected = _selectedSlotIds.contains(slot.id) ? _selectedSeats : 0;
+    final selected = _hourlyPerDaySlots
+        ? (_isSlotSelectedOnDate(dateKey, slot) ? _selectedSeats : 0)
+        : (_selectedSlotIds.contains(slot.id) ? _selectedSeats : 0);
     return (_selectedCategory!.capacity - booked - selected).clamp(0, double.infinity).toInt();
   }
 
@@ -234,7 +277,15 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
     } else if (_isPerDayBooking) {
       ok = await _bookFullDay(user, controller);
     } else {
-      if (_selectedSlots.isEmpty) { _msg('Select at least one time slot', true); return; }
+      if (_hourlyPerDaySlots) {
+        if (!_selectedDateKeys.every((k) => _slotsForDate(k).isNotEmpty)) {
+          _msg('Select at least one time slot for each day', true);
+          return;
+        }
+      } else if (_selectedSlots.isEmpty) {
+        _msg('Select at least one time slot', true);
+        return;
+      }
       ok = await _bookTimeSlots(user, controller);
     }
 
@@ -262,9 +313,13 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
       setState(() {
         _selectedSlots.clear();
         _selectedSlotIds.clear();
+        _slotsByDate.clear();
         _bookingMode = 'hourly';
         _monthCount = 1;
         _pendingBookings = [];
+        _selectedDateKeys
+          ..clear()
+          ..add(_dateKey(DateTime.now()));
       });
       await _loadAvailability();
     } else {
@@ -327,6 +382,61 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
   }
 
   Future<bool> _bookTimeSlots(user, WorkspaceController controller) async {
+    if (_hourlyPerDaySlots) {
+      final sorted = _selectedDateKeys.toList()..sort();
+      for (final dateKey in sorted) {
+        final slots = _slotsForDate(dateKey);
+        if (slots.isEmpty) {
+          final date = _parseDateKey(dateKey);
+          _msg(
+            'Select at least one time slot for ${DateFormat.yMMMd().format(date)}',
+            true,
+          );
+          return false;
+        }
+        for (final slot in slots) {
+          if (_availableSeatsForSlotOnDate(slot, dateKey) < _selectedSeats) {
+            final date = _parseDateKey(dateKey);
+            _msg(
+              'Not enough seats on ${DateFormat.MMMd().format(date)} for ${slot.label}',
+              true,
+            );
+            return false;
+          }
+        }
+      }
+
+      bool ok = true;
+      for (final dateKey in sorted) {
+        final date = _parseDateKey(dateKey);
+        for (final slot in _slotsForDate(dateKey)) {
+          final dur = slot.endHour - slot.startHour;
+          final start = DateTime(date.year, date.month, date.day, slot.startHour);
+          final booking = _createBooking(
+            userId: user.id,
+            dateKey: dateKey,
+            startDate: start,
+            endDate: start.add(Duration(hours: dur)),
+            durationHours: dur,
+            totalPrice: _selectedCategory!.pricePerHour * dur * _selectedSeats,
+            isHourlyBooking: true,
+            seatCount: _selectedSeats,
+            timeSlotId: slot.id,
+            timeSlotLabel: slot.label,
+          );
+          _pendingBookings.add(booking);
+          if (!await controller.bookWorkspaceTimeslot(
+            booking: booking,
+            workspace: _workspace!,
+          )) {
+            ok = false;
+          }
+        }
+      }
+      await _finalizeGroupBookings();
+      return ok;
+    }
+
     for (final dateKey in _selectedDateKeys) {
       for (var slot in _selectedSlots) {
         if (_availableSeatsForSlotOnDate(slot, dateKey) < _selectedSeats) {
@@ -615,6 +725,7 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
 
             // Category selector
             _buildCategorySection(),
+            _buildCategoryPhotosSection(),
             const SizedBox(height: 20),
 
             // Date selector
@@ -625,11 +736,20 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
             if (_selectedCategory != null) _buildBookingModeSelector(),
             const SizedBox(height: 16),
 
-            // Time slots (hourly only)
-            if (_bookingMode == 'hourly') _buildTimeSlotsSection(),
+            if ((_isPerDayBooking || _hourlyPerDaySlots) &&
+                _selectedCategory != null &&
+                _selectedDateKeys.length > 1)
+              _buildSelectedDaysInfo(),
             if (_isMonthlyBooking && _selectedCategory != null) _buildMonthCountSelector(),
             const SizedBox(height: 12),
-            if (_selectedSlots.isNotEmpty && _bookingMode == 'hourly' && _selectedCategory != null) _buildSeatSelector(),
+
+            // Time slots (hourly — one slot per day)
+            if (_hourlyPerDaySlots && _selectedCategory != null)
+              _buildPerDaySlotsSection(),
+            if (_hourlyPerDaySlots &&
+                _hasHourlySlotsPicked &&
+                _selectedCategory != null)
+              _buildSeatSelector(),
             const SizedBox(height: 40),
           ],
         ),
@@ -697,7 +817,7 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
             final on = _selectedCategory?.type == cat.type;
             return GestureDetector(
               onTap: () {
-                setState(() { _selectedCategory = cat; _selectedSeats = 1; _selectedSlots.clear(); _selectedSlotIds.clear(); });
+                setState(() { _selectedCategory = cat; _selectedSeats = 1; _selectedSlots.clear(); _selectedSlotIds.clear(); _slotsByDate.clear(); });
                 _loadAvailability();
               },
               child: Container(
@@ -723,24 +843,134 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
     );
   }
 
+  Widget _buildCategoryPhotosSection() {
+    final category = _selectedCategory;
+    if (category == null) return const SizedBox.shrink();
+
+    final units = category.effectiveUnitImages
+        .where((urls) => urls.isNotEmpty)
+        .toList();
+    if (units.isEmpty) return const SizedBox.shrink();
+
+    final type = category.type;
+    final showUnitTitles = units.length > 1 ||
+        category.noOfUnits != null && (category.noOfUnits ?? 1) > 1 ||
+        (type == AppConstants.workspaceTypePrivate && category.capacity > 1);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 4),
+        Text(
+          '${_categoryLabel(type)} photos',
+          style: GoogleFonts.poppins(
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+            color: CAppTheme.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          showUnitTitles
+              ? 'Each office/room has its own photos'
+              : 'Photos for this workspace type',
+          style: GoogleFonts.poppins(fontSize: 11, color: CAppTheme.textTertiary),
+        ),
+        const SizedBox(height: 12),
+        ...List.generate(units.length, (unitIndex) {
+          final urls = units[unitIndex];
+          return Padding(
+            padding: EdgeInsets.only(bottom: unitIndex < units.length - 1 ? 16 : 0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (showUnitTitles)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      _unitPhotoLabelForDetail(type, unitIndex),
+                      style: GoogleFonts.poppins(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: CAppTheme.primaryColor,
+                      ),
+                    ),
+                  ),
+                SizedBox(
+                  height: 118,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: urls.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 10),
+                    itemBuilder: (context, index) {
+                      return ClipRRect(
+                        borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                        child: Image.network(
+                          urls[index],
+                          width: 168,
+                          height: 118,
+                          fit: BoxFit.cover,
+                          cacheWidth: kIsWeb ? 340 : 500,
+                          errorBuilder: (_, __, ___) => Container(
+                            width: 168,
+                            height: 118,
+                            color: CAppTheme.borderColor,
+                            child: const Icon(Icons.image_not_supported_outlined),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  String _unitPhotoLabelForDetail(String type, int unitIndex) {
+    final n = unitIndex + 1;
+    switch (type) {
+      case AppConstants.workspaceTypePrivate:
+        return 'Private Office $n';
+      case AppConstants.workspaceTypeMeetingRoom:
+        return 'Meeting Room $n';
+      case AppConstants.workspaceTypeShared:
+        return 'Shared Space $n';
+      default:
+        return 'Unit $n';
+    }
+  }
+
   Widget _buildDateSelector() {
+    final isMultiDay = _isPerDayBooking || _hourlyPerDaySlots;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text('Select Dates',
-                style: GoogleFonts.poppins(
-                    fontSize: 16, fontWeight: FontWeight.w700, color: CAppTheme.textPrimary)),
-            if (_selectedDateKeys.length > 1)
+            Text(
+              _isMonthlyBooking ? 'Start Date' : 'Select Dates',
+              style: GoogleFonts.poppins(
+                  fontSize: 16, fontWeight: FontWeight.w700, color: CAppTheme.textPrimary),
+            ),
+            if (isMultiDay && _selectedDateKeys.length > 1)
               Text('${_selectedDateKeys.length} selected',
                   style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.primaryColor)),
           ],
         ),
         const SizedBox(height: 4),
-        Text('Tap to select multiple days',
-            style: GoogleFonts.poppins(fontSize: 11, color: CAppTheme.textTertiary)),
+        Text(
+          _isMonthlyBooking
+              ? 'Choose your monthly booking start date'
+              : isMultiDay
+                  ? 'Tap days to select — pick any dates, not only consecutive'
+                  : 'Select your booking date',
+          style: GoogleFonts.poppins(fontSize: 11, color: CAppTheme.textTertiary),
+        ),
         const SizedBox(height: 10),
         SizedBox(
           height: 74,
@@ -756,8 +986,23 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
                 child: GestureDetector(
                   onTap: () async {
                     setState(() {
-                      if (on) {
-                        if (_selectedDateKeys.length > 1) _selectedDateKeys.remove(key);
+                      if (_isMonthlyBooking) {
+                        _selectedDateKeys
+                          ..clear()
+                          ..add(key);
+                        _slotsByDate.clear();
+                        _selectedSlots.clear();
+                        _selectedSlotIds.clear();
+                      } else if (isMultiDay) {
+                        _toggleDateSelection(key);
+                        if (!_selectedDateKeys.contains(key)) {
+                          _selectedSlots.clear();
+                          _selectedSlotIds.clear();
+                        }
+                      } else if (on) {
+                        if (_selectedDateKeys.length > 1) {
+                          _selectedDateKeys.remove(key);
+                        }
                       } else {
                         _selectedDateKeys.add(key);
                       }
@@ -802,58 +1047,159 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
     );
   }
 
-  Widget _buildTimeSlotsSection() {
+  Widget _buildPerDaySlotsSection() {
+    final sortedKeys = _selectedDateKeys.toList()..sort();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Available Slots', style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w700, color: CAppTheme.textPrimary)),
-        const SizedBox(height: 10),
-        if (timeSlots.isEmpty)
-          Padding(padding: const EdgeInsets.all(16), child: Text('No slots available. Book full day.', style: GoogleFonts.poppins(color: CAppTheme.textTertiary)))
-        else if (_isSlotsLoading)
-          const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator()))
+        Text(
+          'Select slots for each day',
+          style: GoogleFonts.poppins(
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+            color: CAppTheme.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Tap multiple slots per day — each day can differ',
+          style: GoogleFonts.poppins(fontSize: 11, color: CAppTheme.textTertiary),
+        ),
+        const SizedBox(height: 12),
+        if (_isSlotsLoading)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.all(20),
+              child: CircularProgressIndicator(),
+            ),
+          )
         else
-          Wrap(
-            spacing: 8, runSpacing: 8,
-            children: timeSlots.map((slot) {
-              final on = _selectedSlotIds.contains(slot.id);
-              final avail = _availableSeatsForSlot(slot);
-              final full = avail <= 0;
-              return GestureDetector(
-                onTap: full ? null : () => _handleSlotTap(slot),
-                child: Container(
-                  width: 110,
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: on ? CAppTheme.primaryColor : full ? CAppTheme.borderColor : Colors.white,
-                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                    border: Border.all(color: on ? CAppTheme.primaryColor : CAppTheme.borderColor),
-                  ),
-                  child: Column(
+          ...sortedKeys.map((dateKey) {
+            final date = _parseDateKey(dateKey);
+            final selected = _slotsForDate(dateKey);
+            return Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                border: Border.all(color: CAppTheme.borderColor),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
                     children: [
-                      Text(slot.label, style: GoogleFonts.poppins(fontSize: 11, fontWeight: FontWeight.w600, color: on ? Colors.white : full ? CAppTheme.textTertiary : CAppTheme.textPrimary), textAlign: TextAlign.center),
-                      if (on) const Icon(Icons.check_circle, size: 14, color: Colors.white),
-                      if (!on && !full && _selectedCategory != null)
-                        Text('$avail seats', style: GoogleFonts.poppins(fontSize: 10, color: CAppTheme.textTertiary)),
+                      const Icon(
+                        Icons.calendar_today_rounded,
+                        size: 16,
+                        color: CAppTheme.primaryColor,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        DateFormat('EEE, MMM d, yyyy').format(date),
+                        style: GoogleFonts.poppins(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      if (selected.isNotEmpty) ...[
+                        const Spacer(),
+                        Flexible(
+                          child: Text(
+                            selected.map((s) => s.label).join(', '),
+                            style: GoogleFonts.poppins(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: CAppTheme.primaryColor,
+                            ),
+                            textAlign: TextAlign.end,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
                     ],
                   ),
-                ),
-              );
-            }).toList(),
-          ),
-        const SizedBox(height: 12),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: timeSlots.map((slot) {
+                      final on = _isSlotSelectedOnDate(dateKey, slot);
+                      final avail = _availableSeatsForSlotOnDate(slot, dateKey);
+                      final full = avail <= 0 && !on;
+                      return GestureDetector(
+                        onTap: full
+                            ? null
+                            : () => setState(() {
+                                  _toggleSlotOnDate(dateKey, slot);
+                                  if (_isSlotSelectedOnDate(dateKey, slot) &&
+                                      _selectedSeats > avail) {
+                                    _selectedSeats = avail.clamp(1, avail);
+                                  }
+                                  if (!_hasHourlySlotsPicked) _selectedSeats = 1;
+                                }),
+                        child: Container(
+                          width: 110,
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: on
+                                ? CAppTheme.primaryColor
+                                : full
+                                    ? CAppTheme.borderColor
+                                    : Colors.white,
+                            borderRadius:
+                                BorderRadius.circular(CAppTheme.radiusMedium),
+                            border: Border.all(
+                              color: on
+                                  ? CAppTheme.primaryColor
+                                  : CAppTheme.borderColor,
+                            ),
+                          ),
+                          child: Column(
+                            children: [
+                              Text(
+                                slot.label,
+                                style: GoogleFonts.poppins(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: on
+                                      ? Colors.white
+                                      : full
+                                          ? CAppTheme.textTertiary
+                                          : CAppTheme.textPrimary,
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
+                              if (on)
+                                const Icon(
+                                  Icons.check_circle,
+                                  size: 14,
+                                  color: Colors.white,
+                                ),
+                              if (!on && !full)
+                                Text(
+                                  '$avail seats',
+                                  style: GoogleFonts.poppins(
+                                    fontSize: 10,
+                                    color: CAppTheme.textTertiary,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ],
+              ),
+            );
+          }),
+        const SizedBox(height: 4),
       ],
     );
-  }
-
-  void _handleSlotTap(WorkspaceTimeSlotTemplate slot) {
-    if (_selectedCategory == null) { _msg('Select a category first', true); return; }
-    if (_availableSeatsForSlot(slot) <= 0) return;
-    setState(() {
-      if (_selectedSlotIds.contains(slot.id)) { _selectedSlotIds.remove(slot.id); _selectedSlots.removeWhere((s) => s.id == slot.id); }
-      else { _selectedSlotIds.add(slot.id); _selectedSlots.add(slot); }
-      if (_selectedSlots.isEmpty) _selectedSeats = 1;
-    });
   }
 
   Widget _buildBookingModeSelector() {
@@ -883,9 +1229,19 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
                     if (m.$1 != 'hourly') {
                       _selectedSlots.clear();
                       _selectedSlotIds.clear();
+                      _slotsByDate.clear();
                       _selectedSeats = 1;
                     }
-                    if (m.$1 != 'monthly') _monthCount = 1;
+                    if (m.$1 == 'monthly') {
+                      final primary = _selectedDateKeys.isEmpty
+                          ? _dateKey(DateTime.now())
+                          : (_selectedDateKeys.toList()..sort()).first;
+                      _selectedDateKeys
+                        ..clear()
+                        ..add(primary);
+                    } else if (m.$1 != 'monthly') {
+                      _monthCount = 1;
+                    }
                   }),
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
@@ -964,7 +1320,45 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
     );
   }
 
+  Widget _buildSelectedDaysInfo() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: CAppTheme.primaryColor.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+        border: Border.all(color: CAppTheme.primaryColor.withValues(alpha: 0.15)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.event_available, size: 18, color: CAppTheme.primaryColor),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '${_selectedDateKeys.length} days selected — any combination allowed',
+              style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSeatSelector() {
+    final maxSeats = _hourlyPerDaySlots
+        ? _selectedDateKeys.fold<int>(_selectedCategory?.capacity ?? 1, (min, dateKey) {
+            var dayMin = min;
+            for (final slot in _slotsForDate(dateKey)) {
+              final avail = _availableSeatsForSlotOnDate(slot, dateKey);
+              if (avail < dayMin) dayMin = avail;
+            }
+            return dayMin;
+          }).clamp(1, 100)
+        : _selectedSlots.isEmpty
+            ? 1
+            : _selectedSlots
+                .map((s) => _availableSeatsForSlot(s))
+                .reduce((a, b) => a < b ? a : b)
+                .clamp(1, 100);
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
@@ -978,7 +1372,7 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
             isDense: true,
             onChanged: (v) { if (v != null) setState(() => _selectedSeats = v); },
             items: List.generate(
-              _selectedSlots.isEmpty ? 1 : _selectedSlots.map((s) => _availableSeatsForSlot(s)).reduce((a, b) => a < b ? a : b).clamp(1, 100),
+              maxSeats,
               (i) => DropdownMenuItem(value: i + 1, child: Text('${i + 1}')),
             ),
           ),
@@ -989,24 +1383,45 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
 
   Widget _buildDualBottomBar(bool isBooking) {
     final dayCount = _isMonthlyBooking ? 1 : _selectedDateKeys.length;
-    final canBook = (_selectedSlots.isNotEmpty || _isPerDayBooking || _isMonthlyBooking) &&
+    final hourlyReady = _hourlyPerDaySlots
+        ? _selectedDateKeys.every((k) => _slotsForDate(k).isNotEmpty)
+        : _selectedSlots.isNotEmpty;
+    final canBook = (hourlyReady || _isPerDayBooking || _isMonthlyBooking) &&
         _selectedCategory != null &&
         _selectedDateKeys.isNotEmpty;
 
-    final hourlyTotal = _selectedSlots.fold<double>(
-      0.0,
-      (s, slot) => s + (_selectedCategory!.pricePerHour * (slot.endHour - slot.startHour) * _selectedSeats),
-    );
+    final hourlyTotal = _hourlyPerDaySlots
+        ? _selectedDateKeys.fold<double>(0, (sum, dateKey) {
+            return sum +
+                _slotsForDate(dateKey).fold<double>(
+                  0,
+                  (daySum, slot) =>
+                      daySum +
+                      _selectedCategory!.pricePerHour *
+                          (slot.endHour - slot.startHour) *
+                          _selectedSeats,
+                );
+          })
+        : _selectedSlots.fold<double>(
+            0.0,
+            (s, slot) =>
+                s +
+                (_selectedCategory!.pricePerHour *
+                    (slot.endHour - slot.startHour) *
+                    _selectedSeats),
+          );
 
     final priceLabel = _isMonthlyBooking
         ? 'Rs. ${(_monthlyRate * _monthCount).toStringAsFixed(0)}'
         : _isPerDayBooking
             ? 'Rs. ${(_selectedCategory!.pricePerDay * dayCount).toStringAsFixed(0)}'
-            : 'Rs. ${(hourlyTotal * dayCount).toStringAsFixed(0)}';
+            : 'Rs. ${hourlyTotal.toStringAsFixed(0)}';
 
-    final dateLabel = _selectedDateKeys.length == 1
-        ? DateFormat.yMMMd().format(_parseDateKey(_selectedDateKeys.first))
-        : '$dayCount days selected';
+    final dateLabel = _hourlyPerDaySlots
+        ? '$dayCount days · $_totalHourlySlotsPicked slot${_totalHourlySlotsPicked == 1 ? '' : 's'} picked'
+        : _selectedDateKeys.length == 1
+            ? DateFormat.yMMMd().format(_parseDateKey(_selectedDateKeys.first))
+            : '$dayCount days selected';
 
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
@@ -1060,13 +1475,17 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
                             _isMonthlyBooking
                                 ? 'Book $_monthCount Month${_monthCount > 1 ? 's' : ''}'
                                 : !canBook
-                                    ? 'Select slots'
+                                    ? (_hourlyPerDaySlots
+                                        ? 'Pick slots for each day'
+                                        : 'Select slots')
                                     : _isPerDayBooking
                                         ? dayCount > 1
                                             ? 'Book $dayCount Days'
                                             : 'Book Full Day'
-                                        : dayCount > 1
-                                            ? 'Book ${_selectedSlots.length} Slot(s) × $dayCount Days'
+                                        : _hourlyPerDaySlots
+                                            ? _totalHourlySlotsPicked > 0
+                                                ? 'Book $_totalHourlySlotsPicked Slot${_totalHourlySlotsPicked == 1 ? '' : 's'}'
+                                                : 'Book Hourly Slot'
                                             : 'Book ${_selectedSlots.length} Slot(s)',
                             style: GoogleFonts.poppins(fontSize: 15, fontWeight: FontWeight.w600),
                           ),
@@ -1125,7 +1544,7 @@ class _ImageCarousel extends StatelessWidget {
           PageView.builder(
             controller: pageController, itemCount: imageUrls.length, onPageChanged: onPageChanged,
             itemBuilder: (_, i) => Hero(
-              tag: 'workspace_image_${workspaceId}_$i',
+              tag: 'workspace_detail_image_${workspaceId}_$i',
               child: Image.network(imageUrls[i], fit: BoxFit.cover,
                 cacheWidth: kIsWeb ? 600 : 1200,
                 loadingBuilder: (_, c, p) => p == null ? c : Container(color: CAppTheme.borderColor, child: const Center(child: CircularProgressIndicator(strokeWidth: 2))),

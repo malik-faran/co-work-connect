@@ -30,6 +30,8 @@ class WorkspaceModel {
   final double? rating;
   final int? totalReviews;
   final String? officePolicies;
+  final String? legalDocumentUrl;
+  final bool? workspaceApproved;
 
   WorkspaceModel({
     required this.id,
@@ -61,6 +63,8 @@ class WorkspaceModel {
     this.rating,
     this.totalReviews,
     this.officePolicies,
+    this.legalDocumentUrl,
+    this.workspaceApproved,
   });
 
   Map<String, dynamic> toWorkspaceMap() {
@@ -96,6 +100,8 @@ class WorkspaceModel {
     if (officePolicies != null && officePolicies!.trim().isNotEmpty) {
       map['office_policies'] = officePolicies;
     }
+    if (legalDocumentUrl != null) map['legal_document_url'] = legalDocumentUrl;
+    if (workspaceApproved != null) map['workspace_approved'] = workspaceApproved;
 
     if (categoryOptions.isNotEmpty) {
       map['category_options'] = categoryOptions.map((e) {
@@ -210,6 +216,13 @@ class WorkspaceModel {
       rating: map['rating'] != null ? convertToDouble(map['rating'], 0.0) : null,
       totalReviews: map['total_reviews'] != null ? convertToInt(map['total_reviews'], 0) : null,
       officePolicies: getStringFromMap(map, 'office_policies', 'officePolicies'),
+      legalDocumentUrl:
+          getStringFromMap(map, 'legal_document_url', 'legalDocumentUrl'),
+      workspaceApproved: getNullableValueFromMap<bool>(
+        map,
+        'workspace_approved',
+        'workspaceApproved',
+      ),
     );
   }
 
@@ -243,6 +256,8 @@ class WorkspaceModel {
     double? rating,
     int? totalReviews,
     String? officePolicies,
+    String? legalDocumentUrl,
+    bool? workspaceApproved,
   }) {
     return WorkspaceModel(
       id: id ?? this.id,
@@ -274,6 +289,8 @@ class WorkspaceModel {
       rating: rating ?? this.rating,
       totalReviews: totalReviews ?? this.totalReviews,
       officePolicies: officePolicies ?? this.officePolicies,
+      legalDocumentUrl: legalDocumentUrl ?? this.legalDocumentUrl,
+      workspaceApproved: workspaceApproved ?? this.workspaceApproved,
     );
   }
 }
@@ -283,25 +300,67 @@ class WorkspaceCategoryOption {
   final int capacity;
   final double pricePerHour;
   final double pricePerDay;
+  /// Legacy flat list — derived from [unitImageUrls] when saving.
+  final List<String> imageUrls;
+  /// Number of offices/rooms (for meeting & shared). For private, equals [capacity].
+  final int? noOfUnits;
+  /// One image list per office/room (index 0 = unit 1).
+  final List<List<String>> unitImageUrls;
 
   const WorkspaceCategoryOption({
     required this.type,
     required this.capacity,
     required this.pricePerHour,
     required this.pricePerDay,
+    this.imageUrls = const [],
+    this.noOfUnits,
+    this.unitImageUrls = const [],
   });
+
+  List<List<String>> get effectiveUnitImages {
+    if (unitImageUrls.isNotEmpty) return unitImageUrls;
+    if (imageUrls.isNotEmpty) return [imageUrls];
+    return const [];
+  }
 
   /// Converts category option to map for storage
   Map<String, dynamic> toCategoryMap() {
+    final flat = unitImageUrls.isNotEmpty
+        ? unitImageUrls.expand((u) => u).toList()
+        : imageUrls;
     return {
       'type': type,
       'capacity': capacity,
       'pricePerHour': pricePerHour,
       'pricePerDay': pricePerDay,
+      if (noOfUnits != null) 'noOfUnits': noOfUnits,
+      if (unitImageUrls.isNotEmpty) 'unitImageUrls': unitImageUrls,
+      if (flat.isNotEmpty) 'imageUrls': flat,
     };
   }
 
   factory WorkspaceCategoryOption.fromCategoryMap(Map<String, dynamic> map) {
+    final rawUnit = map['unit_image_urls'] ?? map['unitImageUrls'];
+    List<List<String>> unitImages = [];
+    if (rawUnit is List) {
+      for (final unit in rawUnit) {
+        if (unit is List) {
+          unitImages.add(unit.map((e) => e.toString()).toList());
+        }
+      }
+    }
+
+    final rawImages = map['image_urls'] ?? map['imageUrls'];
+    final images = rawImages is List
+        ? rawImages.map((e) => e.toString()).toList()
+        : <String>[];
+
+    if (unitImages.isEmpty && images.isNotEmpty) {
+      unitImages = [images];
+    }
+
+    final noOfUnitsRaw = map['no_of_units'] ?? map['noOfUnits'];
+
     return WorkspaceCategoryOption(
       type: map['type'] ?? '',
       capacity: convertToInt(map['capacity'] ?? map['Capacity'], 0),
@@ -313,6 +372,9 @@ class WorkspaceCategoryOption {
         map['pricePerDay'] ?? map['price_per_day'],
         0.0,
       ),
+      imageUrls: images,
+      noOfUnits: noOfUnitsRaw != null ? convertToInt(noOfUnitsRaw, 0) : null,
+      unitImageUrls: unitImages,
     );
   }
 }

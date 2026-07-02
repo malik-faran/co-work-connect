@@ -1,8 +1,10 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:cwc/controllers/auth_controller.dart';
+import 'package:cwc/services/storage_service.dart';
 import 'package:cwc/utils/constants/app_constants.dart';
 import 'package:cwc/utils/helpers/snackbar_helper.dart';
 import 'package:cwc/utils/helpers/error_handler.dart';
@@ -28,12 +30,19 @@ class _SignupScreenState extends State<SignupScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
+  final _phoneController = TextEditingController();
+  final _businessNameController = TextEditingController();
+  final _businessAddressController = TextEditingController();
+  final ImagePicker _imagePicker = ImagePicker();
 
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
   bool _acceptedTerms = false;
   bool _isLoading = false;
   String _passwordValue = '';
+  XFile? _cnicImage;
+
+  bool get _isOwner => widget.role == AppConstants.roleOwner;
 
   @override
   void initState() {
@@ -48,6 +57,9 @@ class _SignupScreenState extends State<SignupScreen> {
     _emailController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
+    _phoneController.dispose();
+    _businessNameController.dispose();
+    _businessAddressController.dispose();
     super.dispose();
   }
 
@@ -61,13 +73,26 @@ class _SignupScreenState extends State<SignupScreen> {
         FormValidators.email(email) == null &&
         PasswordValidator.isStrong(pwd) &&
         pwd == confirm &&
+        (!_isOwner || (_cnicImage != null && _phoneController.text.trim().isNotEmpty)) &&
         !_isLoading;
+  }
+
+  Future<void> _pickCnic() async {
+    final file = await _imagePicker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 85,
+    );
+    if (file != null) setState(() => _cnicImage = file);
   }
 
   Future<void> _handleSignup() async {
     if (!_formKey.currentState!.validate()) return;
     if (!_acceptedTerms) {
       showErrorSnackBar(context, 'Please accept the Workspace Usage and Platform Terms');
+      return;
+    }
+    if (_isOwner && _cnicImage == null) {
+      showErrorSnackBar(context, 'CNIC upload is required for owner registration');
       return;
     }
 
@@ -82,7 +107,22 @@ class _SignupScreenState extends State<SignupScreen> {
       password: _passwordController.text,
       name: _nameController.text.trim(),
       role: widget.role,
+      phone: _phoneController.text.trim(),
+      businessName: _isOwner ? _businessNameController.text.trim() : null,
+      businessAddress: _isOwner ? _businessAddressController.text.trim() : null,
     );
+
+    if (success && _isOwner && _cnicImage != null) {
+      try {
+        final cnicUrl = await StorageService().uploadCNICImage(_cnicImage!, email);
+        await authController.completeOwnerRegistration(cnicImageUrl: cnicUrl);
+      } catch (e) {
+        if (!mounted) return;
+        setState(() => _isLoading = false);
+        showErrorSnackBar(context, 'CNIC upload failed: ${e.toString()}');
+        return;
+      }
+    }
 
     if (!mounted) return;
     setState(() => _isLoading = false);
@@ -133,7 +173,7 @@ class _SignupScreenState extends State<SignupScreen> {
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    'Create\nAccount',
+                    _isOwner ? 'Create\nOwner Account' : 'Create\nAccount',
                     style: GoogleFonts.poppins(
                       fontSize: 32,
                       fontWeight: FontWeight.bold,
@@ -143,7 +183,9 @@ class _SignupScreenState extends State<SignupScreen> {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    'Join Co-Work Connect in seconds',
+                    _isOwner
+                        ? 'Upload your CNIC — admin will verify before you can list workspaces'
+                        : 'Join Co-Work Connect in seconds',
                     style: GoogleFonts.poppins(
                       fontSize: 14,
                       color: Colors.white.withValues(alpha: 0.85),
@@ -181,6 +223,42 @@ class _SignupScreenState extends State<SignupScreen> {
                         ),
                         validator: FormValidators.email,
                       ),
+                      if (_isOwner) ...[
+                        const SizedBox(height: 14),
+                        TextFormField(
+                          controller: _phoneController,
+                          keyboardType: TextInputType.phone,
+                          decoration: const InputDecoration(
+                            labelText: 'Phone Number',
+                            prefixIcon: Icon(Icons.phone_outlined),
+                          ),
+                          validator: (v) {
+                            if (v == null || v.trim().isEmpty) {
+                              return 'Phone is required for owners';
+                            }
+                            return null;
+                          },
+                        ),
+                        const SizedBox(height: 14),
+                        TextFormField(
+                          controller: _businessNameController,
+                          textCapitalization: TextCapitalization.words,
+                          decoration: const InputDecoration(
+                            labelText: 'Business Name',
+                            prefixIcon: Icon(Icons.business_outlined),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        TextFormField(
+                          controller: _businessAddressController,
+                          decoration: const InputDecoration(
+                            labelText: 'Business Address',
+                            prefixIcon: Icon(Icons.location_on_outlined),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        _buildCnicUpload(),
+                      ],
                       const SizedBox(height: 14),
                       TextFormField(
                         controller: _passwordController,
@@ -279,6 +357,48 @@ class _SignupScreenState extends State<SignupScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildCnicUpload() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'CNIC Upload (Required)',
+          style: GoogleFonts.poppins(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: CAppTheme.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: _isLoading ? null : _pickCnic,
+          icon: const Icon(Icons.upload_file_rounded),
+          label: Text(
+            _cnicImage == null ? 'Upload CNIC Photo' : 'CNIC Selected — Change',
+            style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+          ),
+          style: OutlinedButton.styleFrom(
+            minimumSize: const Size(double.infinity, 52),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+            ),
+          ),
+        ),
+        if (_cnicImage == null)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              'Clear photo of your CNIC is mandatory. Admin approval is required.',
+              style: GoogleFonts.poppins(
+                fontSize: 12,
+                color: CAppTheme.errorColor,
+              ),
+            ),
+          ),
+      ],
     );
   }
 

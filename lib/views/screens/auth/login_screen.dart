@@ -10,7 +10,7 @@ import 'package:cwc/utils/validators/form_validators.dart';
 import 'package:cwc/views/screens/auth/signup_screen.dart';
 import 'package:cwc/views/screens/auth/forgot_password_screen.dart';
 import 'package:cwc/views/screens/user/user_home_screen.dart';
-import 'package:cwc/views/screens/owner/owner_home_screen.dart';
+import 'package:cwc/utils/helpers/owner_navigation.dart';
 
 class LoginScreen extends StatefulWidget {
   final String role;
@@ -26,6 +26,16 @@ class _LoginScreenState extends State<LoginScreen> {
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
   bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    void refresh() {
+      if (mounted) setState(() {});
+    }
+    _emailController.addListener(refresh);
+    _passwordController.addListener(refresh);
+  }
 
   @override
   void dispose() {
@@ -47,28 +57,35 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isLoading = true);
 
     final authController = context.read<AuthController>();
-    final success = await authController.signIn(
-      email: _emailController.text.trim(),
-      password: _passwordController.text,
-    );
-
-    if (!mounted) return;
-    setState(() => _isLoading = false);
-
-    if (success && authController.currentUser != null) {
-      final user = authController.currentUser!;
-      final Widget target = (user.role == AppConstants.roleOwner)
-          ? const OwnerHomeScreen()
-          : const UserHomeScreen();
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => target),
-        (route) => false,
+    try {
+      final success = await authController.signIn(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
       );
-    } else {
-      showErrorSnackBar(
-        context,
-        cleanErrorMessage(authController.errorMessage),
-      );
+
+      if (!mounted) return;
+
+      if (success && authController.currentUser != null) {
+        final user = authController.currentUser!;
+        final Widget target = user.role == AppConstants.roleOwner
+            ? ownerDestinationFor(user)
+            : const UserHomeScreen();
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => target),
+          (route) => false,
+        );
+      } else {
+        showErrorSnackBar(
+          context,
+          cleanErrorMessage(authController.errorMessage),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        showErrorSnackBar(context, cleanErrorMessage(e.toString()));
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 

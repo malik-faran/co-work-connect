@@ -25,6 +25,7 @@ class UserModel {
   final List<String>? preferredProjectTypes;
   final String? resumeUrl;
   final String? resumeFileName;
+  final String? experience;
 
   UserModel({
     required this.id,
@@ -51,6 +52,7 @@ class UserModel {
     this.preferredProjectTypes,
     this.resumeUrl,
     this.resumeFileName,
+    this.experience,
   });
 
   Map<String, dynamic> toUserMap() {
@@ -81,6 +83,7 @@ class UserModel {
     if (preferredProjectTypes != null) map['preferred_project_types'] = preferredProjectTypes;
     if (resumeUrl != null) map['resume_url'] = resumeUrl;
     if (resumeFileName != null) map['resume_file_name'] = resumeFileName;
+    if (experience != null) map['experience'] = experience;
 
     return map;
   }
@@ -121,6 +124,7 @@ class UserModel {
           : null,
       resumeUrl: getStringFromMap(map, 'resume_url', 'resumeUrl'),
       resumeFileName: getStringFromMap(map, 'resume_file_name', 'resumeFileName'),
+      experience: getStringFromMap(map, 'experience', 'experience'),
     );
   }
 
@@ -149,6 +153,7 @@ class UserModel {
     List<String>? preferredProjectTypes,
     String? resumeUrl,
     String? resumeFileName,
+    String? experience,
   }) {
     return UserModel(
       id: id ?? this.id,
@@ -175,6 +180,7 @@ class UserModel {
       preferredProjectTypes: preferredProjectTypes ?? this.preferredProjectTypes,
       resumeUrl: resumeUrl ?? this.resumeUrl,
       resumeFileName: resumeFileName ?? this.resumeFileName,
+      experience: experience ?? this.experience,
     );
   }
 }

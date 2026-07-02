@@ -1,3 +1,5 @@
+import 'package:cwc/utils/constants/app_constants.dart';
+import 'package:cwc/utils/refund_policy.dart';
 import 'package:cwc/utils/helpers/model_helpers.dart';
 
 class BookingModel {
@@ -120,6 +122,17 @@ class BookingModel {
       durationHours: convertToIntNullable(map['duration_hours'] ?? map['durationHours']),
     );
   }
+
+  /// Last moment user can cancel with refund (dynamic lead time before start).
+  DateTime get cancellationDeadline => RefundPolicy.cancellationDeadline(startDate);
+
+  bool get isWithinCancellationWindow =>
+      RefundPolicy.canCancelWithRefund(startDate);
+
+  Duration get refundWindowRemaining => RefundPolicy.timeRemaining(startDate);
+
+  bool canCancelWithRefund({required bool isPaid}) =>
+      status == AppConstants.bookingStatusConfirmed && isPaid && isWithinCancellationWindow;
 
   BookingModel copyBooking({
     String? id,

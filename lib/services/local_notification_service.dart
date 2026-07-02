@@ -5,6 +5,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:cwc/services/chat_service.dart';
 import 'package:cwc/services/navigation_service.dart';
 import 'package:cwc/services/supabase_service.dart';
+import 'package:cwc/utils/notification_scope.dart';
 import 'package:cwc/models/chat_model.dart';
 import 'package:uuid/uuid.dart';
 
@@ -23,7 +24,9 @@ class LocalNotificationService {
   static const _androidChatChannelName = 'Chat Messages';
 
   bool _initialized = false;
+  bool _platformReady = false;
 
+  /// Core plugin init — safe to call from [main] before [runApp].
   Future<void> initialize() async {
     if (kIsWeb || _initialized) return;
 
@@ -43,30 +46,44 @@ class LocalNotificationService {
       onDidReceiveBackgroundNotificationResponse: _onBackgroundNotificationTapped,
     );
 
+    _initialized = true;
+  }
+
+  /// Channels and runtime permissions need an attached Activity on Android.
+  /// Call after the first frame (or from a background FCM isolate).
+  Future<void> ensurePlatformReady() async {
+    if (kIsWeb || !_initialized || _platformReady) return;
+
     final androidPlugin =
         _plugin.resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>();
 
     if (androidPlugin != null) {
-      const generalChannel = AndroidNotificationChannel(
-        _androidChannelId,
-        _androidChannelName,
-        description: 'Booking and app alerts',
-        importance: Importance.high,
-        playSound: true,
-        enableVibration: true,
-      );
-      const chatChannel = AndroidNotificationChannel(
-        _androidChatChannelId,
-        _androidChatChannelName,
-        description: 'New chat messages',
-        importance: Importance.high,
-        playSound: true,
-        enableVibration: true,
-      );
-      await androidPlugin.createNotificationChannel(generalChannel);
-      await androidPlugin.createNotificationChannel(chatChannel);
-      await androidPlugin.requestNotificationsPermission();
+      try {
+        const generalChannel = AndroidNotificationChannel(
+          _androidChannelId,
+          _androidChannelName,
+          description: 'Booking and app alerts',
+          importance: Importance.high,
+          playSound: true,
+          enableVibration: true,
+        );
+        const chatChannel = AndroidNotificationChannel(
+          _androidChatChannelId,
+          _androidChatChannelName,
+          description: 'New chat messages',
+          importance: Importance.high,
+          playSound: true,
+          enableVibration: true,
+        );
+        await androidPlugin.createNotificationChannel(generalChannel);
+        await androidPlugin.createNotificationChannel(chatChannel);
+        await androidPlugin.requestNotificationsPermission();
+        _platformReady = true;
+      } catch (e) {
+        debugPrint('Android notification setup failed: $e');
+      }
+      return;
     }
 
     final iosPlugin = _plugin
@@ -77,8 +94,7 @@ class LocalNotificationService {
       badge: true,
       sound: true,
     );
-
-    _initialized = true;
+    _platformReady = true;
   }
 
   @pragma('vm:entry-point')
@@ -107,6 +123,35 @@ class LocalNotificationService {
         } else {
           NavigationService.openChatFromNotification(chatRoomId);
         }
+        return;
+      }
+
+      final bookingId = data['booking_id'] as String?;
+      if (bookingId != null &&
+          type != null &&
+          NotificationScopeHelper.isWorkspaceType(type)) {
+        NavigationService.openBookingFromNotification(
+          bookingId: bookingId,
+          notificationType: type,
+        );
+        return;
+      }
+
+      final collaborationId = data['collaboration_id'] as String?;
+      if (collaborationId != null &&
+          type != null &&
+          (type == 'collaboration_milestone_missed' ||
+              NotificationScopeHelper.isProjectType(type))) {
+        final tab = type == 'collaboration_milestone_missed' ? 2 : 0;
+        NavigationService.openProjectFromNotification(collaborationId, initialTab: tab);
+        return;
+      }
+
+      final reportId = data['report_id'] as String?;
+      if (reportId != null &&
+          type != null &&
+          NotificationScopeHelper.isReportType(type)) {
+        NavigationService.openReportFromNotification(reportId);
       }
     } catch (_) {
       // Legacy payload: plain notification id — ignore navigation.
@@ -141,12 +186,20 @@ class LocalNotificationService {
     }
   }
 
+  Future<void> _ensureCanShow() async {
+    if (kIsWeb || !_initialized) return;
+    if (!_platformReady) {
+      await ensurePlatformReady();
+    }
+  }
+
   Future<void> show({
     required String id,
     required String title,
     required String body,
     String? payload,
   }) async {
+    await _ensureCanShow();
     if (kIsWeb || !_initialized) return;
 
     const androidDetails = AndroidNotificationDetails(
@@ -187,6 +240,7 @@ class LocalNotificationService {
     required String body,
     required String chatRoomId,
   }) async {
+    await _ensureCanShow();
     if (kIsWeb || !_initialized) return;
 
     final payload = jsonEncode({

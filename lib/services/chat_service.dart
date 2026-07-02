@@ -398,6 +398,28 @@ class ChatService {
     }
   }
 
+  /// Search users by name or email to start a direct chat.
+  Future<List<Map<String, dynamic>>> searchUsersForChat(
+    String query, {
+    required String excludeUserId,
+  }) async {
+    final q = query.trim();
+    if (q.length < 2) return [];
+
+    try {
+      final rows = await _supabase
+          .from('users')
+          .select('id, name, email, profile_image_url, role, profession')
+          .neq('id', excludeUserId)
+          .or('name.ilike.%$q%,email.ilike.%$q%')
+          .limit(20);
+
+      return List<Map<String, dynamic>>.from(rows);
+    } catch (e) {
+      throw Exception('Failed to search users: ${e.toString()}');
+    }
+  }
+
   /// Delete a chat room (and all its messages)
   Future<void> deleteChatRoom(String chatRoomId) async {
     try {

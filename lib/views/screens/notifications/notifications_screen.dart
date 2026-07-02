@@ -10,7 +10,6 @@ import 'package:cwc/services/notification_service.dart';
 import 'package:cwc/utils/notification_scope.dart';
 import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/services/navigation_service.dart';
-import 'package:cwc/views/screens/user/booking_history_screen.dart';
 import 'package:cwc/views/screens/collaboration/collaboration_detail_screen.dart';
 import 'package:intl/intl.dart';
 
@@ -26,9 +25,17 @@ enum InviteCardState {
 class NotificationsScreen extends StatefulWidget {
   final NotificationScope scope;
 
+  /// When false (e.g. owner bottom-nav tab), hide back — popping would leave the shell.
+  final bool showBackButton;
+
+  /// Bump to force a reload (e.g. when owner selects the notifications tab).
+  final Listenable? refreshListenable;
+
   const NotificationsScreen({
     super.key,
     this.scope = NotificationScope.all,
+    this.showBackButton = true,
+    this.refreshListenable,
   });
 
   @override
@@ -45,6 +52,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   final Set<String> _respondingInviteIds = {};
   final Map<String, InviteCardState> _inviteStates = {};
   StreamSubscription<List<NotificationModel>>? _notificationStreamSubscription;
+  AuthController? _auth;
+  bool _hasLoadedOnce = false;
 
   List<NotificationModel> get _visibleNotifications =>
       NotificationScopeHelper.filter(_notifications, widget.scope);
@@ -55,23 +64,78 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   @override
   void initState() {
     super.initState();
-    _loadNotifications();
-    _setupNotificationStream();
+    _auth = context.read<AuthController>();
+    _auth!.addListener(_onAuthChanged);
+    widget.refreshListenable?.addListener(_onRefreshRequested);
+    _bootstrap();
   }
 
-  Future<void> _loadNotifications() async {
+  @override
+  void didUpdateWidget(covariant NotificationsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.refreshListenable != widget.refreshListenable) {
+      oldWidget.refreshListenable?.removeListener(_onRefreshRequested);
+      widget.refreshListenable?.addListener(_onRefreshRequested);
+    }
+  }
+
+  void _onAuthChanged() {
+    if (_auth?.currentUser != null && _notificationStreamSubscription == null) {
+      _bootstrap();
+    }
+  }
+
+  void _onRefreshRequested() {
+    if (mounted) _bootstrap(forceReload: true);
+  }
+
+  Future<void> _bootstrap({bool forceReload = false}) async {
+    if (!forceReload && _hasLoadedOnce && _notificationStreamSubscription != null) {
+      return;
+    }
+
+    var user = _auth?.currentUser;
+    if (user == null) {
+      for (var i = 0; i < 20; i++) {
+        await Future.delayed(const Duration(milliseconds: 200));
+        if (!mounted) return;
+        user = _auth?.currentUser;
+        if (user != null) break;
+      }
+    }
+
+    if (!mounted) return;
+
+    if (user == null) {
+      setState(() {
+        _isLoading = false;
+        _errorMessage = null;
+      });
+      return;
+    }
+
+    await _loadNotifications(user.id);
+    _setupNotificationStream(user.id);
+  }
+
+  Future<void> _loadNotifications([String? userId]) async {
+    if (!mounted) return;
     setState(() {
-      _isLoading = true;
+      _isLoading = !_hasLoadedOnce;
       _errorMessage = null;
     });
 
     try {
-      final authController = context.read<AuthController>();
-      final currentUser = authController.currentUser;
-      if (currentUser == null) return;
+      final id = userId ?? _auth?.currentUser?.id;
+      if (id == null) {
+        if (mounted) setState(() => _isLoading = false);
+        return;
+      }
 
-      final notifications = await _notificationService.getUserNotifications(currentUser.id);
+      final notifications =
+          await _notificationService.getUserNotifications(id);
 
+      if (!mounted) return;
       setState(() {
         _notifications = notifications;
         _unreadCount = NotificationScopeHelper.unreadCount(
@@ -79,12 +143,14 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           widget.scope,
         );
         _isLoading = false;
+        _hasLoadedOnce = true;
       });
       if (widget.scope == NotificationScope.projects ||
           widget.scope == NotificationScope.all) {
-        await _refreshInviteStates(_visibleNotifications, currentUser.id);
+        await _refreshInviteStates(_visibleNotifications, id);
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = e.toString();
         _isLoading = false;
@@ -92,36 +158,42 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     }
   }
 
-  void _setupNotificationStream() {
-    final authController = context.read<AuthController>();
-    final currentUser = authController.currentUser;
-    if (currentUser == null) return;
-
+  void _setupNotificationStream(String userId) {
     _notificationStreamSubscription?.cancel();
 
-    _notificationStreamSubscription = _notificationService.getNotificationsStream(currentUser.id).listen(
+    _notificationStreamSubscription =
+        _notificationService.getNotificationsStream(userId).listen(
       (notifications) async {
-        if (mounted) {
-          setState(() {
-            _notifications = notifications;
-            _unreadCount = NotificationScopeHelper.unreadCount(
-              notifications,
-              widget.scope,
-            );
-          });
-          if (widget.scope == NotificationScope.projects ||
-              widget.scope == NotificationScope.all) {
-            await _refreshInviteStates(_visibleNotifications, currentUser.id);
-          }
+        if (!mounted) return;
+        // Ignore empty realtime payloads that would wipe a good fetch.
+        if (notifications.isEmpty && _notifications.isNotEmpty) {
+          return;
+        }
+        setState(() {
+          _notifications = notifications;
+          _unreadCount = NotificationScopeHelper.unreadCount(
+            notifications,
+            widget.scope,
+          );
+          _isLoading = false;
+          _hasLoadedOnce = true;
+        });
+        if (widget.scope == NotificationScope.projects ||
+            widget.scope == NotificationScope.all) {
+          await _refreshInviteStates(_visibleNotifications, userId);
         }
       },
-      onError: (_) {},
+      onError: (error) {
+        debugPrint('Notifications stream error: $error');
+      },
       cancelOnError: false,
     );
   }
 
   @override
   void dispose() {
+    _auth?.removeListener(_onAuthChanged);
+    widget.refreshListenable?.removeListener(_onRefreshRequested);
     _notificationStreamSubscription?.cancel();
     super.dispose();
   }
@@ -253,6 +325,26 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     await _markAsRead(notification);
     if (!mounted) return;
 
+    if (notification.type == 'collaboration_milestone_missed') {
+      final collaborationId =
+          notification.metadata?['collaboration_id'] as String?;
+      if (collaborationId != null) {
+        NavigationService.openProjectFromNotification(
+          collaborationId,
+          initialTab: 2,
+        );
+      }
+      return;
+    }
+
+    if (NotificationScopeHelper.isReportType(notification.type)) {
+      final reportId = notification.metadata?['report_id'] as String?;
+      if (reportId != null) {
+        NavigationService.openReportFromNotification(reportId);
+      }
+      return;
+    }
+
     if (NotificationScopeHelper.isProjectType(notification.type)) {
       final collaborationId =
           notification.metadata?['collaboration_id'] as String?;
@@ -268,10 +360,13 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     }
 
     if (NotificationScopeHelper.isWorkspaceType(notification.type)) {
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => const BookingHistoryScreen()),
-      );
+      final bookingId = notification.metadata?['booking_id'] as String?;
+      if (bookingId != null) {
+        await NavigationService.openBookingFromNotification(
+          bookingId: bookingId,
+          notificationType: notification.type,
+        );
+      }
       return;
     }
 
@@ -440,10 +535,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           ),
         ),
         automaticallyImplyLeading: false,
-        leading: Navigator.canPop(context)
+        leading: widget.showBackButton && Navigator.canPop(context)
             ? IconButton(
                 icon: const Icon(Icons.arrow_back_ios, color: CAppTheme.textPrimary),
-                onPressed: () => Navigator.pop(context),
+                onPressed: () => Navigator.maybePop(context),
               )
             : null,
         actions: [
@@ -875,6 +970,14 @@ class _NotificationCard extends StatelessWidget {
         return Icons.event_available_rounded;
       case 'booking_cancelled':
         return Icons.event_busy_rounded;
+      case 'report_under_review':
+        return Icons.hourglass_top_rounded;
+      case 'report_resolved':
+        return Icons.check_circle_outline_rounded;
+      case 'report_dismissed':
+        return Icons.cancel_outlined;
+      case 'collaboration_milestone_missed':
+        return Icons.flag_circle_outlined;
       default:
         return Icons.notifications_rounded;
     }
@@ -902,6 +1005,14 @@ class _NotificationCard extends StatelessWidget {
       case 'booking_confirmed':
         return CAppTheme.successColor;
       case 'booking_cancelled':
+        return CAppTheme.errorColor;
+      case 'report_under_review':
+        return CAppTheme.infoColor;
+      case 'report_resolved':
+        return CAppTheme.successColor;
+      case 'report_dismissed':
+        return CAppTheme.textTertiary;
+      case 'collaboration_milestone_missed':
         return CAppTheme.errorColor;
       default:
         return CAppTheme.primaryColor;

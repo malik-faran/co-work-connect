@@ -465,7 +465,10 @@ class _PortfolioFormState extends State<_PortfolioForm> {
               TextField(
                 controller: _url,
                 decoration: const InputDecoration(
-                    labelText: 'Project link (optional)', hintText: 'https://...'),
+                  labelText: 'Project link (optional)',
+                  hintText: 'https://github.com/...',
+                ),
+                keyboardType: TextInputType.url,
               ),
               const SizedBox(height: 12),
               TextField(
@@ -513,6 +516,22 @@ class _PortfolioFormState extends State<_PortfolioForm> {
                 child: ElevatedButton(
                   onPressed: () {
                     if (_title.text.trim().isEmpty) return;
+                    final link = _url.text.trim();
+                    if (link.isNotEmpty) {
+                      final uri = Uri.tryParse(link);
+                      final valid = uri != null &&
+                          uri.hasScheme &&
+                          (uri.scheme == 'http' || uri.scheme == 'https') &&
+                          uri.host.isNotEmpty;
+                      if (!valid) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Project link must be a valid URL (https://...)'),
+                          ),
+                        );
+                        return;
+                      }
+                    }
                     Navigator.pop(
                       context,
                       PortfolioItem(

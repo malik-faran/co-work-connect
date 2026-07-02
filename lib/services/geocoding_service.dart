@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'package:cwc/utils/constants/app_constants.dart';
 import 'package:http/http.dart' as http;
 
 class GeocodingPlace {
@@ -44,6 +43,7 @@ class GeocodingService {
       'limit': '8',
       'countrycodes': 'pk',
       'addressdetails': '1',
+      'dedupe': '1',
     });
 
     final response = await http.get(uri, headers: _headers);
@@ -62,6 +62,7 @@ class GeocodingService {
       'lon': longitude.toString(),
       'format': 'json',
       'addressdetails': '1',
+      'zoom': '18',
     });
 
     final response = await http.get(uri, headers: _headers);
@@ -122,13 +123,6 @@ class GeocodingService {
       address['state_district'],
       address['suburb'],
     ];
-
-    for (final c in candidates) {
-      final value = c?.toString();
-      if (value != null && AppConstants.cities.contains(value)) {
-        return value;
-      }
-    }
 
     for (final c in candidates) {
       final value = c?.toString();

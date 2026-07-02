@@ -198,6 +198,7 @@ class CollaborationModel {
   /// Lifecycle helpers
   bool get isDraft => status == 'draft';
   bool get isRecruiting => status == 'recruiting';
+  bool get isInactive => status == 'inactive';
   bool get isActive => status == 'active';
   bool get isCompleted => status == 'completed';
   bool get isCancelled => status == 'cancelled';

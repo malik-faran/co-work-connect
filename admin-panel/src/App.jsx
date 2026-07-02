@@ -1,10 +1,11 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import OwnerRequests from './pages/OwnerRequests'
 import Users from './pages/Users'
 import Workspaces from './pages/Workspaces'
+import WorkspaceRequests from './pages/WorkspaceRequests'
 import Bookings from './pages/Bookings'
 import Reviews from './pages/Reviews'
 import Collaborations from './pages/Collaborations'
@@ -12,13 +13,22 @@ import Notifications from './pages/Notifications'
 import ChatMonitoring from './pages/ChatMonitoring'
 import Payments from './pages/Payments'
 import OwnerRevenue from './pages/OwnerRevenue'
+import Moderators from './pages/Moderators'
+import ModeratorActivity from './pages/ModeratorActivity'
+import PaymentVerification from './pages/PaymentVerification'
+import WalletRefunds from './pages/WalletRefunds'
+import Reports from './pages/Reports'
+import OwnerPayouts from './pages/OwnerPayouts'
+import PlatformAccounts from './pages/PlatformAccounts'
 import Layout from './components/Layout'
+import ProtectedRoute from './components/ProtectedRoute'
 import Loading from './components/Loading'
-import { supabase, fetchAdminProfile } from './lib/supabase'
+import { supabase, fetchStaffProfileWithTimeout } from './lib/supabase'
 
 function App() {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
+  const loginInProgress = useRef(false)
 
   useEffect(() => {
     let mounted = true
@@ -29,7 +39,7 @@ function App() {
         return
       }
       try {
-        const profile = await fetchAdminProfile(session.user.id)
+        const profile = await fetchStaffProfileWithTimeout(session.user.id)
         if (mounted) {
           setUser({
             id: session.user.id,
@@ -39,56 +49,109 @@ function App() {
           })
         }
       } catch {
-        await supabase.auth.signOut()
+        supabase.auth.signOut().catch(() => {})
         if (mounted) setUser(null)
       }
     }
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      loadSession(session).finally(() => {
+    const safetyTimer = setTimeout(() => {
+      if (mounted) setLoading(false)
+    }, 8000)
+
+    supabase.auth
+      .getSession()
+      .then(({ data: { session } }) => loadSession(session))
+      .catch(() => {
+        if (mounted) setUser(null)
+      })
+      .finally(() => {
+        clearTimeout(safetyTimer)
         if (mounted) setLoading(false)
       })
-    })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
+      async (event, session) => {
+        if (!mounted) return
+        // Login page handles SIGNED_IN itself — avoid double fetch + signOut race
+        if (event === 'SIGNED_IN' && loginInProgress.current) return
+        if (event === 'INITIAL_SESSION') return
+        if (event === 'SIGNED_OUT') {
+          setUser(null)
+          return
+        }
         await loadSession(session)
       }
     )
 
     return () => {
       mounted = false
+      clearTimeout(safetyTimer)
       subscription.unsubscribe()
     }
   }, [])
 
-  if (loading) {
-    return <Loading message="Loading admin panel..." />
+  const handleLoginSuccess = (staffUser) => {
+    loginInProgress.current = false
+    setUser(staffUser)
   }
+
+  const handleLoginStart = () => {
+    loginInProgress.current = true
+  }
+
+  const handleLoginEnd = () => {
+    loginInProgress.current = false
+  }
+
+  if (loading) {
+    return <Loading message="Loading staff panel..." />
+  }
+
+  const guard = (element) => (
+    <ProtectedRoute user={user}>{element}</ProtectedRoute>
+  )
 
   return (
     <Router>
       <Routes>
         <Route
           path="/login"
-          element={user ? <Navigate to="/dashboard" /> : <Login setUser={setUser} />}
+          element={
+            user ? (
+              <Navigate to="/dashboard" />
+            ) : (
+              <Login
+                onLoginStart={handleLoginStart}
+                onLoginSuccess={handleLoginSuccess}
+                onLoginEnd={handleLoginEnd}
+              />
+            )
+          }
         />
         <Route
           path="/"
           element={user ? <Layout user={user} setUser={setUser} /> : <Navigate to="/login" />}
         >
           <Route index element={<Navigate to="/dashboard" />} />
-          <Route path="dashboard" element={<Dashboard />} />
-          <Route path="owner-requests" element={<OwnerRequests />} />
-          <Route path="users" element={<Users />} />
-          <Route path="workspaces" element={<Workspaces />} />
-          <Route path="bookings" element={<Bookings />} />
-          <Route path="reviews" element={<Reviews />} />
-          <Route path="collaborations" element={<Collaborations />} />
-          <Route path="notifications" element={<Notifications />} />
-          <Route path="chat-monitoring" element={<ChatMonitoring />} />
-          <Route path="payments" element={<Payments />} />
-          <Route path="owner-revenue" element={<OwnerRevenue />} />
+          <Route path="dashboard" element={guard(<Dashboard />)} />
+          <Route path="owner-requests" element={guard(<OwnerRequests />)} />
+          <Route path="workspace-requests" element={guard(<WorkspaceRequests />)} />
+          <Route path="users" element={guard(<Users user={user} />)} />
+          <Route path="workspaces" element={guard(<Workspaces />)} />
+          <Route path="bookings" element={guard(<Bookings />)} />
+          <Route path="reviews" element={guard(<Reviews />)} />
+          <Route path="collaborations" element={guard(<Collaborations />)} />
+          <Route path="notifications" element={guard(<Notifications />)} />
+          <Route path="chat-monitoring" element={guard(<ChatMonitoring />)} />
+          <Route path="payments" element={guard(<Payments />)} />
+          <Route path="owner-revenue" element={guard(<OwnerRevenue />)} />
+          <Route path="moderators" element={guard(<Moderators user={user} />)} />
+          <Route path="moderator-activity" element={guard(<ModeratorActivity user={user} />)} />
+          <Route path="payment-verification" element={guard(<PaymentVerification />)} />
+          <Route path="wallet-refunds" element={guard(<WalletRefunds />)} />
+          <Route path="owner-payouts" element={guard(<OwnerPayouts />)} />
+          <Route path="reports" element={guard(<Reports />)} />
+          <Route path="platform-accounts" element={guard(<PlatformAccounts user={user} />)} />
         </Route>
       </Routes>
     </Router>

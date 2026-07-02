@@ -517,6 +517,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       appBar: AppBar(
         elevation: 0,
         backgroundColor: Colors.white,
+        surfaceTintColor: Colors.transparent,
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Container(
+            height: 1,
+            color: CAppTheme.primaryColor.withValues(alpha: 0.12),
+          ),
+        ),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios, color: CAppTheme.textPrimary),
           onPressed: () => Navigator.pop(context),
@@ -619,33 +627,64 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     return Column(
       children: [
         Expanded(
-          child: _messages.isEmpty
-              ? _buildEmptyState()
-              : ListView.builder(
-                  controller: _scrollController,
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _messages.length,
-                  itemBuilder: (context, index) {
-                    final message = _messages[index];
-                    final isMe = message.senderId == currentUser?.id;
-                    final showAvatar = index == 0 ||
-                        _messages[index - 1].senderId != message.senderId;
-
-                    return _MessageBubble(
-                      message: message,
-                      isMe: isMe,
-                      showAvatar: showAvatar,
-                      onLongPress: isMe ? () => _showMessageOptions(message) : null,
-                      onImageTap: message.imageUrl != null
-                          ? () => _showFullImage(message.imageUrl!)
-                          : null,
-                    );
-                  },
-                ),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  const Color(0xFFEEF3FF),
+                  CAppTheme.backgroundColor,
+                ],
+              ),
+            ),
+            child: _messages.isEmpty
+                ? _buildEmptyState()
+                : ListView(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    children: _buildMessageWidgets(currentUser),
+                  ),
+          ),
         ),
         _buildMessageInput(),
       ],
     );
+  }
+
+  List<Widget> _buildMessageWidgets(currentUser) {
+    final widgets = <Widget>[];
+    DateTime? lastDay;
+
+    for (var index = 0; index < _messages.length; index++) {
+      final message = _messages[index];
+      final day = DateTime(
+        message.createdAt.year,
+        message.createdAt.month,
+        message.createdAt.day,
+      );
+      if (lastDay == null || day != lastDay) {
+        widgets.add(_DateSeparator(date: message.createdAt));
+        lastDay = day;
+      }
+
+      final isMe = message.senderId == currentUser?.id;
+      final showAvatar = index == 0 ||
+          _messages[index - 1].senderId != message.senderId;
+
+      widgets.add(
+        _MessageBubble(
+          message: message,
+          isMe: isMe,
+          showAvatar: showAvatar,
+          onLongPress: isMe ? () => _showMessageOptions(message) : null,
+          onImageTap: message.imageUrl != null
+              ? () => _showFullImage(message.imageUrl!)
+              : null,
+        ),
+      );
+    }
+    return widgets;
   }
 
   Widget _buildDropOverlay() {
@@ -868,7 +907,53 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 }
 
-/// Message Bubble Widget
+class _DateSeparator extends StatelessWidget {
+  final DateTime date;
+  const _DateSeparator({required this.date});
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final d = DateTime(date.year, date.month, date.day);
+    final String label;
+    if (d == today) {
+      label = 'Today';
+    } else if (d == today.subtract(const Duration(days: 1))) {
+      label = 'Yesterday';
+    } else {
+      label = '${date.day}/${date.month}/${date.year}';
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.9),
+            borderRadius: BorderRadius.circular(CAppTheme.radiusRound),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.04),
+                blurRadius: 6,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Text(
+            label,
+            style: GoogleFonts.poppins(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+              color: CAppTheme.textSecondary,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _MessageBubble extends StatelessWidget {
   final ChatMessageModel message;
   final bool isMe;

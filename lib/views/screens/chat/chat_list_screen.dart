@@ -10,6 +10,7 @@ import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/models/user_model.dart';
 import 'package:cwc/services/supabase_service.dart';
 import 'package:cwc/views/screens/chat/chat_screen.dart';
+import 'package:cwc/views/screens/chat/new_message_screen.dart';
 
 /// Chat List Screen
 /// Shows all chat conversations for the current user
@@ -28,6 +29,8 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
   String? _errorMessage;
   StreamSubscription<List<ChatRoomModel>>? _chatRoomsStreamSubscription;
   final Map<String, String> _roleCache = {};
+  final TextEditingController _listSearchController = TextEditingController();
+  String _listSearch = '';
 
   @override
   void initState() {
@@ -35,6 +38,11 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
     WidgetsBinding.instance.addObserver(this);
     _loadChatRooms();
     _setupChatRoomsStream();
+    _listSearchController.addListener(() {
+      if (_listSearch != _listSearchController.text) {
+        setState(() => _listSearch = _listSearchController.text.trim().toLowerCase());
+      }
+    });
   }
 
   @override
@@ -138,6 +146,7 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _chatRoomsStreamSubscription?.cancel();
+    _listSearchController.dispose();
     super.dispose();
   }
 
@@ -155,37 +164,141 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
 
     return Scaffold(
       backgroundColor: CAppTheme.backgroundColor,
-      appBar: AppBar(
-        elevation: 0,
-        backgroundColor: Colors.white,
-        automaticallyImplyLeading: false,
-        title: Text(
-          'Messages',
-          style: GoogleFonts.poppins(
-            fontWeight: FontWeight.bold,
-            color: CAppTheme.textPrimary,
-          ),
+      body: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildHeader(currentUser),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: TextField(
+                controller: _listSearchController,
+                decoration: InputDecoration(
+                  hintText: 'Search conversations...',
+                  prefixIcon: const Icon(Icons.search_rounded),
+                  filled: true,
+                  fillColor: Colors.white,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 0),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: _isLoading
+                  ? const Center(
+                      child: CircularProgressIndicator(color: CAppTheme.primaryColor),
+                    )
+                  : _errorMessage != null
+                      ? _buildErrorState()
+                      : _buildChatRoomsList(currentUser),
+            ),
+          ],
         ),
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator(color: CAppTheme.primaryColor))
-          : _errorMessage != null
-              ? _buildErrorState()
-              : _chatRooms.isEmpty
-                  ? _buildEmptyState()
-                  : _buildChatRoomsList(currentUser),
+    );
+  }
+
+  Widget _buildHeader(UserModel currentUser) {
+    final unreadTotal = _chatRooms.fold<int>(
+      0,
+      (sum, r) => sum + r.getUnreadCount(currentUser.id),
+    );
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 8, 8, 18),
+      decoration: const BoxDecoration(
+        gradient: CAppTheme.primaryGradient,
+        borderRadius: BorderRadius.only(
+          bottomLeft: Radius.circular(24),
+          bottomRight: Radius.circular(24),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Messages',
+                  style: GoogleFonts.poppins(
+                    fontSize: 26,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  _chatRooms.isEmpty
+                      ? 'Chat with owners & teammates'
+                      : '${_chatRooms.length} chat${_chatRooms.length == 1 ? '' : 's'}'
+                          '${unreadTotal > 0 ? ' · $unreadTotal unread' : ''}',
+                  style: GoogleFonts.poppins(
+                    fontSize: 13,
+                    color: Colors.white.withValues(alpha: 0.9),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Material(
+            color: Colors.white.withValues(alpha: 0.18),
+            borderRadius: BorderRadius.circular(14),
+            child: InkWell(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const NewMessageScreen()),
+                ).then((_) => _loadChatRooms());
+              },
+              borderRadius: BorderRadius.circular(14),
+              child: const Padding(
+                padding: EdgeInsets.all(12),
+                child: Icon(Icons.edit_rounded, color: Colors.white, size: 22),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
   Widget _buildChatRoomsList(UserModel currentUser) {
+    var rooms = List<ChatRoomModel>.from(_chatRooms);
+    rooms.sort((a, b) {
+      final aUnread = a.getUnreadCount(currentUser.id);
+      final bUnread = b.getUnreadCount(currentUser.id);
+      if (aUnread > 0 && bUnread == 0) return -1;
+      if (bUnread > 0 && aUnread == 0) return 1;
+      final aTime = a.lastMessageAt ?? a.createdAt;
+      final bTime = b.lastMessageAt ?? b.createdAt;
+      return bTime.compareTo(aTime);
+    });
+
+    if (_listSearch.isNotEmpty) {
+      rooms = rooms.where((r) {
+        final name = r.getOtherUserName(currentUser.id)?.toLowerCase() ?? '';
+        final msg = r.lastMessage?.toLowerCase() ?? '';
+        return name.contains(_listSearch) || msg.contains(_listSearch);
+      }).toList();
+    }
+
+    if (rooms.isEmpty) {
+      return _listSearch.isNotEmpty ? _buildNoSearchResults() : _buildEmptyState();
+    }
+
     return RefreshIndicator(
       color: CAppTheme.primaryColor,
       onRefresh: _loadChatRooms,
       child: ListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: _chatRooms.length,
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+        itemCount: rooms.length,
         itemBuilder: (context, index) {
-          final chatRoom = _chatRooms[index];
+          final chatRoom = rooms[index];
           final otherUserName = chatRoom.getOtherUserName(currentUser.id);
           final otherUserProfileImage = chatRoom.getOtherUserProfileImage(currentUser.id);
           final unreadCount = chatRoom.getUnreadCount(currentUser.id);
@@ -328,47 +441,100 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
     }
   }
 
-  Widget _buildEmptyState() {
+  Widget _buildNoSearchResults() {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Container(
-              width: 88,
-              height: 88,
-              decoration: BoxDecoration(
-                color: CAppTheme.primaryColor.withValues(alpha: 0.1),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.chat_bubble_outline_rounded,
-                size: 44,
-                color: CAppTheme.primaryColor,
-              ),
-            ),
-            const SizedBox(height: 20),
+            Icon(Icons.search_off_rounded, size: 56, color: CAppTheme.textTertiary),
+            const SizedBox(height: 16),
             Text(
-              'No messages yet',
+              'No chats found',
               style: GoogleFonts.poppins(
-                fontSize: 18,
+                fontSize: 17,
                 fontWeight: FontWeight.w600,
                 color: CAppTheme.textPrimary,
               ),
             ),
             const SizedBox(height: 8),
             Text(
-              'Start a conversation from collaborations or bookings',
+              'Try a different name or message keyword',
               style: GoogleFonts.poppins(
-                color: CAppTheme.textSecondary,
                 fontSize: 14,
+                color: CAppTheme.textSecondary,
               ),
               textAlign: TextAlign.center,
             ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      children: [
+        SizedBox(
+          height: MediaQuery.of(context).size.height * 0.45,
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 96,
+                    height: 96,
+                    decoration: BoxDecoration(
+                      gradient: CAppTheme.coolGradient,
+                      shape: BoxShape.circle,
+                      boxShadow: CAppTheme.softShadow,
+                    ),
+                    child: const Icon(
+                      Icons.forum_rounded,
+                      size: 46,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 22),
+                  Text(
+                    'No messages yet',
+                    style: GoogleFonts.poppins(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                      color: CAppTheme.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Message workspace owners, project teammates, or find someone new',
+                    style: GoogleFonts.poppins(
+                      color: CAppTheme.textSecondary,
+                      fontSize: 14,
+                      height: 1.45,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 22),
+                  ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const NewMessageScreen()),
+                      ).then((_) => _loadChatRooms());
+                    },
+                    icon: const Icon(Icons.person_search_rounded),
+                    label: const Text('Start a conversation'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -437,155 +603,207 @@ class _ChatRoomCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final hasUnread = unreadCount > 0;
+    final preview = chatRoom.lastMessage ?? 'No messages yet';
+    final isPhoto = preview.contains('📷') || preview.toLowerCase().contains('photo');
+
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
+      margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+        border: hasUnread
+            ? Border.all(color: CAppTheme.primaryColor.withValues(alpha: 0.25))
+            : null,
         boxShadow: CAppTheme.softShadow,
       ),
       child: InkWell(
         onTap: onTap,
         onLongPress: onLongPress,
         borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
+        child: IntrinsicHeight(
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Stack(
-                children: [
-                  CircleAvatar(
-                    radius: 28,
-                    backgroundColor: CAppTheme.primaryColor.withValues(alpha: 0.1),
-                    backgroundImage: otherUserProfileImage != null
-                        ? NetworkImage(otherUserProfileImage!)
-                        : null,
-                    child: otherUserProfileImage == null
-                        ? Text(
-                            safeInitial(otherUserName),
-                            style: GoogleFonts.poppins(
-                              color: CAppTheme.primaryColor,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 18,
-                            ),
-                          )
-                        : null,
-                  ),
-                  if (unreadCount > 0)
-                    Positioned(
-                      right: 0,
-                      top: 0,
-                      child: Container(
-                        padding: const EdgeInsets.all(4),
-                        decoration: const BoxDecoration(
-                          color: CAppTheme.primaryColor,
-                          shape: BoxShape.circle,
-                        ),
-                        constraints: const BoxConstraints(
-                          minWidth: 20,
-                          minHeight: 20,
-                        ),
-                        child: Text(
-                          unreadCount > 9 ? '9+' : '$unreadCount',
-                          style: GoogleFonts.poppins(
-                            color: Colors.white,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
+              if (hasUnread)
+                Container(
+                  width: 4,
+                  decoration: BoxDecoration(
+                    color: CAppTheme.primaryColor,
+                    borderRadius: const BorderRadius.horizontal(
+                      left: Radius.circular(CAppTheme.radiusLarge),
                     ),
-                ],
-              ),
-              const SizedBox(width: 16),
+                  ),
+                ),
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Expanded(
-                          child: Row(
-                            children: [
-                              Flexible(
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Row(
+                    children: [
+                      Stack(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(2),
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              gradient: hasUnread ? CAppTheme.primaryGradient : null,
+                              color: hasUnread ? null : Colors.transparent,
+                            ),
+                            child: CircleAvatar(
+                              radius: 26,
+                              backgroundColor:
+                                  CAppTheme.primaryColor.withValues(alpha: 0.1),
+                              backgroundImage: otherUserProfileImage != null
+                                  ? NetworkImage(otherUserProfileImage!)
+                                  : null,
+                              child: otherUserProfileImage == null
+                                  ? Text(
+                                      safeInitial(otherUserName),
+                                      style: GoogleFonts.poppins(
+                                        color: CAppTheme.primaryColor,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 17,
+                                      ),
+                                    )
+                                  : null,
+                            ),
+                          ),
+                          if (hasUnread)
+                            Positioned(
+                              right: 0,
+                              top: 0,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: CAppTheme.accentColor,
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(color: Colors.white, width: 2),
+                                ),
                                 child: Text(
-                                  otherUserName,
+                                  unreadCount > 9 ? '9+' : '$unreadCount',
                                   style: GoogleFonts.poppins(
-                                    fontWeight: unreadCount > 0 ? FontWeight.w700 : FontWeight.w600,
-                                    fontSize: 16,
-                                    color: CAppTheme.textPrimary,
+                                    color: Colors.white,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w700,
                                   ),
-                                  overflow: TextOverflow.ellipsis,
                                 ),
                               ),
-                              const SizedBox(width: 6),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: role == 'owner'
-                                      ? const Color(0xFFEF8B2C).withValues(alpha: 0.1)
-                                      : CAppTheme.primaryColor.withValues(alpha: 0.1),
-                                  borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    if (role == 'owner')
-                                      Padding(
-                                        padding: const EdgeInsets.only(right: 3),
-                                        child: Icon(
-                                          Icons.business_rounded,
-                                          size: 10,
-                                          color: const Color(0xFFEF8B2C),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Row(
+                                    children: [
+                                      Flexible(
+                                        child: Text(
+                                          otherUserName,
+                                          style: GoogleFonts.poppins(
+                                            fontWeight: hasUnread
+                                                ? FontWeight.w700
+                                                : FontWeight.w600,
+                                            fontSize: 15.5,
+                                            color: CAppTheme.textPrimary,
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
                                         ),
                                       ),
-                                    Text(
-                                      role == 'owner' ? 'Owner' : 'User',
-                                      style: GoogleFonts.poppins(
-                                        fontSize: 9,
-                                        fontWeight: FontWeight.w700,
-                                        color: role == 'owner'
-                                            ? const Color(0xFFEF8B2C)
-                                            : CAppTheme.primaryColor,
+                                      const SizedBox(width: 6),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 6,
+                                          vertical: 2,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: role == 'owner'
+                                              ? const Color(0xFFEF8B2C)
+                                                  .withValues(alpha: 0.12)
+                                              : CAppTheme.primaryColor
+                                                  .withValues(alpha: 0.1),
+                                          borderRadius: BorderRadius.circular(
+                                            CAppTheme.radiusSmall,
+                                          ),
+                                        ),
+                                        child: Text(
+                                          role == 'owner' ? 'Owner' : 'User',
+                                          style: GoogleFonts.poppins(
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.w700,
+                                            color: role == 'owner'
+                                                ? const Color(0xFFEF8B2C)
+                                                : CAppTheme.primaryColor,
+                                          ),
+                                        ),
                                       ),
-                                    ),
-                                  ],
+                                    ],
+                                  ),
                                 ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (chatRoom.lastMessageAt != null)
-                          Text(
-                            _formatTime(chatRoom.lastMessageAt!),
-                            style: GoogleFonts.poppins(
-                              fontSize: 12,
-                              color: unreadCount > 0
-                                  ? CAppTheme.primaryColor
-                                  : CAppTheme.textTertiary,
-                              fontWeight: unreadCount > 0 ? FontWeight.w600 : FontWeight.normal,
+                                if (chatRoom.lastMessageAt != null)
+                                  Text(
+                                    _formatTime(chatRoom.lastMessageAt!),
+                                    style: GoogleFonts.poppins(
+                                      fontSize: 11.5,
+                                      color: hasUnread
+                                          ? CAppTheme.primaryColor
+                                          : CAppTheme.textTertiary,
+                                      fontWeight: hasUnread
+                                          ? FontWeight.w600
+                                          : FontWeight.normal,
+                                    ),
+                                  ),
+                              ],
                             ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      chatRoom.lastMessage ?? 'No messages yet',
-                      style: GoogleFonts.poppins(
-                        fontSize: 13,
-                        color: unreadCount > 0
-                            ? CAppTheme.textPrimary
-                            : CAppTheme.textSecondary,
-                        fontWeight: unreadCount > 0
-                            ? FontWeight.w500
-                            : FontWeight.normal,
+                            const SizedBox(height: 5),
+                            Row(
+                              children: [
+                                if (isPhoto) ...[
+                                  Icon(
+                                    Icons.image_rounded,
+                                    size: 15,
+                                    color: hasUnread
+                                        ? CAppTheme.primaryColor
+                                        : CAppTheme.textTertiary,
+                                  ),
+                                  const SizedBox(width: 4),
+                                ],
+                                Expanded(
+                                  child: Text(
+                                    isPhoto ? 'Photo' : preview,
+                                    style: GoogleFonts.poppins(
+                                      fontSize: 13,
+                                      color: hasUnread
+                                          ? CAppTheme.textPrimary
+                                          : CAppTheme.textSecondary,
+                                      fontWeight: hasUnread
+                                          ? FontWeight.w500
+                                          : FontWeight.normal,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                Icon(
+                                  Icons.chevron_right_rounded,
+                                  size: 20,
+                                  color: CAppTheme.textTertiary
+                                      .withValues(alpha: 0.7),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ],

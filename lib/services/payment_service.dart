@@ -5,6 +5,7 @@ import 'package:cwc/utils/constants/app_constants.dart';
 import 'package:cwc/services/booking_service.dart';
 import 'package:cwc/services/notification_service.dart';
 import 'package:cwc/services/supabase_service.dart';
+import 'package:cwc/services/wallet_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 
@@ -92,6 +93,7 @@ class PaymentService {
       status: 'pending',
       paymentMethod: AppConstants.paymentMethodManual,
       receiptStatus: AppConstants.receiptAwaitingUpload,
+      payeeType: AppConstants.payeePlatform,
       createdAt: DateTime.now(),
       expiresAt: expiresAt,
     );
@@ -103,17 +105,19 @@ class PaymentService {
     return payment;
   }
 
-  /// User submits receipt after bank/easypaisa transfer.
+  /// User submits receipt after transfer to CWC platform account.
   Future<void> submitManualReceipt({
     required String paymentId,
-    required String ownerAccountId,
+    required String platformAccountId,
     required String receiptUrl,
     String? transferReference,
   }) async {
     final payment = await _requireUpdatedPayment(paymentId, {
       'payment_method': AppConstants.paymentMethodManual,
       'status': 'pending',
-      'owner_account_id': ownerAccountId,
+      'payee_type': AppConstants.payeePlatform,
+      'platform_account_id': platformAccountId,
+      'owner_account_id': null,
       'receipt_url': receiptUrl,
       'receipt_status': AppConstants.receiptAwaitingVerification,
       'transfer_reference': transferReference,
@@ -124,20 +128,9 @@ class PaymentService {
     try {
       final bookingData = await _supabase
           .from('bookings')
-          .select('workspace_id, workspace_name, user_id')
+          .select('workspace_name')
           .eq('id', payment.bookingId)
           .maybeSingle();
-
-      if (bookingData == null) return;
-
-      final ws = await _supabase
-          .from('workspaces')
-          .select('owner_id')
-          .eq('id', bookingData['workspace_id'])
-          .maybeSingle();
-
-      if (ws == null) return;
-      final ownerId = ws['owner_id'] as String;
 
       final userData = await _supabase
           .from('users')
@@ -145,15 +138,16 @@ class PaymentService {
           .eq('id', payment.userId)
           .maybeSingle();
 
+      // Notify user — CWC team will verify (moderator handles in admin panel)
       final notificationService = NotificationService();
       await notificationService.createNotification(
         NotificationModel(
           id: _uuid.v4(),
-          userId: ownerId,
-          title: 'Payment receipt uploaded',
+          userId: payment.userId,
+          title: 'Receipt submitted',
           message:
-              '${userData?['name'] ?? 'A user'} sent a payment receipt for ${bookingData['workspace_name']}. Please verify.',
-          type: 'payment_receipt',
+              'Your payment receipt for ${bookingData?['workspace_name'] ?? 'booking'} is under review by CWC team.',
+          type: 'payment_receipt_submitted',
           createdAt: DateTime.now(),
           metadata: {
             'booking_id': payment.bookingId,
@@ -162,6 +156,73 @@ class PaymentService {
         ),
       );
     } catch (_) {}
+  }
+
+  /// Pay booking using in-app wallet balance.
+  Future<void> payWithWallet({
+    required String bookingId,
+    required String userId,
+    required double amount,
+  }) async {
+    final walletService = WalletService();
+    await walletService.payFromWallet(
+      userId: userId,
+      bookingId: bookingId,
+      amount: amount,
+    );
+
+    final existing = await getPaymentByBookingId(bookingId);
+    if (existing != null) {
+      await _requireUpdatedPayment(existing.id, {
+        'payment_method': AppConstants.paymentMethodWallet,
+        'payee_type': AppConstants.payeePlatform,
+        'status': 'completed',
+        'receipt_status': AppConstants.receiptApproved,
+        'amount': amount,
+        'updated_at': DateTime.now().toIso8601String(),
+      });
+    } else {
+      final payment = PaymentModel(
+        id: _uuid.v4(),
+        bookingId: bookingId,
+        userId: userId,
+        amount: amount,
+        status: 'completed',
+        paymentMethod: AppConstants.paymentMethodWallet,
+        payeeType: AppConstants.payeePlatform,
+        receiptStatus: AppConstants.receiptApproved,
+        createdAt: DateTime.now(),
+      );
+      await _supabase.from('payments').insert(payment.toPaymentMap());
+    }
+
+    // Booking already confirmed by RPC
+  }
+
+  /// Start split payment: debit wallet portion, leave remainder for bank transfer.
+  Future<PaymentModel> startSplitPayment({
+    required String bookingId,
+    required String userId,
+    required double totalAmount,
+    required double walletAmount,
+  }) async {
+    final paymentId = await WalletService().debitForSplitPayment(
+      bookingId: bookingId,
+      walletAmount: walletAmount,
+      totalAmount: totalAmount,
+    );
+    final payment = await getPaymentById(paymentId);
+    if (payment == null) {
+      throw Exception('Split payment could not be initialized');
+    }
+    return payment;
+  }
+
+  /// Refund wallet portion when split payment is cancelled or expires.
+  Future<void> refundSplitWalletPortion(String paymentId) async {
+    await _supabase.rpc('refund_split_wallet_portion', params: {
+      'p_payment_id': paymentId,
+    });
   }
 
   /// Owner approves manual payment receipt → booking confirmed.
@@ -381,10 +442,18 @@ class PaymentService {
       );
 
       if (response.statusCode == 200) {
-        return json.decode(response.body);
+        return json.decode(response.body) as Map<String, dynamic>;
       }
-      throw Exception('Stripe API error: ${response.body}');
+      final body = response.body;
+      try {
+        final err = json.decode(body) as Map<String, dynamic>;
+        final msg = err['error']?['message'] ?? body;
+        throw Exception('Stripe: $msg');
+      } catch (_) {
+        throw Exception('Stripe API error (${response.statusCode})');
+      }
     } catch (e) {
+      if (e is Exception && e.toString().contains('Stripe')) rethrow;
       throw Exception(
         'Card payment is unavailable right now. Please use bank transfer.',
       );
@@ -558,6 +627,11 @@ class PaymentService {
       // Cancel booking if payment expired
       final payment = await getPaymentById(paymentId);
       if (payment != null) {
+        if (payment.isSplit && payment.walletAmount > 0) {
+          try {
+            await refundSplitWalletPortion(paymentId);
+          } catch (_) {}
+        }
         await _supabase
             .from('bookings')
             .update({

@@ -51,3 +51,4 @@ android/replay_pid*
 
 # Environment secrets
 .env
+*.hprof

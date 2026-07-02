@@ -1,6 +1,7 @@
 /// Error Handler
 /// Utility functions for handling and formatting errors
 /// Provides consistent error messages across the application
+library;
 
 /// Cleans up error message by removing common prefixes
 /// Removes "Exception: " prefix if present

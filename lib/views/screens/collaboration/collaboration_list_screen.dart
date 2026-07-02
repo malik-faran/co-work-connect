@@ -10,6 +10,7 @@ import 'package:cwc/models/notification_model.dart';
 import 'package:cwc/services/collaboration_hub_service.dart';
 import 'package:cwc/services/collaboration_service.dart';
 import 'package:cwc/services/notification_service.dart';
+import 'package:cwc/utils/constants/app_constants.dart';
 import 'package:cwc/utils/notification_scope.dart';
 import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/views/screens/collaboration/collaboration_create_screen.dart';
@@ -48,6 +49,12 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
 
   bool _loading = true;
   String _search = '';
+  String _discoverCategory = 'All';
+
+  static final List<String> _discoverCategories = [
+    'All',
+    ...AppConstants.projectCategories,
+  ];
 
   @override
   void initState() {
@@ -193,7 +200,7 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
                 Tab(text: 'Discover'),
                 Tab(text: 'Open Teammates'),
                 Tab(text: 'My Posts'),
-                Tab(text: 'My Teams'),
+                Tab(text: 'My Projects teams'),
                 Tab(text: 'My Applications'),
               ],
             ),
@@ -296,7 +303,7 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
   // ---------------------------------------------------------- Discover
   Widget _discoverTab() {
     final query = _search.toLowerCase();
-    final filtered = query.isEmpty
+    var filtered = query.isEmpty
         ? _discover
         : _discover.where((c) {
             return c.title.toLowerCase().contains(query) ||
@@ -304,17 +311,65 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
                 c.requiredSkills.any((s) => s.toLowerCase().contains(query));
           }).toList();
 
+    if (_discoverCategory != 'All') {
+      filtered = filtered
+          .where((c) => c.projectType == _discoverCategory)
+          .toList();
+    }
+
+    final recruitingCount =
+        filtered.where((c) => c.status == 'recruiting').length;
+
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
           child: TextField(
             controller: _searchController,
             decoration: InputDecoration(
               hintText: 'Search projects or skills...',
               prefixIcon: const Icon(Icons.search_rounded),
+              filled: true,
+              fillColor: CAppTheme.surfaceColor,
               contentPadding: const EdgeInsets.symmetric(vertical: 0),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                borderSide: BorderSide.none,
+              ),
             ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        SizedBox(
+          height: 36,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: _discoverCategories.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 8),
+            itemBuilder: (_, i) {
+              final cat = _discoverCategories[i];
+              final active = _discoverCategory == cat;
+              return FilterChip(
+                label: Text(cat),
+                selected: active,
+                onSelected: (_) => setState(() => _discoverCategory = cat),
+                labelStyle: GoogleFonts.poppins(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: active ? Colors.white : CAppTheme.textSecondary,
+                ),
+                selectedColor: CAppTheme.primaryColor,
+                backgroundColor: CAppTheme.surfaceColor,
+                showCheckmark: false,
+                side: BorderSide(
+                  color: active
+                      ? CAppTheme.primaryColor
+                      : CAppTheme.borderColor,
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+              );
+            },
           ),
         ),
         Expanded(
@@ -322,7 +377,9 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
               ? EmptyState(
                   icon: Icons.explore_rounded,
                   title: 'No open projects',
-                  subtitle: 'Be the first to post a project and build a team.',
+                  subtitle: _discoverCategory != 'All'
+                      ? 'Try another category or post your own project.'
+                      : 'Be the first to post a project and build a team.',
                   action: ElevatedButton.icon(
                     onPressed: _createProject,
                     icon: const Icon(Icons.add),
@@ -330,15 +387,320 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
                   ),
                 )
               : ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 90),
                   children: [
                     if (_invites.isNotEmpty) _invitesBanner(),
-                    ...filtered.map(_projectCard),
+                    _discoverHeroBanner(
+                      total: filtered.length,
+                      recruiting: recruitingCount,
+                    ),
+                    const SizedBox(height: 14),
+                    ...filtered.map(_discoverCard),
                   ],
                 ),
         ),
       ],
     );
+  }
+
+  Widget _discoverHeroBanner({required int total, required int recruiting}) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: CAppTheme.primaryGradient,
+        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+        boxShadow: CAppTheme.softShadow,
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: const Icon(Icons.explore_rounded, color: Colors.white, size: 26),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Discover projects',
+                  style: GoogleFonts.poppins(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '$total open · $recruiting recruiting now',
+                  style: GoogleFonts.poppins(
+                    fontSize: 12.5,
+                    color: Colors.white.withValues(alpha: 0.88),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(CAppTheme.radiusRound),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.campaign_rounded, color: Colors.white, size: 14),
+                const SizedBox(width: 4),
+                Text(
+                  'Join a team',
+                  style: GoogleFonts.poppins(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _discoverCard(CollaborationModel p) {
+    final responseCount = _responseCounts[p.id] ?? 0;
+    final hasCover = p.coverImageUrl != null && p.coverImageUrl!.isNotEmpty;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      child: SectionCard(
+        padding: EdgeInsets.zero,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) =>
+                  CollaborationDetailScreen(collaborationId: p.id),
+            ),
+          ).then((_) => _loadAll()),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Stack(
+                children: [
+                  ClipRRect(
+                    borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(CAppTheme.radiusLarge),
+                    ),
+                    child: hasCover
+                        ? Image.network(
+                            p.coverImageUrl!,
+                            height: 140,
+                            width: double.infinity,
+                            fit: BoxFit.cover,
+                          )
+                        : Container(
+                            height: 140,
+                            width: double.infinity,
+                            decoration: const BoxDecoration(
+                              gradient: CAppTheme.coolGradient,
+                            ),
+                            child: Stack(
+                              children: [
+                                Positioned(
+                                  right: -20,
+                                  top: -20,
+                                  child: Icon(
+                                    Icons.hub_rounded,
+                                    size: 100,
+                                    color: Colors.white.withValues(alpha: 0.12),
+                                  ),
+                                ),
+                                Center(
+                                  child: Icon(
+                                    Icons.rocket_launch_rounded,
+                                    size: 44,
+                                    color: Colors.white.withValues(alpha: 0.85),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                  ),
+                  Positioned(
+                    top: 10,
+                    left: 10,
+                    child: StatusBadge(status: p.status),
+                  ),
+                  if (p.projectType != null)
+                    Positioned(
+                      top: 10,
+                      right: 10,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 5,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.45),
+                          borderRadius:
+                              BorderRadius.circular(CAppTheme.radiusRound),
+                        ),
+                        child: Text(
+                          p.projectType!,
+                          style: GoogleFonts.poppins(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      p.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.poppins(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700,
+                        height: 1.25,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      p.description,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.poppins(
+                        fontSize: 13,
+                        color: CAppTheme.textSecondary,
+                        height: 1.45,
+                      ),
+                    ),
+                    if (p.requiredSkills.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: p.requiredSkills
+                            .take(4)
+                            .map((s) => SkillChip(label: s))
+                            .toList(),
+                      ),
+                    ],
+                    const SizedBox(height: 14),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: CAppTheme.primaryColor.withValues(alpha: 0.06),
+                        borderRadius:
+                            BorderRadius.circular(CAppTheme.radiusMedium),
+                      ),
+                      child: Row(
+                        children: [
+                          UserAvatar(
+                            name: p.userName,
+                            imageUrl: p.userProfileImage,
+                            size: 34,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  p.userName,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: GoogleFonts.poppins(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                Text(
+                                  _timeAgo(p.createdAt),
+                                  style: GoogleFonts.poppins(
+                                    fontSize: 11.5,
+                                    color: CAppTheme.textTertiary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (responseCount > 0) ...[
+                            Icon(
+                              Icons.people_alt_rounded,
+                              size: 15,
+                              color: CAppTheme.textTertiary,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              '$responseCount',
+                              style: GoogleFonts.poppins(
+                                fontSize: 12,
+                                color: CAppTheme.textTertiary,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                          ],
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: CAppTheme.primaryColor,
+                              borderRadius: BorderRadius.circular(
+                                CAppTheme.radiusRound,
+                              ),
+                            ),
+                            child: Text(
+                              'View & apply',
+                              style: GoogleFonts.poppins(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _timeAgo(DateTime d) {
+    final diff = DateTime.now().difference(d);
+    if (diff.inDays >= 30) return '${(diff.inDays / 30).floor()}mo ago';
+    if (diff.inDays > 0) return '${diff.inDays}d ago';
+    if (diff.inHours > 0) return '${diff.inHours}h ago';
+    if (diff.inMinutes > 0) return '${diff.inMinutes}m ago';
+    return 'Just now';
   }
 
   Widget _invitesBanner() {
@@ -491,8 +853,11 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
     );
   }
 
-  // ------------------------------------------------------------ My Posts
+  // ---------------------------------------------------- My Posts
   Widget _myPostsTab() {
+    final user = context.watch<AuthController>().currentUser;
+    final collabOff = user?.collaborationEnabled != true;
+
     if (_myPosts.isEmpty) {
       return EmptyState(
         icon: Icons.post_add_rounded,
@@ -507,8 +872,35 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
     }
     return ListView.builder(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 90),
-      itemCount: _myPosts.length,
-      itemBuilder: (_, i) => _projectCard(_myPosts[i], showStatus: true),
+      itemCount: _myPosts.length + (collabOff ? 1 : 0),
+      itemBuilder: (_, i) {
+        if (collabOff && i == 0) {
+          return Container(
+            margin: const EdgeInsets.only(bottom: 14),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: CAppTheme.warningColor.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+              border: Border.all(color: CAppTheme.warningColor.withValues(alpha: 0.35)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.info_outline_rounded, color: CAppTheme.warningColor),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Open to Collaborate is off — your projects are hidden from Discover until you turn it on.',
+                    style: GoogleFonts.poppins(fontSize: 13, height: 1.45),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+        final index = collabOff ? i - 1 : i;
+        return _projectCard(_myPosts[index], showStatus: true, isMyPost: true);
+      },
     );
   }
 
@@ -617,8 +1009,14 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
   }
 
   // ----------------------------------------------------------- shared card
-  Widget _projectCard(CollaborationModel p, {bool showStatus = false, bool openRoom = false}) {
+  Widget _projectCard(
+    CollaborationModel p, {
+    bool showStatus = false,
+    bool openRoom = false,
+    bool isMyPost = false,
+  }) {
     final responseCount = _responseCounts[p.id] ?? 0;
+    final canToggleListing = isMyPost && (p.isRecruiting || p.isInactive);
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       child: SectionCard(
@@ -677,6 +1075,52 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
                             p.requiredSkills.take(4).map((s) => SkillChip(label: s)).toList(),
                       ),
                     ],
+                    if (canToggleListing) ...[
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: !p.isRecruiting
+                                  ? () => _setProjectListing(p, true)
+                                  : null,
+                              icon: const Icon(Icons.campaign_rounded, size: 18),
+                              label: const Text('Active'),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: p.isRecruiting
+                                    ? CAppTheme.successColor
+                                    : CAppTheme.textTertiary,
+                                side: BorderSide(
+                                  color: p.isRecruiting
+                                      ? CAppTheme.successColor
+                                      : CAppTheme.borderColor,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: !p.isInactive
+                                  ? () => _setProjectListing(p, false)
+                                  : null,
+                              icon: const Icon(Icons.pause_circle_outline_rounded, size: 18),
+                              label: const Text('Inactive'),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: p.isInactive
+                                    ? CAppTheme.textSecondary
+                                    : CAppTheme.textTertiary,
+                                side: BorderSide(
+                                  color: p.isInactive
+                                      ? CAppTheme.textSecondary
+                                      : CAppTheme.borderColor,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                     const SizedBox(height: 12),
                     Row(
                       children: [
@@ -721,5 +1165,26 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
       MaterialPageRoute(builder: (_) => const CollaborationCreateScreen()),
     );
     if (created == true) _loadAll();
+  }
+
+  Future<void> _setProjectListing(CollaborationModel project, bool active) async {
+    try {
+      await _collab.setProjectListingActive(project.id, active);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(active
+              ? '"${project.title}" is now active in Discover'
+              : '"${project.title}" is now inactive'),
+          backgroundColor: CAppTheme.successColor,
+        ),
+      );
+      _loadAll();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+      );
+    }
   }
 }

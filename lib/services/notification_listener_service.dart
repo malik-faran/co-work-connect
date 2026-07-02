@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:cwc/models/notification_model.dart';
+import 'package:cwc/utils/notification_scope.dart';
 import 'package:cwc/services/active_chat_tracker.dart';
 import 'package:cwc/services/local_notification_service.dart';
 import 'package:cwc/services/notification_service.dart';
@@ -82,11 +84,35 @@ class NotificationListenerService {
       if (_knownIds.contains(notification.id)) continue;
       _knownIds.add(notification.id);
 
+      final bookingId = notification.metadata?['booking_id'] as String?;
+      final collaborationId = notification.metadata?['collaboration_id'] as String?;
+      final reportId = notification.metadata?['report_id'] as String?;
+      final String payload;
+      if (bookingId != null) {
+        payload = jsonEncode({
+          'type': notification.type,
+          'booking_id': bookingId,
+        });
+      } else if (reportId != null && NotificationScopeHelper.isReportType(notification.type)) {
+        payload = jsonEncode({
+          'type': notification.type,
+          'report_id': reportId,
+        });
+      } else if (collaborationId != null &&
+          NotificationScopeHelper.isProjectType(notification.type)) {
+        payload = jsonEncode({
+          'type': notification.type,
+          'collaboration_id': collaborationId,
+        });
+      } else {
+        payload = notification.id;
+      }
+
       await LocalNotificationService.instance.show(
         id: notification.id,
         title: notification.title,
         body: notification.message,
-        payload: notification.id,
+        payload: payload,
       );
     }
   }

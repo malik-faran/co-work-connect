@@ -24,7 +24,12 @@ import 'package:cwc/views/screens/collaboration/collaboration_invite_sheet.dart'
 /// The Project Room — the collaboration hub for an active project.
 class CollaborationProjectScreen extends StatefulWidget {
   final String collaborationId;
-  const CollaborationProjectScreen({super.key, required this.collaborationId});
+  final int initialTab;
+  const CollaborationProjectScreen({
+    super.key,
+    required this.collaborationId,
+    this.initialTab = 0,
+  });
 
   @override
   State<CollaborationProjectScreen> createState() => _CollaborationProjectScreenState();
@@ -46,7 +51,11 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 6, vsync: this);
+    _tabController = TabController(
+      length: 6,
+      vsync: this,
+      initialIndex: widget.initialTab.clamp(0, 5),
+    );
     _loadAll();
   }
 
@@ -67,6 +76,9 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
       final milestones = await _hub.getMilestones(widget.collaborationId);
       final files = await _hub.getFiles(widget.collaborationId);
       final activity = await _hub.getActivity(widget.collaborationId);
+      try {
+        await _hub.notifyOverdueMilestones(widget.collaborationId);
+      } catch (_) {}
       if (!mounted) return;
       setState(() {
         _project = project;
@@ -236,7 +248,10 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
               onDelete: _deleteFile,
             ),
             _GroupChatTab(collaborationId: p.id, projectTitle: p.title),
-            _ActivityTab(activity: _activity),
+            _ActivityTab(
+              activity: _activity,
+              onOpen: _openFromActivity,
+            ),
           ],
         ),
       ),
@@ -268,21 +283,27 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
             children: [
               StatusBadge(status: p.status, large: true),
               const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(CAppTheme.radiusRound),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.group_rounded, size: 14, color: Colors.white),
-                    const SizedBox(width: 4),
-                    Text('${_members.length} members',
-                        style: GoogleFonts.poppins(
-                            fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)),
-                  ],
+              Flexible(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(CAppTheme.radiusRound),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.group_rounded, size: 14, color: Colors.white),
+                      const SizedBox(width: 4),
+                      Flexible(
+                        child: Text('${_members.length} members',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: GoogleFonts.poppins(
+                                fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ],
@@ -563,6 +584,75 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
     }
   }
 
+  void _openFromActivity(CollaborationActivity activity) {
+    switch (activity.action) {
+      case 'milestone_done':
+        _tabController.animateTo(2);
+        final match = _milestones
+            .where((m) => activity.detail != null && m.title == activity.detail)
+            .toList();
+        if (match.isNotEmpty) _showMilestoneDetail(match.first);
+        break;
+      case 'milestone_missed':
+        _tabController.animateTo(2);
+        break;
+      case 'file_uploaded':
+        _tabController.animateTo(3);
+        final match = _files
+            .where((f) => activity.detail != null && f.fileName == activity.detail)
+            .toList();
+        if (match.isNotEmpty) _openFile(match.first);
+        break;
+      case 'joined':
+        _tabController.animateTo(1);
+        break;
+      case 'launched':
+      case 'completed':
+        _tabController.animateTo(0);
+        break;
+    }
+  }
+
+  void _showMilestoneDetail(CollaborationMilestone milestone) {
+    showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(milestone.title,
+                style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.w700)),
+            if (milestone.description != null && milestone.description!.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(milestone.description!,
+                  style: GoogleFonts.poppins(fontSize: 14, color: CAppTheme.textSecondary)),
+            ],
+            const SizedBox(height: 12),
+            if (milestone.assignedToName != null)
+              Text('Assigned to: ${milestone.assignedToName}',
+                  style: GoogleFonts.poppins(fontSize: 13)),
+            if (milestone.dueDate != null)
+              Text('Due: ${DateFormat('MMM d, yyyy').format(milestone.dueDate!)}',
+                  style: GoogleFonts.poppins(fontSize: 13)),
+            Text(
+              milestone.isDone ? 'Status: Completed' : 'Status: Pending',
+              style: GoogleFonts.poppins(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: milestone.isDone ? CAppTheme.successColor : CAppTheme.warningColor,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _deleteFile(CollaborationFile f) async {
     await _hub.deleteFile(f.id);
     _loadAll();
@@ -802,31 +892,46 @@ class _TeamTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final compactBtn = ButtonStyle(
+      padding: WidgetStateProperty.all(
+        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      ),
+      minimumSize: WidgetStateProperty.all(Size.zero),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      visualDensity: VisualDensity.compact,
+      textStyle: WidgetStateProperty.all(
+        GoogleFonts.poppins(fontSize: 12.5, fontWeight: FontWeight.w600),
+      ),
+    );
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         if (isOwner) ...[
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: onAddTeammate,
-                  icon: const Icon(Icons.person_add_alt_rounded, size: 18),
-                  label: const Text('Add teammate'),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: OutlinedButton.icon(
+          Align(
+            alignment: Alignment.centerRight,
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom().merge(compactBtn),
                   onPressed: onInvite,
-                  icon: const Icon(Icons.link_rounded, size: 18),
+                  icon: const Icon(Icons.link_rounded, size: 16),
                   label: const Text('Share link'),
                 ),
-              ),
-            ],
+                FilledButton.icon(
+                  style: FilledButton.styleFrom().merge(compactBtn),
+                  onPressed: onAddTeammate,
+                  icon: const Icon(Icons.person_add_alt_rounded, size: 16),
+                  label: const Text('Add teammate'),
+                ),
+              ],
+            ),
           ),
+          const SizedBox(height: 12),
         ],
-        const SizedBox(height: 12),
         ...members.map((m) => Container(
               margin: const EdgeInsets.only(bottom: 10),
               child: SectionCard(
@@ -933,6 +1038,8 @@ class _MilestonesTab extends StatelessWidget {
             : ListView(
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 90),
                 children: [
+                  _teamMilestoneSummary(),
+                  const SizedBox(height: 16),
                   LinearProgressIndicator(
                     value: progress,
                     minHeight: 8,
@@ -954,6 +1061,87 @@ class _MilestonesTab extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _teamMilestoneSummary() {
+    final grouped = <String, List<CollaborationMilestone>>{};
+    for (final m in milestones) {
+      final key = m.assignedToName ?? 'Unassigned';
+      grouped.putIfAbsent(key, () => []).add(m);
+    }
+    return SectionCard(
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Team milestones',
+              style: GoogleFonts.poppins(fontSize: 15, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 4),
+          Text('Pending and completed work across all members',
+              style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary)),
+          const SizedBox(height: 12),
+          ...grouped.entries.map((entry) {
+            final done = entry.value.where((m) => m.isDone).length;
+            final total = entry.value.length;
+            return Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: CAppTheme.backgroundColor,
+                borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(entry.key,
+                            style: GoogleFonts.poppins(
+                                fontSize: 14, fontWeight: FontWeight.w600)),
+                      ),
+                      Text('$done/$total done',
+                          style: GoogleFonts.poppins(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: done == total
+                                  ? CAppTheme.successColor
+                                  : CAppTheme.primaryColor)),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  ...entry.value.map(
+                    (m) => Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Row(
+                        children: [
+                          Icon(
+                            m.isDone ? Icons.check_circle_rounded : Icons.radio_button_unchecked,
+                            size: 16,
+                            color: m.isDone ? CAppTheme.successColor : CAppTheme.textTertiary,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              m.title,
+                              style: GoogleFonts.poppins(
+                                fontSize: 12.5,
+                                decoration: m.isDone ? TextDecoration.lineThrough : null,
+                                color: m.isDone ? CAppTheme.textTertiary : CAppTheme.textPrimary,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
     );
   }
 
@@ -1370,7 +1558,8 @@ class _GroupChatTabState extends State<_GroupChatTab> {
 // =========================================================================
 class _ActivityTab extends StatelessWidget {
   final List<CollaborationActivity> activity;
-  const _ActivityTab({required this.activity});
+  final ValueChanged<CollaborationActivity>? onOpen;
+  const _ActivityTab({required this.activity, this.onOpen});
 
   @override
   Widget build(BuildContext context) {
@@ -1388,45 +1577,68 @@ class _ActivityTab extends StatelessWidget {
         final a = activity[i];
         return Padding(
           padding: const EdgeInsets.only(bottom: 14),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: _color(a.action).withValues(alpha: 0.12),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(_icon(a.action), size: 18, color: _color(a.action)),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
+          child: Material(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+              onTap: onOpen == null ? null : () => onOpen!(a),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    RichText(
-                      text: TextSpan(
-                        style: GoogleFonts.poppins(fontSize: 13.5, color: CAppTheme.textPrimary),
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: _color(a.action).withValues(alpha: 0.12),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(_icon(a.action), size: 18, color: _color(a.action)),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          TextSpan(
-                              text: a.actorName ?? 'Someone',
-                              style: const TextStyle(fontWeight: FontWeight.w600)),
-                          TextSpan(text: ' ${_label(a.action)}'),
-                          if (a.detail != null)
-                            TextSpan(
-                                text: ' "${a.detail}"',
-                                style: TextStyle(color: CAppTheme.textSecondary)),
+                          RichText(
+                            text: TextSpan(
+                              style: GoogleFonts.poppins(
+                                  fontSize: 13.5, color: CAppTheme.textPrimary),
+                              children: [
+                                TextSpan(
+                                    text: a.actorName ?? 'Someone',
+                                    style: const TextStyle(fontWeight: FontWeight.w600)),
+                                TextSpan(text: ' ${_label(a.action)}'),
+                                if (a.detail != null)
+                                  TextSpan(
+                                      text: ' "${a.detail}"',
+                                      style: TextStyle(color: CAppTheme.textSecondary)),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(DateFormat('MMM d, h:mm a').format(a.createdAt),
+                              style: GoogleFonts.poppins(
+                                  fontSize: 11.5, color: CAppTheme.textTertiary)),
+                          if (onOpen != null) ...[
+                            const SizedBox(height: 4),
+                            Text('Tap to open',
+                                style: GoogleFonts.poppins(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                    color: CAppTheme.primaryColor)),
+                          ],
                         ],
                       ),
                     ),
-                    const SizedBox(height: 2),
-                    Text(DateFormat('MMM d, h:mm a').format(a.createdAt),
-                        style: GoogleFonts.poppins(fontSize: 11.5, color: CAppTheme.textTertiary)),
+                    if (onOpen != null)
+                      const Icon(Icons.chevron_right_rounded, color: CAppTheme.textTertiary),
                   ],
                 ),
               ),
-            ],
+            ),
           ),
         );
       },
@@ -1439,6 +1651,8 @@ class _ActivityTab extends StatelessWidget {
         return 'joined the team';
       case 'milestone_done':
         return 'completed milestone';
+      case 'milestone_missed':
+        return 'missed milestone';
       case 'file_uploaded':
         return 'uploaded';
       case 'launched':
@@ -1456,6 +1670,8 @@ class _ActivityTab extends StatelessWidget {
         return Icons.person_add_rounded;
       case 'milestone_done':
         return Icons.check_circle_rounded;
+      case 'milestone_missed':
+        return Icons.warning_amber_rounded;
       case 'file_uploaded':
         return Icons.upload_file_rounded;
       case 'launched':
@@ -1472,6 +1688,8 @@ class _ActivityTab extends StatelessWidget {
       case 'milestone_done':
       case 'completed':
         return CAppTheme.successColor;
+      case 'milestone_missed':
+        return CAppTheme.errorColor;
       case 'launched':
         return CAppTheme.primaryColor;
       case 'file_uploaded':
@@ -1559,11 +1777,13 @@ class _AddMilestoneSheetState extends State<_AddMilestoneSheet> {
                 Expanded(
                   child: OutlinedButton.icon(
                     onPressed: () async {
+                      final today = DateTime.now();
+                      final todayOnly = DateTime(today.year, today.month, today.day);
                       final picked = await showDatePicker(
                         context: context,
-                        initialDate: DateTime.now(),
-                        firstDate: DateTime.now().subtract(const Duration(days: 1)),
-                        lastDate: DateTime.now().add(const Duration(days: 365 * 2)),
+                        initialDate: todayOnly,
+                        firstDate: todayOnly,
+                        lastDate: todayOnly.add(const Duration(days: 365 * 2)),
                       );
                       if (picked != null) setState(() => _due = picked);
                     },

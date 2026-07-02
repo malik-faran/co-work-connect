@@ -4,9 +4,10 @@ import { format } from 'date-fns'
 import { Trash2, RefreshCw, Search, Users as UsersIcon } from 'lucide-react'
 import Loading from '../components/Loading'
 import EmptyState from '../components/EmptyState'
+import { isAdmin } from '../lib/permissions'
 import { showSuccess, showError } from '../utils/toast'
 
-const Users = () => {
+const Users = ({ user: staffUser }) => {
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
@@ -512,6 +513,7 @@ const Users = () => {
                             </button>
                           </>
                         )}
+                        {isAdmin(staffUser?.role) && (
                         <button
                           onClick={() => handleDeleteUser(user.id, user.name)}
                           disabled={deletingId === user.id}
@@ -548,6 +550,7 @@ const Users = () => {
                           <Trash2 size={16} />
                           {deletingId === user.id ? 'Deleting...' : 'Delete'}
                         </button>
+                        )}
                       </div>
                     </td>
                   </tr>

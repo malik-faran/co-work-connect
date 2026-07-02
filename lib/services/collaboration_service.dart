@@ -33,12 +33,10 @@ class CollaborationService {
     List<String>? skillsFilter,
   }) async {
     try {
-      // Public discover feed — recruiting (or legacy "open") projects.
-      // Visibility is filtered client-side so older DB rows still appear.
       var query = _supabase
           .from('collaborations')
           .select()
-          .inFilter('status', ['recruiting', 'open']);
+          .eq('status', 'recruiting');
 
       // Apply additional filters
       if (collaborationType != null) {
@@ -54,8 +52,22 @@ class CollaborationService {
 
       List<CollaborationModel> collaborations = rows
           .map((c) => CollaborationModel.fromCollaborationMap(c))
-          .where((c) => c.visibility != 'invite_only')
+          .where((c) => c.visibility != 'invite_only' && !c.isInactive)
           .toList();
+
+      if (collaborations.isNotEmpty) {
+        final ownerIds = collaborations.map((c) => c.userId).toSet().toList();
+        final owners = await _supabase
+            .from('users')
+            .select('id, collaboration_enabled')
+            .inFilter('id', ownerIds);
+        final openOwners = owners
+            .where((o) => o['collaboration_enabled'] == true)
+            .map((o) => o['id'] as String)
+            .toSet();
+        collaborations =
+            collaborations.where((c) => openOwners.contains(c.userId)).toList();
+      }
 
       // Filter by skills if provided
       if (skillsFilter != null && skillsFilter.isNotEmpty) {
@@ -119,6 +131,18 @@ class CollaborationService {
           .eq('id', collaboration.id);
     } catch (e) {
       throw Exception('Failed to update collaboration: ${e.toString()}');
+    }
+  }
+
+  /// Toggle a recruiting post between visible (recruiting) and hidden (inactive).
+  Future<void> setProjectListingActive(String collaborationId, bool active) async {
+    try {
+      await _supabase.from('collaborations').update({
+        'status': active ? 'recruiting' : 'inactive',
+        'updated_at': DateTime.now().toIso8601String(),
+      }).eq('id', collaborationId);
+    } catch (e) {
+      throw Exception('Failed to update project visibility: ${e.toString()}');
     }
   }
 

@@ -1,21 +1,13 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:cwc/models/location_pick_result.dart';
 import 'package:cwc/services/geocoding_service.dart';
-import 'package:cwc/utils/constants/app_constants.dart';
+import 'package:cwc/utils/helpers/geo_utils.dart';
 import 'package:cwc/utils/themes/theme.dart';
-
-const Map<String, LatLng> kCityMapCenters = {
-  'Islamabad': LatLng(33.6844, 73.0479),
-  'Lahore': LatLng(31.5204, 74.3587),
-  'Karachi': LatLng(24.8607, 67.0011),
-  'Rawalpindi': LatLng(33.5651, 73.0169),
-  'Faisalabad': LatLng(31.4504, 73.1350),
-  'Peshawar': LatLng(34.0151, 71.5249),
-};
 
 /// Full-screen map picker with search + reverse geocoding for owners.
 class LocationPickerMap extends StatefulWidget {
@@ -91,7 +83,7 @@ class _LocationPickerMapState extends State<LocationPickerMap> {
       }
       setState(() => _isSearching = true);
       try {
-        final results = await _geocoding.search(value, city: widget.city);
+        final results = await _geocoding.search(value);
         if (mounted) {
           setState(() {
             _searchResults = results;
@@ -128,6 +120,11 @@ class _LocationPickerMapState extends State<LocationPickerMap> {
     final place = _resolvedPlace;
     final address = place?.address ??
         '${_selected.latitude.toStringAsFixed(5)}, ${_selected.longitude.toStringAsFixed(5)}';
+    final city = resolveCityFromMap(
+      lat: _selected.latitude,
+      lng: _selected.longitude,
+      geocodedCity: place?.city,
+    );
 
     Navigator.pop(
       context,
@@ -135,7 +132,7 @@ class _LocationPickerMapState extends State<LocationPickerMap> {
         latitude: _selected.latitude,
         longitude: _selected.longitude,
         address: address,
-        city: place?.city ?? widget.city,
+        city: city,
         placeName: place?.placeName,
       ),
     );
@@ -165,6 +162,9 @@ class _LocationPickerMapState extends State<LocationPickerMap> {
               initialCenter: _selected,
               initialZoom: 14,
               onTap: _onMapTap,
+              interactionOptions: const InteractionOptions(
+                flags: InteractiveFlag.all,
+              ),
             ),
             children: [
               TileLayer(
@@ -351,6 +351,18 @@ class _LocationPickerMapState extends State<LocationPickerMap> {
                                 height: 1.4,
                               ),
                             ),
+                            if (_resolvedPlace?.city != null ||
+                                _resolvedPlace != null) ...[
+                              const SizedBox(height: 6),
+                              Text(
+                                'City: ${resolveCityFromMap(lat: _selected.latitude, lng: _selected.longitude, geocodedCity: _resolvedPlace?.city)}',
+                                style: GoogleFonts.poppins(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: CAppTheme.primaryColor,
+                                ),
+                              ),
+                            ],
                             const SizedBox(height: 6),
                             Text(
                               '${_selected.latitude.toStringAsFixed(5)}, ${_selected.longitude.toStringAsFixed(5)}',
@@ -414,13 +426,13 @@ class WorkspaceMapView extends StatelessWidget {
     return ClipRRect(
       borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
       child: SizedBox(
-        height: 180,
+        height: kIsWeb ? 240 : 180,
         child: FlutterMap(
           options: MapOptions(
             initialCenter: point,
             initialZoom: 15,
             interactionOptions: const InteractionOptions(
-              flags: InteractiveFlag.pinchZoom | InteractiveFlag.drag,
+              flags: InteractiveFlag.all,
             ),
           ),
           children: [
@@ -447,11 +459,4 @@ class WorkspaceMapView extends StatelessWidget {
       ),
     );
   }
-}
-
-LatLng defaultCenterForCity(String? city) {
-  if (city != null && kCityMapCenters.containsKey(city)) {
-    return kCityMapCenters[city]!;
-  }
-  return kCityMapCenters[AppConstants.cities.first]!;
 }

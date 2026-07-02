@@ -22,7 +22,22 @@ import 'package:uuid/uuid.dart';
 import 'package:intl/intl.dart';
 
 class OwnerBookingsScreen extends StatefulWidget {
-  const OwnerBookingsScreen({super.key});
+  /// When embedded in [OwnerHomeScreen] IndexedStack, only the visible tab
+  /// should expose its FAB (avoids duplicate default hero tags).
+  final bool showFab;
+
+  /// When opened from a notification, highlight this booking in the list.
+  final String? initialBookingId;
+
+  /// 0 = All Bookings, 1 = Receipts (e.g. payment receipt notification).
+  final int? initialTabIndex;
+
+  const OwnerBookingsScreen({
+    super.key,
+    this.showFab = true,
+    this.initialBookingId,
+    this.initialTabIndex,
+  });
 
   @override
   State<OwnerBookingsScreen> createState() => _OwnerBookingsScreenState();
@@ -41,6 +56,12 @@ class _OwnerBookingsScreenState extends State<OwnerBookingsScreen>
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    final tab = widget.initialTabIndex;
+    if (tab != null && tab >= 0 && tab < 2) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _tabController.animateTo(tab);
+      });
+    }
   }
 
   @override
@@ -96,8 +117,9 @@ class _OwnerBookingsScreenState extends State<OwnerBookingsScreen>
 
     return Scaffold(
       backgroundColor: CAppTheme.backgroundColor,
-      floatingActionButton: _tabController.index == 0
+      floatingActionButton: widget.showFab && _tabController.index == 0
           ? FloatingActionButton.extended(
+        heroTag: 'owner_bookings_reserve_seat_fab',
         onPressed: () => _showManualBookingDialog(context, ownerId),
         backgroundColor: CAppTheme.primaryColor,
         foregroundColor: Colors.white,
@@ -192,8 +214,18 @@ class _OwnerBookingsScreenState extends State<OwnerBookingsScreen>
             );
           }
 
-          final bookings = snapshot.data ?? [];
+          var bookings = snapshot.data ?? [];
           _paymentCache.clear();
+
+          final focusId = widget.initialBookingId;
+          if (focusId != null) {
+            bookings = List<BookingModel>.from(bookings)
+              ..sort((a, b) {
+                if (a.id == focusId) return -1;
+                if (b.id == focusId) return 1;
+                return 0;
+              });
+          }
 
           if (bookings.isEmpty) {
             return Center(
@@ -262,6 +294,7 @@ class _OwnerBookingsScreenState extends State<OwnerBookingsScreen>
                           dividerColor: Colors.transparent,
                         ),
                         child: ExpansionTile(
+                          initiallyExpanded: booking.id == focusId,
                           tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                           childrenPadding: EdgeInsets.zero,
                           shape: RoundedRectangleBorder(

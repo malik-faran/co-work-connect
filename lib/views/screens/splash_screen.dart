@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'package:cwc/controllers/auth_controller.dart';
 import 'package:cwc/utils/constants/app_constants.dart';
 import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/views/screens/role_selection_screen.dart';
 import 'package:cwc/views/screens/user/user_home_screen.dart';
-import 'package:cwc/views/screens/owner/owner_home_screen.dart';
+import 'package:cwc/utils/helpers/owner_navigation.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -54,11 +53,13 @@ class _SplashScreenState extends State<SplashScreen>
 
     if (!mounted) return;
 
+    if (auth.passwordRecoveryPending) return;
+
     Widget destination;
     if (auth.isAuthenticated && auth.currentUser != null && auth.isEmailVerified) {
       final user = auth.currentUser!;
       if (user.role == AppConstants.roleOwner) {
-        destination = const OwnerHomeScreen();
+        destination = ownerDestinationFor(user);
       } else {
         destination = const UserHomeScreen();
       }
@@ -122,7 +123,7 @@ class _SplashScreenState extends State<SplashScreen>
                     const SizedBox(height: 28),
                     Text(
                       AppConstants.appName,
-                      style: GoogleFonts.poppins(
+                      style: const TextStyle(
                         fontSize: 44,
                         fontWeight: FontWeight.bold,
                         color: Colors.white,
@@ -132,7 +133,7 @@ class _SplashScreenState extends State<SplashScreen>
                     const SizedBox(height: 8),
                     Text(
                       AppConstants.appTagline,
-                      style: GoogleFonts.poppins(
+                      style: TextStyle(
                         fontSize: 15,
                         color: Colors.white.withValues(alpha: 0.85),
                         fontWeight: FontWeight.w400,

@@ -5,18 +5,23 @@ import 'package:cwc/services/auth_service.dart';
 import 'package:cwc/services/notification_listener_service.dart';
 import 'package:cwc/services/fcm_service.dart';
 import 'package:cwc/services/supabase_service.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show User, AuthChangeEvent;
 import 'package:cwc/utils/constants/app_constants.dart';
+import 'package:cwc/services/navigation_service.dart';
 
 class AuthController with ChangeNotifier {
   final AuthService _authService = AuthService();
   StreamSubscription? _authSubscription;
+  bool _signInInProgress = false;
 
   UserModel? _currentUser;
   bool _isLoading = false;
+  bool _passwordRecoveryPending = false;
   String? _errorMessage;
 
   UserModel? get currentUser => _currentUser;
   bool get isLoading => _isLoading;
+  bool get passwordRecoveryPending => _passwordRecoveryPending;
   String? get errorMessage => _errorMessage;
   bool get isAuthenticated => _currentUser != null;
   bool get isEmailVerified => _authService.isEmailVerified;
@@ -26,26 +31,58 @@ class AuthController with ChangeNotifier {
     notifyListeners();
 
     try {
+      await _restoreSession();
+
+      _authSubscription?.cancel();
       _authSubscription =
           SupabaseService.client.auth.onAuthStateChange.listen((data) async {
-        final user = data.session?.user;
-        if (user != null && user.id.isNotEmpty) {
-          // Only load profile if email is verified; otherwise keep null so the
-          // splash / router pushes to verification screen.
-          final verified = user.emailConfirmedAt != null;
-          _currentUser = verified ? await _authService.getUserById(user.id) : null;
-        } else {
-          _currentUser = null;
+        if (data.event == AuthChangeEvent.passwordRecovery) {
+          _passwordRecoveryPending = true;
+          notifyListeners();
+          NavigationService.openResetPassword();
+          return;
         }
-        _syncNotificationListener();
-        _isLoading = false;
-        notifyListeners();
+        if (_signInInProgress) return;
+        await _applyAuthState(data.session?.user);
       });
+
+      if (!kIsWeb) {
+        await SupabaseService.processPendingAuthLinks();
+      }
     } catch (e) {
       _errorMessage = e.toString();
+    } finally {
       _isLoading = false;
       notifyListeners();
     }
+  }
+
+  Future<void> _restoreSession() async {
+    final user = SupabaseService.client.auth.currentUser;
+    if (user == null || user.id.isEmpty) {
+      _currentUser = null;
+      return;
+    }
+    await _applyAuthState(user);
+  }
+
+  Future<void> _applyAuthState(User? user) async {
+    if (user != null && user.id.isNotEmpty) {
+      final confirmed = user.emailConfirmedAt ?? user.confirmedAt;
+      if (confirmed == null) {
+        _currentUser = null;
+      } else {
+        try {
+          _currentUser = await _authService.ensureUserProfile(user);
+        } catch (_) {
+          _currentUser = await _authService.getUserById(user.id);
+        }
+      }
+    } else {
+      _currentUser = null;
+    }
+    _syncNotificationListener();
+    notifyListeners();
   }
 
   @override
@@ -76,6 +113,7 @@ class AuthController with ChangeNotifier {
     String? city,
     String? businessName,
     String? businessAddress,
+    String? cnicImageUrl,
   }) async {
     _isLoading = true;
     _errorMessage = null;
@@ -91,6 +129,7 @@ class AuthController with ChangeNotifier {
         city: city,
         businessName: businessName,
         businessAddress: businessAddress,
+        cnicImageUrl: cnicImageUrl,
       );
       _isLoading = false;
       notifyListeners();
@@ -107,21 +146,33 @@ class AuthController with ChangeNotifier {
     required String email,
     required String password,
   }) async {
+    _signInInProgress = true;
     _isLoading = true;
     _errorMessage = null;
     notifyListeners();
 
     try {
-      _currentUser = await _authService.signIn(email: email, password: password);
-      _syncNotificationListener();
-      _isLoading = false;
-      notifyListeners();
+      _currentUser = await _authService.signIn(email: email, password: password)
+          .timeout(
+        const Duration(seconds: 25),
+        onTimeout: () => throw Exception(
+          'Connection timed out. Check your internet and try again.',
+        ),
+      );
+      if (_currentUser == null) {
+        _errorMessage = 'Login failed. Please check your email and password.';
+      } else {
+        // Defer side effects so login UI can navigate immediately.
+        Future.microtask(_syncNotificationListener);
+      }
       return _currentUser != null;
     } catch (e) {
       _errorMessage = e.toString();
+      return false;
+    } finally {
+      _signInInProgress = false;
       _isLoading = false;
       notifyListeners();
-      return false;
     }
   }
 
@@ -158,6 +209,38 @@ class AuthController with ChangeNotifier {
     }
   }
 
+  Future<bool> completeOwnerRegistration({
+    required String cnicImageUrl,
+  }) async {
+    final userId = _currentUser?.id;
+    if (userId == null) return false;
+    _isLoading = true;
+    _errorMessage = null;
+    notifyListeners();
+    try {
+      await _authService.updateOwnerCnic(
+        userId: userId,
+        cnicImageUrl: cnicImageUrl,
+      );
+      _currentUser = await _authService.getUserById(userId);
+      _isLoading = false;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _errorMessage = e.toString();
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<void> refreshCurrentUser() async {
+    final userId = _currentUser?.id ?? SupabaseService.client.auth.currentUser?.id;
+    if (userId == null) return;
+    _currentUser = await _authService.getUserById(userId);
+    notifyListeners();
+  }
+
   void setCurrentUser(UserModel user) {
     _currentUser = user;
     notifyListeners();
@@ -191,6 +274,26 @@ class AuthController with ChangeNotifier {
     notifyListeners();
     try {
       await _authService.sendPasswordReset(email);
+      return true;
+    } catch (e) {
+      _errorMessage = e.toString();
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> completePasswordReset(String newPassword) async {
+    _isLoading = true;
+    _errorMessage = null;
+    notifyListeners();
+    try {
+      await _authService.completePasswordReset(newPassword);
+      await _authService.signOut();
+      _currentUser = null;
+      _passwordRecoveryPending = false;
+      NotificationListenerService.instance.stop();
       return true;
     } catch (e) {
       _errorMessage = e.toString();

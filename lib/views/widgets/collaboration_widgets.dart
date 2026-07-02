@@ -19,6 +19,8 @@ class CollabStyle {
         return CAppTheme.textTertiary;
       case 'draft':
         return CAppTheme.warningColor;
+      case 'inactive':
+        return CAppTheme.textTertiary;
       default:
         return CAppTheme.textSecondary;
     }
@@ -36,6 +38,8 @@ class CollabStyle {
         return 'Cancelled';
       case 'draft':
         return 'Draft';
+      case 'inactive':
+        return 'Inactive';
       default:
         return status;
     }
@@ -53,6 +57,8 @@ class CollabStyle {
         return Icons.cancel_rounded;
       case 'draft':
         return Icons.edit_note_rounded;
+      case 'inactive':
+        return Icons.pause_circle_outline_rounded;
       default:
         return Icons.circle;
     }
@@ -291,38 +297,67 @@ class EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              width: 88,
-              height: 88,
-              decoration: BoxDecoration(
-                color: CAppTheme.primaryColor.withValues(alpha: 0.08),
-                shape: BoxShape.circle,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxHeight < 300;
+        final outerPad = compact ? 12.0 : 24.0;
+        final iconBox = compact ? 64.0 : 88.0;
+        final iconSize = compact ? 30.0 : 40.0;
+        final titleSize = compact ? 15.0 : 17.0;
+        final subtitleSize = compact ? 13.0 : 14.0;
+        final gapLg = compact ? 12.0 : 20.0;
+        final gapSm = compact ? 6.0 : 8.0;
+
+        return Center(
+          child: SingleChildScrollView(
+            padding: EdgeInsets.symmetric(horizontal: outerPad, vertical: outerPad),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                minWidth: constraints.maxWidth > 0 ? constraints.maxWidth - outerPad * 2 : 0,
               ),
-              child: Icon(icon, size: 40, color: CAppTheme.primaryColor),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: iconBox,
+                    height: iconBox,
+                    decoration: BoxDecoration(
+                      color: CAppTheme.primaryColor.withValues(alpha: 0.08),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(icon, size: iconSize, color: CAppTheme.primaryColor),
+                  ),
+                  SizedBox(height: gapLg),
+                  Text(
+                    title,
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.poppins(
+                      fontSize: titleSize,
+                      fontWeight: FontWeight.w700,
+                      color: CAppTheme.textPrimary,
+                    ),
+                  ),
+                  SizedBox(height: gapSm),
+                  Text(
+                    subtitle,
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.poppins(
+                      fontSize: subtitleSize,
+                      color: CAppTheme.textSecondary,
+                      height: 1.35,
+                    ),
+                  ),
+                  if (action != null) ...[
+                    SizedBox(height: gapLg),
+                    action!,
+                  ],
+                ],
+              ),
             ),
-            const SizedBox(height: 20),
-            Text(
-              title,
-              textAlign: TextAlign.center,
-              style: GoogleFonts.poppins(
-                  fontSize: 17, fontWeight: FontWeight.w700, color: CAppTheme.textPrimary),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              subtitle,
-              textAlign: TextAlign.center,
-              style: GoogleFonts.poppins(fontSize: 14, color: CAppTheme.textSecondary, height: 1.4),
-            ),
-            if (action != null) ...[const SizedBox(height: 20), action!],
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 }

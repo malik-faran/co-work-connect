@@ -154,7 +154,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                               const SizedBox(width: 10),
                               Expanded(
                                 child: Text(
-                                  "Check your inbox. Click the link to set a new password, then return to the login screen.",
+                                  "Check your inbox. Tap the link — it will open this app so you can set a new password.",
                                   style: GoogleFonts.poppins(
                                     fontSize: 13,
                                     color: CAppTheme.textPrimary,

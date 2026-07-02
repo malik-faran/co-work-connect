@@ -1,7 +1,9 @@
 import { useState } from 'react'
-import { supabase, fetchAdminProfile } from '../lib/supabase'
+import { useNavigate } from 'react-router-dom'
+import { supabase, fetchStaffProfileWithTimeout } from '../lib/supabase'
 
-const Login = ({ setUser }) => {
+const Login = ({ onLoginStart, onLoginSuccess, onLoginEnd }) => {
+  const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -11,29 +13,44 @@ const Login = ({ setUser }) => {
     e.preventDefault()
     setLoading(true)
     setError('')
+    onLoginStart?.()
 
     try {
-      const { data, error: signInError } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password,
-      })
+      const { data, error: signInError } = await Promise.race([
+        supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Login timed out. Check internet / Supabase URL.')), 20000)
+        ),
+      ])
 
-      if (signInError) throw signInError
-      if (!data.user) throw new Error('Login failed. Please try again.')
+      if (signInError) {
+        if (/email not confirmed/i.test(signInError.message)) {
+          throw new Error('Please verify your email first (Supabase Auth → Users → confirm email).')
+        }
+        throw signInError
+      }
+      if (!data?.user) throw new Error('Login failed. Please try again.')
 
-      const profile = await fetchAdminProfile(data.user.id)
+      const profile = await fetchStaffProfileWithTimeout(data.user.id)
 
-      setUser({
+      const staffUser = {
         id: data.user.id,
         email: data.user.email,
         role: profile.role,
         name: profile.name,
-      })
+      }
+
+      onLoginSuccess?.(staffUser)
+      navigate('/dashboard', { replace: true })
     } catch (err) {
-      await supabase.auth.signOut()
+      supabase.auth.signOut().catch(() => {})
       setError(err.message || 'Login failed')
     } finally {
       setLoading(false)
+      onLoginEnd?.()
     }
   }
 
@@ -83,7 +100,6 @@ const Login = ({ setUser }) => {
             justifyContent: 'center',
             margin: '0 auto 24px',
             boxShadow: '0 8px 24px rgba(102, 126, 234, 0.4)',
-            position: 'relative'
           }}>
             <span style={{ fontSize: '40px' }}>🔐</span>
           </div>
@@ -95,16 +111,11 @@ const Login = ({ setUser }) => {
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
             backgroundClip: 'text',
-            letterSpacing: '-0.5px'
           }}>
-            Admin Panel
+            Admin & Moderator Panel
           </h1>
-          <p style={{
-            color: '#64748b',
-            fontSize: '16px',
-            fontWeight: '500'
-          }}>
-            Sign in with your admin Supabase account
+          <p style={{ color: '#64748b', fontSize: '16px', fontWeight: '500' }}>
+            Sign in with admin or moderator account
           </p>
         </div>
 
@@ -117,24 +128,14 @@ const Login = ({ setUser }) => {
             marginBottom: '24px',
             fontSize: '14px',
             border: '1px solid #fecaca',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '10px'
           }}>
-            <span>⚠️</span>
-            <span>{error}</span>
+            {error}
           </div>
         )}
 
         <form onSubmit={handleLogin}>
           <div style={{ marginBottom: '20px' }}>
-            <label style={{
-              display: 'block',
-              marginBottom: '8px',
-              fontSize: '14px',
-              fontWeight: '600',
-              color: '#374151'
-            }}>
+            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '600', color: '#374151' }}>
               Email Address
             </label>
             <input
@@ -142,28 +143,18 @@ const Login = ({ setUser }) => {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
+              disabled={loading}
               style={{
-                width: '100%',
-                padding: '14px 16px',
-                border: '1px solid #e2e8f0',
-                borderRadius: '8px',
-                fontSize: '14px',
-                outline: 'none',
-                backgroundColor: '#f8fafc',
-                boxSizing: 'border-box'
+                width: '100%', padding: '14px 16px', border: '1px solid #e2e8f0',
+                borderRadius: '8px', fontSize: '14px', outline: 'none',
+                backgroundColor: '#f8fafc', boxSizing: 'border-box',
               }}
               placeholder="admin@cwc.com"
             />
           </div>
 
           <div style={{ marginBottom: '28px' }}>
-            <label style={{
-              display: 'block',
-              marginBottom: '8px',
-              fontSize: '14px',
-              fontWeight: '600',
-              color: '#374151'
-            }}>
+            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '600', color: '#374151' }}>
               Password
             </label>
             <input
@@ -171,15 +162,11 @@ const Login = ({ setUser }) => {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
+              disabled={loading}
               style={{
-                width: '100%',
-                padding: '14px 16px',
-                border: '1px solid #e2e8f0',
-                borderRadius: '8px',
-                fontSize: '14px',
-                outline: 'none',
-                backgroundColor: '#f8fafc',
-                boxSizing: 'border-box'
+                width: '100%', padding: '14px 16px', border: '1px solid #e2e8f0',
+                borderRadius: '8px', fontSize: '14px', outline: 'none',
+                backgroundColor: '#f8fafc', boxSizing: 'border-box',
               }}
               placeholder="Enter your password"
             />
@@ -189,23 +176,20 @@ const Login = ({ setUser }) => {
             type="submit"
             disabled={loading}
             style={{
-              width: '100%',
-              padding: '16px',
-              background: loading
-                ? 'linear-gradient(135deg, #94a3b8 0%, #64748b 100%)'
-                : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-              color: 'white',
-              border: 'none',
-              borderRadius: '12px',
-              fontSize: '16px',
-              fontWeight: '700',
+              width: '100%', padding: '16px',
+              background: loading ? '#94a3b8' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+              color: 'white', border: 'none', borderRadius: '12px',
+              fontSize: '16px', fontWeight: '700',
               cursor: loading ? 'not-allowed' : 'pointer',
-              boxShadow: loading ? 'none' : '0 8px 24px rgba(102, 126, 234, 0.4)',
             }}
           >
             {loading ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
+
+        <p style={{ marginTop: '20px', fontSize: '12px', color: '#94a3b8', textAlign: 'center', lineHeight: 1.5 }}>
+          Note: App user/owner accounts cannot login here. Account must have role <strong>admin</strong> or <strong>moderator</strong> in database.
+        </p>
       </div>
     </div>
   )

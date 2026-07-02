@@ -110,9 +110,13 @@ class _CollaborationDetailScreenState extends State<CollaborationDetailScreen> {
           SliverAppBar(
             pinned: true,
             expandedHeight: 180,
+            leadingWidth: 88,
             foregroundColor: Colors.white,
             backgroundColor: CAppTheme.primaryColor,
-            leading: _buildBackButton(context),
+            leading: Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: _buildBackButton(context),
+            ),
             actions: [
               if (_isOwner && p.isRecruiting)
                 IconButton(
@@ -157,33 +161,37 @@ class _CollaborationDetailScreenState extends State<CollaborationDetailScreen> {
   }
 
   Widget _buildBackButton(BuildContext context) {
-    final compact = MediaQuery.of(context).size.width < 360;
-    return Padding(
-      padding: const EdgeInsets.all(8),
-      child: Material(
-        color: Colors.black.withValues(alpha: 0.38),
-        borderRadius: BorderRadius.circular(12),
-        child: InkWell(
-          onTap: () => Navigator.maybePop(context),
-          borderRadius: BorderRadius.circular(12),
-          child: Padding(
-            padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 10, vertical: 8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.arrow_back_ios_new_rounded, size: 15, color: Colors.white),
-                if (!compact) ...[
-                  const SizedBox(width: 4),
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        child: Material(
+          color: Colors.black.withValues(alpha: 0.38),
+          borderRadius: BorderRadius.circular(10),
+          child: InkWell(
+            onTap: () => Navigator.maybePop(context),
+            borderRadius: BorderRadius.circular(10),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.arrow_back_ios_new_rounded,
+                    size: 14,
+                    color: Colors.white,
+                  ),
+                  const SizedBox(width: 2),
                   Text(
                     'Back',
                     style: GoogleFonts.poppins(
-                      fontSize: 13,
+                      fontSize: 12,
                       fontWeight: FontWeight.w600,
                       color: Colors.white,
                     ),
                   ),
                 ],
-              ],
+              ),
             ),
           ),
         ),
@@ -661,6 +669,16 @@ class _CollaborationDetailScreenState extends State<CollaborationDetailScreen> {
 
     // Visitor on a recruiting project -> apply.
     if (!_isOwner && p.isRecruiting) {
+      final viewerOpen =
+          context.read<AuthController>().currentUser?.collaborationEnabled ?? false;
+      if (!viewerOpen) {
+        return _ctaBar(
+          icon: Icons.handshake_outlined,
+          label: 'Turn on Open to Collaborate to apply',
+          enabled: false,
+          onTap: () {},
+        );
+      }
       if (_hasApplied) {
         return _ctaBar(
           icon: Icons.check_circle_rounded,
@@ -797,6 +815,10 @@ class _CollaborationDetailScreenState extends State<CollaborationDetailScreen> {
   Future<void> _apply() async {
     final user = context.read<AuthController>().currentUser;
     if (user == null || _project == null) return;
+    if (user.collaborationEnabled != true) {
+      _toast('Turn on Open to Collaborate in your profile first.', isError: true);
+      return;
+    }
     final result = await showModalBottomSheet<ApplyResult>(
       context: context,
       isScrollControlled: true,

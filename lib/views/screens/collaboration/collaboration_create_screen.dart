@@ -10,6 +10,7 @@ import 'package:cwc/models/collaboration_model.dart';
 import 'package:cwc/services/collaboration_hub_service.dart';
 import 'package:cwc/services/collaboration_service.dart';
 import 'package:cwc/services/storage_service.dart';
+import 'package:cwc/utils/constants/app_constants.dart';
 import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/utils/validators/form_validators.dart';
 import 'package:cwc/views/widgets/collaboration_widgets.dart';
@@ -50,10 +51,7 @@ class _CollaborationCreateScreenState extends State<CollaborationCreateScreen> {
 
   final List<_RoleDraft> _roles = [];
 
-  static const _categories = [
-    'Web Development', 'Mobile App', 'Design', 'FYP / University',
-    'Hackathon', 'Startup', 'Marketing', 'Content', 'Other',
-  ];
+  static const _categories = AppConstants.projectCategories;
 
   static const _suggestedSkills = [
     'Flutter', 'React', 'Node.js', 'Python', 'UI/UX', 'Firebase',

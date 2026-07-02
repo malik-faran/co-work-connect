@@ -335,4 +335,74 @@ class StorageService {
 
     return _supabase.storage.from('payment_receipts').getPublicUrl(filePath);
   }
+
+  static bool isAllowedLegalDocument(String fileName) {
+    final lower = fileName.toLowerCase();
+    return lower.endsWith('.pdf') ||
+        lower.endsWith('.jpg') ||
+        lower.endsWith('.jpeg') ||
+        lower.endsWith('.png');
+  }
+
+  /// Upload legal/ownership document for workspace listing approval.
+  Future<String> uploadWorkspaceLegalDocument({
+    required String workspaceId,
+    required XFile file,
+  }) async {
+    final user = _supabase.auth.currentUser;
+    if (user == null) {
+      throw Exception('User must be logged in to upload documents');
+    }
+    if (!isAllowedLegalDocument(file.name)) {
+      throw Exception('Document must be PDF, JPG, or PNG');
+    }
+
+    final bytes = await file.readAsBytes();
+    const maxBytes = 10 * 1024 * 1024;
+    if (bytes.length > maxBytes) {
+      throw Exception('Document must be smaller than 10 MB');
+    }
+
+    final safeName =
+        '${DateTime.now().millisecondsSinceEpoch}_${file.name.replaceAll(' ', '_')}';
+    final filePath = '${user.id}/$workspaceId/$safeName';
+
+    await _supabase.storage
+        .from('workspace_documents')
+        .uploadBinary(filePath, bytes)
+        .timeout(
+          const Duration(seconds: 45),
+          onTimeout: () => throw Exception('Document upload timed out'),
+        );
+
+    return _supabase.storage
+        .from('workspace_documents')
+        .getPublicUrl(filePath);
+  }
+
+  /// Upload screenshot / evidence for a user report
+  Future<String> uploadReportEvidence({
+    required String userId,
+    required XFile file,
+  }) async {
+    final user = _supabase.auth.currentUser;
+    if (user == null) {
+      throw Exception('User must be logged in to upload evidence');
+    }
+
+    final fileName =
+        '${DateTime.now().millisecondsSinceEpoch}_${file.name.replaceAll(' ', '_')}';
+    final filePath = '$userId/$fileName';
+    final bytes = await file.readAsBytes();
+
+    await _supabase.storage
+        .from('report_evidence')
+        .uploadBinary(filePath, bytes)
+        .timeout(
+          const Duration(seconds: 45),
+          onTimeout: () => throw Exception('Evidence upload timed out'),
+        );
+
+    return _supabase.storage.from('report_evidence').getPublicUrl(filePath);
+  }
 }

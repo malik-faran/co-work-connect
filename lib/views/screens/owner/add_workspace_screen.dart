@@ -1,19 +1,25 @@
-/// Add Workspace Screen
-/// Allows owners to add a new workspace
+// Add Workspace Screen — allows owners to add a new workspace.
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:typed_data';
 
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 import 'package:cwc/controllers/auth_controller.dart';
 import 'package:cwc/controllers/workspace_controller.dart';
+import 'package:cwc/models/price_suggestion.dart';
 import 'package:cwc/models/workspace_model.dart';
+import 'package:cwc/services/price_prediction_service.dart';
 import 'package:cwc/services/storage_service.dart';
+import 'package:cwc/utils/constants/price_benchmarks.dart';
 import 'package:cwc/utils/constants/app_constants.dart';
 import 'package:cwc/utils/constants/validation_constants.dart';
+import 'package:cwc/utils/helpers/geo_utils.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:cwc/utils/helpers/snackbar_helper.dart';
 import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/utils/validators/form_validators.dart';
@@ -29,6 +35,11 @@ class AddWorkspaceScreen extends StatefulWidget {
   State<AddWorkspaceScreen> createState() => _AddWorkspaceScreenState();
 }
 
+class _UnitImageData {
+  final List<XFile> selectedImages = [];
+  final List<String> existingImageUrls = [];
+}
+
 class _CategoryFormData {
   final String label;
   final String type;
@@ -37,6 +48,7 @@ class _CategoryFormData {
   final TextEditingController desksPerRoomController;
   final TextEditingController pricePerDayController;
   final TextEditingController pricePerHourController;
+  final List<_UnitImageData> unitImageBuckets = [_UnitImageData()];
 
   _CategoryFormData({required this.label, required this.type})
     : noOfOfficesController = TextEditingController(),
@@ -55,21 +67,27 @@ class _CategoryFormData {
 class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
-  final _descriptionController = TextEditingController();
-  final _policiesController = TextEditingController();
   final _addressController = TextEditingController();
   final _phoneController = TextEditingController();
   final _emailController = TextEditingController();
+  final List<String> _selectedDescriptionItems = [];
+  final List<String> _selectedPolicyItems = [];
+  final TextEditingController _customDescriptionController = TextEditingController();
+  final TextEditingController _customPolicyController = TextEditingController();
 
   String? _selectedCity;
   double _latitude = 0.0;
   double _longitude = 0.0;
   bool _locationSet = false;
   List<String> _selectedAmenities = [];
+  final TextEditingController _customAmenityController = TextEditingController();
   bool _isAvailable = true;
   bool _isLoading = false;
   final ImagePicker _imagePicker = ImagePicker();
   final List<XFile> _selectedImages = [];
+  final List<String> _existingGeneralImageUrls = [];
+  XFile? _legalDocument;
+  String? _existingLegalDocumentUrl;
   final Map<String, _CategoryFormData> _categoryForms = {
     AppConstants.workspaceTypePrivate: _CategoryFormData(
       label: 'Private Office',
@@ -87,14 +105,19 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
   TimeOfDay _openingTime = const TimeOfDay(hour: 9, minute: 0);
   TimeOfDay _closingTime = const TimeOfDay(hour: 18, minute: 0);
 
+  final PricePredictionService _pricePredictionService = PricePredictionService();
+  final Map<String, PriceSuggestion?> _priceSuggestions = {};
+  final Map<String, bool> _priceSuggestionLoading = {};
+  Timer? _priceSuggestionDebounce;
+
   @override
   void initState() {
     super.initState();
     if (widget.workspaceToEdit != null) {
       final workspace = widget.workspaceToEdit!;
       _nameController.text = workspace.name;
-      _descriptionController.text = workspace.description;
-      _policiesController.text = workspace.officePolicies ?? '';
+      _parseListedText(workspace.description, _selectedDescriptionItems);
+      _parseListedText(workspace.officePolicies, _selectedPolicyItems);
       _addressController.text = workspace.address;
       _selectedCity = workspace.city;
       _latitude = workspace.latitude;
@@ -104,6 +127,7 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
       _emailController.text = workspace.email ?? '';
       _selectedAmenities = List.from(workspace.amenities);
       _isAvailable = workspace.isAvailable;
+      _existingLegalDocumentUrl = workspace.legalDocumentUrl;
 
       final openingParts = workspace.openingTime.split(':');
       final closingParts = workspace.closingTime.split(':');
@@ -124,37 +148,74 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
         final form = _categoryForms[category.type];
         if (form != null) {
           form.enabled = true;
-          form.noOfOfficesController.text = category.capacity.toString();
           form.pricePerDayController.text = category.pricePerDay.toString();
           form.pricePerHourController.text = category.pricePerHour.toString();
+
+          final units = category.effectiveUnitImages;
+          final unitCount = category.type == AppConstants.workspaceTypePrivate
+              ? category.capacity
+              : (category.noOfUnits ?? (units.isNotEmpty ? units.length : 1));
+
+          form.noOfOfficesController.text = unitCount.toString();
           if (category.type != AppConstants.workspaceTypePrivate) {
             form.desksPerRoomController.text = category.capacity.toString();
           }
+
+          _syncCategoryUnitBuckets(form);
+          for (var i = 0; i < units.length && i < form.unitImageBuckets.length; i++) {
+            form.unitImageBuckets[i].existingImageUrls.addAll(units[i]);
+          }
         }
       }
+      _existingGeneralImageUrls
+        ..clear()
+        ..addAll(workspace.imageUrls);
     }
   }
 
   @override
   void dispose() {
+    _priceSuggestionDebounce?.cancel();
     _nameController.dispose();
-    _descriptionController.dispose();
-    _policiesController.dispose();
     _addressController.dispose();
     _phoneController.dispose();
     _emailController.dispose();
+    _customDescriptionController.dispose();
+    _customPolicyController.dispose();
+    _customAmenityController.dispose();
     for (final form in _categoryForms.values) {
       form.dispose();
     }
     super.dispose();
   }
 
+  Future<void> _pickLegalDocument() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png'],
+      withData: kIsWeb,
+    );
+    if (result == null || result.files.isEmpty) return;
+    final file = result.files.first;
+    if (file.path != null) {
+      setState(() => _legalDocument = XFile(file.path!));
+    } else if (file.bytes != null) {
+      setState(() => _legalDocument = XFile.fromData(
+            file.bytes!,
+            name: file.name,
+            mimeType: file.extension != null ? 'application/${file.extension}' : null,
+          ));
+    }
+  }
+
   Future<void> _pickImages() async {
     final images = await _imagePicker.pickMultiImage(imageQuality: 60);
-    if (images == null || images.isEmpty) return;
+    if (images.isEmpty) return;
 
     setState(() {
-      _selectedImages.addAll(images.take(10 - _selectedImages.length));
+      _selectedImages.addAll(
+        images.take(10 - _existingGeneralImageUrls.length - _selectedImages.length),
+      );
     });
   }
 
@@ -164,12 +225,424 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
     });
   }
 
+  Future<void> _pickCategoryImages(_CategoryFormData form, int unitIndex) async {
+    if (unitIndex < 0 || unitIndex >= form.unitImageBuckets.length) return;
+    final bucket = form.unitImageBuckets[unitIndex];
+    final total = bucket.existingImageUrls.length + bucket.selectedImages.length;
+    if (total >= 5) return;
+    final images = await _imagePicker.pickMultiImage(imageQuality: 60);
+    if (images.isEmpty) return;
+    setState(() {
+      bucket.selectedImages.addAll(images.take(5 - total));
+    });
+  }
+
+  void _removeCategoryImage(
+    _CategoryFormData form,
+    int unitIndex,
+    int imageIndex, {
+    required bool existing,
+  }) {
+    setState(() {
+      final bucket = form.unitImageBuckets[unitIndex];
+      if (existing) {
+        bucket.existingImageUrls.removeAt(imageIndex);
+      } else {
+        bucket.selectedImages.removeAt(imageIndex);
+      }
+    });
+  }
+
+  int _unitCountForForm(_CategoryFormData form) {
+    final n = int.tryParse(form.noOfOfficesController.text.trim()) ?? 1;
+    return n.clamp(1, 50);
+  }
+
+  void _syncCategoryUnitBuckets(_CategoryFormData form) {
+    final count = _unitCountForForm(form);
+    while (form.unitImageBuckets.length < count) {
+      form.unitImageBuckets.add(_UnitImageData());
+    }
+    while (form.unitImageBuckets.length > count) {
+      form.unitImageBuckets.removeLast();
+    }
+  }
+
+  String _unitPhotoLabel(String type, String categoryLabel, int unitIndex) {
+    final n = unitIndex + 1;
+    switch (type) {
+      case AppConstants.workspaceTypePrivate:
+        return 'Private Office $n';
+      case AppConstants.workspaceTypeMeetingRoom:
+        return 'Meeting Room $n';
+      case AppConstants.workspaceTypeShared:
+        return 'Shared Space $n';
+      default:
+        return '$categoryLabel $n';
+    }
+  }
+
+  void _removeExistingGeneralImage(int index) {
+    setState(() => _existingGeneralImageUrls.removeAt(index));
+  }
+
+  List<String> get _customDescriptionItems => _selectedDescriptionItems
+      .where((item) => !AppConstants.workspaceDescriptionHighlights.contains(item))
+      .toList();
+
+  List<String> get _customPolicyItems => _selectedPolicyItems
+      .where((item) => !AppConstants.commonOfficePolicies.contains(item))
+      .toList();
+
+  void _parseListedText(String? text, List<String> target) {
+    target.clear();
+    if (text == null || text.trim().isEmpty) return;
+
+    final lines = text.split('\n');
+    if (lines.length == 1 && !text.trim().startsWith('•')) {
+      target.add(text.trim());
+      return;
+    }
+
+    for (final raw in lines) {
+      final cleaned = raw.replaceFirst(RegExp(r'^[\s•\-*]+'), '').trim();
+      if (cleaned.isEmpty) continue;
+      if (!target.contains(cleaned)) target.add(cleaned);
+    }
+  }
+
+  String _compileListedText(List<String> items) {
+    if (items.isEmpty) return '';
+    return items.map((item) => '• $item').join('\n');
+  }
+
+  void _addCustomDescription([String? raw]) {
+    final value = (raw ?? _customDescriptionController.text).trim();
+    if (value.isEmpty) return;
+    if (_selectedDescriptionItems.any((e) => e.toLowerCase() == value.toLowerCase())) {
+      showErrorSnackBar(context, 'This description point is already added');
+      return;
+    }
+    setState(() {
+      _selectedDescriptionItems.add(value);
+      _customDescriptionController.clear();
+    });
+  }
+
+  void _addCustomPolicy([String? raw]) {
+    final value = (raw ?? _customPolicyController.text).trim();
+    if (value.isEmpty) return;
+    if (_selectedPolicyItems.any((e) => e.toLowerCase() == value.toLowerCase())) {
+      showErrorSnackBar(context, 'This policy is already added');
+      return;
+    }
+    setState(() {
+      _selectedPolicyItems.add(value);
+      _customPolicyController.clear();
+    });
+  }
+
+  void _removeCustomDescription(String item) {
+    setState(() => _selectedDescriptionItems.remove(item));
+  }
+
+  void _removeCustomPolicy(String item) {
+    setState(() => _selectedPolicyItems.remove(item));
+  }
+
+  List<String> get _customAmenities => _selectedAmenities
+      .where((a) => !AppConstants.commonAmenities.contains(a))
+      .toList();
+
+  void _addCustomAmenity([String? raw]) {
+    final value = (raw ?? _customAmenityController.text).trim();
+    if (value.isEmpty) return;
+
+    final exists = _selectedAmenities.any(
+      (a) => a.toLowerCase() == value.toLowerCase(),
+    );
+    if (exists) {
+      showErrorSnackBar(context, 'This amenity is already added');
+      return;
+    }
+
+    setState(() {
+      _selectedAmenities.add(value);
+      _customAmenityController.clear();
+    });
+    _schedulePriceSuggestions();
+  }
+
+  void _removeCustomAmenity(String amenity) {
+    setState(() => _selectedAmenities.remove(amenity));
+    _schedulePriceSuggestions();
+  }
+
+  void _schedulePriceSuggestions() {
+    _priceSuggestionDebounce?.cancel();
+    _priceSuggestionDebounce = Timer(const Duration(milliseconds: 900), () {
+      if (!mounted) return;
+      _fetchAllEnabledSuggestions();
+    });
+  }
+
+  int _capacityForCategory(String type, _CategoryFormData form) {
+    if (type == AppConstants.workspaceTypePrivate) {
+      return int.tryParse(form.noOfOfficesController.text.trim()) ?? 1;
+    }
+    return int.tryParse(form.desksPerRoomController.text.trim()) ??
+        int.tryParse(form.noOfOfficesController.text.trim()) ??
+        1;
+  }
+
+  Future<void> _fetchPriceSuggestion(String type) async {
+    if (_selectedCity == null || _selectedCity!.isEmpty) {
+      if (mounted) {
+        showErrorSnackBar(context, 'Pick location on map first for a price guide');
+      }
+      return;
+    }
+
+    final form = _categoryForms[type];
+    if (form == null || !form.enabled) return;
+
+    setState(() => _priceSuggestionLoading[type] = true);
+
+    try {
+      final suggestion = await _pricePredictionService.predict(
+        city: serviceCityForPricing(_selectedCity, _latitude, _longitude),
+        workspaceType: type,
+        capacity: _capacityForCategory(type, form),
+        amenities: _selectedAmenities,
+        excludeWorkspaceId: widget.workspaceToEdit?.id,
+      );
+      if (!mounted) return;
+      setState(() {
+        _priceSuggestions[type] = suggestion;
+        _priceSuggestionLoading[type] = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _priceSuggestionLoading[type] = false);
+      showErrorSnackBar(context, 'Could not load price guide');
+    }
+  }
+
+  Future<void> _fetchAllEnabledSuggestions() async {
+    if (_selectedCity == null || _selectedCity!.isEmpty) return;
+
+    for (final entry in _categoryForms.entries) {
+      if (entry.value.enabled) {
+        await _fetchPriceSuggestion(entry.key);
+      }
+    }
+  }
+
+  void _applyPriceSuggestion(String type) {
+    final suggestion = _priceSuggestions[type];
+    final form = _categoryForms[type];
+    if (suggestion == null || form == null) return;
+
+    setState(() {
+      form.pricePerDayController.text =
+          suggestion.pricePerDaySuggested.toStringAsFixed(0);
+      form.pricePerHourController.text =
+          suggestion.pricePerHourSuggested.toStringAsFixed(0);
+    });
+    showInfoSnackBar(context, 'Prices updated from guide');
+  }
+
+  Widget _buildPriceSuggestionCard(String type, _CategoryFormData formData) {
+    final suggestion = _priceSuggestions[type];
+    final isLoading = _priceSuggestionLoading[type] ?? false;
+
+    return Container(
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: CAppTheme.primaryColor.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+        border: Border.all(
+          color: CAppTheme.primaryColor.withValues(alpha: 0.2),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.price_change_outlined,
+                size: 18,
+                color: CAppTheme.primaryColor,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Price Guide',
+                  style: GoogleFonts.poppins(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                    color: CAppTheme.textPrimary,
+                  ),
+                ),
+              ),
+              if (isLoading)
+                SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: CAppTheme.primaryColor,
+                  ),
+                )
+              else
+                IconButton(
+                  onPressed: () => _fetchPriceSuggestion(type),
+                  icon: Icon(
+                    Icons.refresh_rounded,
+                    size: 20,
+                    color: CAppTheme.primaryColor,
+                  ),
+                  tooltip: 'Refresh price guide',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+            ],
+          ),
+          if (isLoading && suggestion == null) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Checking prices in your area...',
+              style: GoogleFonts.poppins(
+                fontSize: 12,
+                color: CAppTheme.textSecondary,
+              ),
+            ),
+          ],
+          if (suggestion != null && !isLoading) ...[
+            const SizedBox(height: 10),
+            Text(
+              'Rs. ${suggestion.pricePerDayMin.toStringAsFixed(0)} – '
+              '${suggestion.pricePerDayMax.toStringAsFixed(0)}/day',
+              style: GoogleFonts.poppins(
+                fontWeight: FontWeight.w600,
+                fontSize: 14,
+                color: CAppTheme.primaryColor,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Rs. ${suggestion.pricePerHourMin.toStringAsFixed(0)} – '
+              '${suggestion.pricePerHourMax.toStringAsFixed(0)}/hour',
+              style: GoogleFonts.poppins(
+                fontSize: 12,
+                color: CAppTheme.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Suggested: Rs. ${suggestion.pricePerDaySuggested.toStringAsFixed(0)}/day',
+              style: GoogleFonts.poppins(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: CAppTheme.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 6),
+            _buildConfidenceChip(suggestion),
+            const SizedBox(height: 8),
+            Text(
+              suggestion.reason,
+              style: GoogleFonts.poppins(
+                fontSize: 11,
+                color: CAppTheme.textSecondary,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () => _applyPriceSuggestion(type),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: CAppTheme.primaryColor,
+                  side: BorderSide(color: CAppTheme.primaryColor),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                  ),
+                ),
+                icon: const Icon(Icons.check_rounded, size: 18),
+                label: Text(
+                  'Use this price',
+                  style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+                ),
+              ),
+            ),
+          ],
+          if (suggestion == null && !isLoading) ...[
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () => _fetchPriceSuggestion(type),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: CAppTheme.primaryColor,
+                  side: BorderSide(color: CAppTheme.primaryColor.withValues(alpha: 0.4)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                  ),
+                ),
+                icon: const Icon(Icons.price_change_outlined, size: 18),
+                label: Text(
+                  'Get price guide',
+                  style: GoogleFonts.poppins(fontWeight: FontWeight.w500),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildConfidenceChip(PriceSuggestion suggestion) {
+    final (label, color) = switch (suggestion.confidence) {
+      PriceConfidence.high => ('Many similar listings', CAppTheme.successColor),
+      PriceConfidence.medium => ('Some similar listings', Colors.orange),
+      PriceConfidence.low => ('City rate estimate', Colors.blueGrey),
+    };
+
+    final sampleText = suggestion.sampleSize > 0
+        ? ' · ${suggestion.sampleSize} workspace${suggestion.sampleSize == 1 ? '' : 's'}'
+        : ' · few local listings';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        '$label$sampleText',
+        style: GoogleFonts.poppins(
+          fontSize: 10,
+          fontWeight: FontWeight.w500,
+          color: color,
+        ),
+      ),
+    );
+  }
+
+  LatLng _initialMapCenter() => defaultCenterForCity(_selectedCity);
+
   Future<void> _pickLocationOnMap() async {
+    final center = _initialMapCenter();
     final result = await Navigator.of(context).push<LocationPickResult>(
       MaterialPageRoute(
         builder: (_) => LocationPickerMap(
-          initialLatitude: _locationSet ? _latitude : defaultCenterForCity(_selectedCity).latitude,
-          initialLongitude: _locationSet ? _longitude : defaultCenterForCity(_selectedCity).longitude,
+          initialLatitude: _locationSet ? _latitude : center.latitude,
+          initialLongitude: _locationSet ? _longitude : center.longitude,
           city: _selectedCity,
         ),
       ),
@@ -180,9 +653,8 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
       _longitude = result.longitude;
       _locationSet = true;
       _addressController.text = result.address;
-      if (result.city != null && AppConstants.cities.contains(result.city)) {
-        _selectedCity = result.city;
-      }
+      _selectedCity = result.city;
+      _schedulePriceSuggestions();
     });
   }
 
@@ -233,6 +705,36 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
 
   Widget _buildImagePicker() {
     final children = <Widget>[
+      ...List.generate(_existingGeneralImageUrls.length, (index) {
+        final url = _existingGeneralImageUrls[index];
+        return Stack(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+              child: SizedBox(
+                width: 100,
+                height: 100,
+                child: Image.network(url, fit: BoxFit.cover),
+              ),
+            ),
+            Positioned(
+              top: 4,
+              right: 4,
+              child: GestureDetector(
+                onTap: () => _removeExistingGeneralImage(index),
+                child: Container(
+                  padding: const EdgeInsets.all(4),
+                  decoration: const BoxDecoration(
+                    color: CAppTheme.errorColor,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.close, color: Colors.white, size: 14),
+                ),
+              ),
+            ),
+          ],
+        );
+      }),
       ...List.generate(_selectedImages.length, (index) {
         final file = _selectedImages[index];
         return Stack(
@@ -280,7 +782,7 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
           ],
         );
       }),
-      if (_selectedImages.length < 10)
+      if (_existingGeneralImageUrls.length + _selectedImages.length < 10)
         GestureDetector(
           onTap: _pickImages,
           child: Container(
@@ -318,6 +820,170 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
     ];
 
     return Wrap(spacing: 12, runSpacing: 12, children: children);
+  }
+
+  Widget _buildCategoryImagePicker(String type, _CategoryFormData formData) {
+    _syncCategoryUnitBuckets(formData);
+    final unitCount = formData.unitImageBuckets.length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: List.generate(unitCount, (unitIndex) {
+        final bucket = formData.unitImageBuckets[unitIndex];
+        final total = bucket.existingImageUrls.length + bucket.selectedImages.length;
+        final unitLabel = _unitPhotoLabel(type, formData.label, unitIndex);
+
+        final children = <Widget>[
+          ...List.generate(bucket.existingImageUrls.length, (index) {
+            final url = bucket.existingImageUrls[index];
+            return Stack(
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                  child: SizedBox(
+                    width: 88,
+                    height: 88,
+                    child: Image.network(url, fit: BoxFit.cover),
+                  ),
+                ),
+                Positioned(
+                  top: 4,
+                  right: 4,
+                  child: GestureDetector(
+                    onTap: () => _removeCategoryImage(
+                      formData,
+                      unitIndex,
+                      index,
+                      existing: true,
+                    ),
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: const BoxDecoration(
+                        color: CAppTheme.errorColor,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.close, color: Colors.white, size: 12),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          }),
+          ...List.generate(bucket.selectedImages.length, (index) {
+            final file = bucket.selectedImages[index];
+            return Stack(
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                  child: SizedBox(
+                    width: 88,
+                    height: 88,
+                    child: FutureBuilder(
+                      future: file.readAsBytes(),
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState == ConnectionState.done &&
+                            snapshot.hasData) {
+                          return Image.memory(
+                            snapshot.data as Uint8List,
+                            fit: BoxFit.cover,
+                          );
+                        }
+                        return const Center(
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+                Positioned(
+                  top: 4,
+                  right: 4,
+                  child: GestureDetector(
+                    onTap: () => _removeCategoryImage(
+                      formData,
+                      unitIndex,
+                      index,
+                      existing: false,
+                    ),
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: const BoxDecoration(
+                        color: CAppTheme.errorColor,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.close, color: Colors.white, size: 12),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          }),
+          if (total < 5)
+            GestureDetector(
+              onTap: () => _pickCategoryImages(formData, unitIndex),
+              child: Container(
+                width: 88,
+                height: 88,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                  border: Border.all(color: CAppTheme.borderColor),
+                  color: CAppTheme.backgroundColor,
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.add_photo_alternate_outlined,
+                        size: 22, color: CAppTheme.primaryColor),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Add',
+                      style: GoogleFonts.poppins(
+                        fontSize: 10,
+                        color: CAppTheme.primaryColor,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ];
+
+        return Container(
+          width: double.infinity,
+          margin: EdgeInsets.only(bottom: unitIndex < unitCount - 1 ? 14 : 0),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: CAppTheme.backgroundColor,
+            borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+            border: Border.all(color: CAppTheme.borderColor),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                unitLabel,
+                style: GoogleFonts.poppins(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: CAppTheme.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'At least 1 photo required',
+                style: GoogleFonts.poppins(
+                  fontSize: 10,
+                  color: total == 0 ? CAppTheme.errorColor : CAppTheme.textSecondary,
+                  fontWeight: total == 0 ? FontWeight.w600 : FontWeight.normal,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Wrap(spacing: 10, runSpacing: 10, children: children),
+            ],
+          ),
+        );
+      }),
+    );
   }
 
   Widget _buildCategoryCard(String type, _CategoryFormData formData) {
@@ -361,7 +1027,12 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
               onChanged: (value) {
                 setState(() {
                   formData.enabled = value;
+                  if (!value) {
+                    _priceSuggestions.remove(type);
+                    _priceSuggestionLoading.remove(type);
+                  }
                 });
+                if (value) _schedulePriceSuggestions();
               },
             ),
             if (formData.enabled) ...[
@@ -395,6 +1066,11 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
                   max: limits.officesMax,
                   label: 'Number of offices',
                 ),
+                onChanged: (_) {
+                  _syncCategoryUnitBuckets(formData);
+                  _schedulePriceSuggestions();
+                  setState(() {});
+                },
               ),
               if (isShared || isMeetingRoom) ...[
                 const SizedBox(height: 16),
@@ -429,6 +1105,7 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
                     max: limits.desksMax,
                     label: isShared ? 'Room capacity' : 'Desks per room',
                   ),
+                  onChanged: (_) => _schedulePriceSuggestions(),
                 ),
               ],
               const SizedBox(height: 16),
@@ -505,6 +1182,26 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
                   ),
                 ],
               ),
+              _buildPriceSuggestionCard(type, formData),
+              const SizedBox(height: 16),
+              Text(
+                'Photos for ${formData.label} *',
+                style: GoogleFonts.poppins(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: CAppTheme.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Each office/room needs at least 1 photo (up to 5 per unit)',
+                style: GoogleFonts.poppins(
+                  fontSize: 11,
+                  color: CAppTheme.textSecondary,
+                ),
+              ),
+              const SizedBox(height: 10),
+              _buildCategoryImagePicker(type, formData),
             ],
           ],
         ),
@@ -517,13 +1214,35 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
       return;
     }
 
-    if (_selectedCity == null) {
-      showErrorSnackBar(context, 'Please select a city');
+    if (!_locationSet) {
+      showErrorSnackBar(context, 'Please select location on map');
+      return;
+    }
+
+    if (_selectedCity == null || _selectedCity!.trim().isEmpty) {
+      showErrorSnackBar(context, 'Please pick location on map');
       return;
     }
 
     if (_selectedAmenities.isEmpty) {
       showErrorSnackBar(context, 'Please select at least one amenity');
+      return;
+    }
+
+    if (_selectedDescriptionItems.isEmpty) {
+      showErrorSnackBar(
+        context,
+        'Select or add at least one description point',
+      );
+      return;
+    }
+
+    final descriptionText = _compileListedText(_selectedDescriptionItems);
+    if (descriptionText.length < ValidationLimits.descriptionMin) {
+      showErrorSnackBar(
+        context,
+        'Add more description points (at least ${ValidationLimits.descriptionMin} characters total)',
+      );
       return;
     }
 
@@ -616,10 +1335,33 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
         );
         return;
       }
+
+      _syncCategoryUnitBuckets(form);
+      for (var u = 0; u < form.unitImageBuckets.length; u++) {
+        final bucket = form.unitImageBuckets[u];
+        if (bucket.existingImageUrls.isEmpty && bucket.selectedImages.isEmpty) {
+          showErrorSnackBar(
+            context,
+            'Please add at least one photo for ${_unitPhotoLabel(entry.key, form.label, u)}',
+          );
+          return;
+        }
+      }
     }
 
-    if (_selectedImages.isEmpty && widget.workspaceToEdit == null) {
+    if (_selectedImages.isEmpty &&
+        _existingGeneralImageUrls.isEmpty &&
+        widget.workspaceToEdit == null) {
       showErrorSnackBar(context, 'Please add at least one workspace photo');
+      return;
+    }
+
+    final isNew = widget.workspaceToEdit == null;
+    if (isNew && _legalDocument == null) {
+      showErrorSnackBar(
+        context,
+        'Please upload a legal/ownership document for this workspace',
+      );
       return;
     }
 
@@ -648,6 +1390,20 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
     final workspaceId = widget.workspaceToEdit?.id ?? const Uuid().v4();
     final storageService = StorageService();
     List<String> uploadedImages = [];
+    String? legalDocumentUrl = _existingLegalDocumentUrl;
+
+    if (_legalDocument != null) {
+      try {
+        legalDocumentUrl = await storageService.uploadWorkspaceLegalDocument(
+          workspaceId: workspaceId,
+          file: _legalDocument!,
+        );
+      } catch (e) {
+        setState(() => _isLoading = false);
+        showErrorSnackBar(context, 'Legal document upload failed: $e');
+        return;
+      }
+    }
 
     if (_selectedImages.isNotEmpty) {
       try {
@@ -681,10 +1437,11 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
         }
       }
     } else if (widget.workspaceToEdit != null) {
-      uploadedImages = List<String>.from(widget.workspaceToEdit!.imageUrls);
+      uploadedImages = List<String>.from(_existingGeneralImageUrls);
     }
 
-    final categoryOptions = enabledCategories.map((entry) {
+    final categoryOptions = <WorkspaceCategoryOption>[];
+    for (final entry in enabledCategories) {
       final form = entry.value;
       final noOfOffices = int.parse(form.noOfOfficesController.text.trim());
 
@@ -697,13 +1454,46 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
         form.pricePerHourController.text.trim(),
       );
 
-      return WorkspaceCategoryOption(
-        type: entry.key,
-        capacity: capacity,
-        pricePerHour: pricePerHour,
-        pricePerDay: pricePerDay,
+      _syncCategoryUnitBuckets(form);
+      final unitImageUrls = <List<String>>[];
+      for (var u = 0; u < form.unitImageBuckets.length; u++) {
+        final bucket = form.unitImageBuckets[u];
+        final urls = List<String>.from(bucket.existingImageUrls);
+        if (bucket.selectedImages.isNotEmpty) {
+          try {
+            final uploaded = await storageService.uploadWorkspaceImages(
+              workspaceId: workspaceId,
+              files: bucket.selectedImages,
+            );
+            urls.addAll(uploaded);
+          } catch (_) {
+            if (mounted) {
+              showWarningSnackBar(
+                context,
+                'Some photos for unit ${u + 1} failed to upload.',
+              );
+            }
+          }
+        }
+        unitImageUrls.add(urls);
+      }
+
+      final flatImages = unitImageUrls.expand((u) => u).toList();
+
+      categoryOptions.add(
+        WorkspaceCategoryOption(
+          type: entry.key,
+          capacity: capacity,
+          pricePerHour: pricePerHour,
+          pricePerDay: pricePerDay,
+          imageUrls: flatImages,
+          noOfUnits: entry.key == AppConstants.workspaceTypePrivate
+              ? null
+              : noOfOffices,
+          unitImageUrls: unitImageUrls,
+        ),
       );
-    }).toList();
+    }
 
     final timeSlots = _generateTimeSlots();
 
@@ -733,7 +1523,7 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
       id: workspaceId,
       ownerId: ownerId,
       name: _nameController.text.trim(),
-      description: _descriptionController.text.trim(),
+      description: descriptionText,
       address: _addressController.text.trim(),
       city: _selectedCity!,
       state: null,
@@ -752,7 +1542,7 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
           : AppConstants.workspaceTypeShared,
       categoryOptions: categoryOptions,
       timeSlots: widget.workspaceToEdit != null && timeSlots.isEmpty
-          ? (widget.workspaceToEdit!.timeSlots ?? const [])
+          ? widget.workspaceToEdit!.timeSlots
           : timeSlots,
       openingTime: _formatTimeOfDay(_openingTime),
       closingTime: _formatTimeOfDay(_closingTime),
@@ -762,15 +1552,17 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
       email: _emailController.text.trim().isEmpty
           ? null
           : _emailController.text.trim(),
-      isAvailable: _isAvailable,
+      isAvailable: isNew ? false : _isAvailable,
+      workspaceApproved: isNew ? null : widget.workspaceToEdit?.workspaceApproved,
+      legalDocumentUrl: legalDocumentUrl,
       createdAt: widget.workspaceToEdit?.createdAt ?? DateTime.now(),
       updatedAt: DateTime.now(),
       operatingHours: [
         '${_formatTimeOfDay(_openingTime)} - ${_formatTimeOfDay(_closingTime)}',
       ],
-      officePolicies: _policiesController.text.trim().isEmpty
+      officePolicies: _selectedPolicyItems.isEmpty
           ? null
-          : _policiesController.text.trim(),
+          : _compileListedText(_selectedPolicyItems),
     );
 
     try {
@@ -813,8 +1605,8 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
           context,
           widget.workspaceToEdit != null
               ? 'Workspace updated successfully!'
-              : 'Workspace added successfully!',
-          duration: const Duration(seconds: 2),
+              : 'Workspace submitted! Admin will review your legal document before listing.',
+          duration: const Duration(seconds: 3),
         );
         Navigator.of(context).pop();
       } else {
@@ -884,20 +1676,46 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
                 validator: FormValidators.workspaceName,
               ),
               const SizedBox(height: 16),
-              _buildThemedTextField(
-                controller: _descriptionController,
-                label: 'Description *',
-                icon: Icons.description_outlined,
-                maxLines: 4,
-                validator: FormValidators.description,
+              _buildListedChipSection(
+                title: 'Description *',
+                subtitle: 'Select highlights that describe your space, or add your own',
+                options: AppConstants.workspaceDescriptionHighlights,
+                selected: _selectedDescriptionItems,
+                customItems: _customDescriptionItems,
+                customController: _customDescriptionController,
+                onToggle: (item, isSelected) {
+                  setState(() {
+                    if (isSelected) {
+                      _selectedDescriptionItems.add(item);
+                    } else {
+                      _selectedDescriptionItems.remove(item);
+                    }
+                  });
+                },
+                onAddCustom: _addCustomDescription,
+                onRemoveCustom: _removeCustomDescription,
+                customHint: 'Add custom description point',
               ),
               const SizedBox(height: 16),
-              _buildThemedTextField(
-                controller: _policiesController,
-                label: 'Office Policies (visible to users)',
-                icon: Icons.policy_outlined,
-                maxLines: 6,
-                hint: 'e.g. No smoking, quiet hours 6–9 PM, bring your own laptop...',
+              _buildListedChipSection(
+                title: 'Office Policies',
+                subtitle: 'Select rules guests should follow (optional)',
+                options: AppConstants.commonOfficePolicies,
+                selected: _selectedPolicyItems,
+                customItems: _customPolicyItems,
+                customController: _customPolicyController,
+                onToggle: (item, isSelected) {
+                  setState(() {
+                    if (isSelected) {
+                      _selectedPolicyItems.add(item);
+                    } else {
+                      _selectedPolicyItems.remove(item);
+                    }
+                  });
+                },
+                onAddCustom: _addCustomPolicy,
+                onRemoveCustom: _removeCustomPolicy,
+                customHint: 'Add custom policy',
               ),
               const SizedBox(height: 16),
               _buildMapLocationPicker(),
@@ -911,49 +1729,110 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
               const SizedBox(height: 20),
 
               // Photos Section
-              _buildSectionHeader('Workspace Photos *'),
+              _buildSectionHeader('General Workspace Photos *'),
+              const SizedBox(height: 6),
+              Text(
+                'Building exterior, reception, or overall space (max 10)',
+                style: GoogleFonts.poppins(
+                  fontSize: 12,
+                  color: CAppTheme.textSecondary,
+                ),
+              ),
               const SizedBox(height: 12),
               _buildImagePicker(),
+              const SizedBox(height: 20),
+
+              _buildSectionHeader('Legal / Ownership Document *'),
+              const SizedBox(height: 8),
+              Text(
+                widget.workspaceToEdit == null
+                    ? 'Upload rent agreement, property deed, or business registration. Admin must approve before your workspace is listed.'
+                    : 'Upload a new document only if you need to replace the existing one.',
+                style: GoogleFonts.poppins(
+                  fontSize: 12,
+                  color: CAppTheme.textSecondary,
+                  height: 1.4,
+                ),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: _isLoading ? null : _pickLegalDocument,
+                icon: const Icon(Icons.description_outlined),
+                label: Text(
+                  _legalDocument != null
+                      ? _legalDocument!.name
+                      : (_existingLegalDocumentUrl != null
+                          ? 'Document on file — replace'
+                          : 'Upload legal document (PDF/JPG/PNG)'),
+                  style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+                ),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(double.infinity, 52),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                  ),
+                ),
+              ),
               const SizedBox(height: 20),
 
               // Location Section
               _buildSectionHeader('Location & Hours'),
               const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                value: _selectedCity,
-                decoration: InputDecoration(
-                  labelText: 'City *',
-                  labelStyle: GoogleFonts.poppins(color: CAppTheme.textSecondary),
-                  prefixIcon: Icon(Icons.location_city_outlined, color: CAppTheme.textSecondary),
-                  filled: true,
-                  fillColor: Colors.white,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                    borderSide: BorderSide(color: CAppTheme.borderColor),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                    borderSide: BorderSide(color: CAppTheme.borderColor),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                    borderSide: BorderSide(color: CAppTheme.primaryColor, width: 2),
-                  ),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                  border: Border.all(color: CAppTheme.borderColor),
                 ),
-                items: AppConstants.cities.map((city) {
-                  return DropdownMenuItem(value: city, child: Text(city));
-                }).toList(),
-                onChanged: (value) {
-                  setState(() {
-                    _selectedCity = value;
-                  });
-                },
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'Please select city';
-                  }
-                  return null;
-                },
+                child: Row(
+                  children: [
+                    Icon(Icons.location_city_outlined, color: CAppTheme.textSecondary),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'City (from map)',
+                            style: GoogleFonts.poppins(
+                              fontSize: 12,
+                              color: CAppTheme.textSecondary,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            _selectedCity ?? 'Pick location on map above',
+                            style: GoogleFonts.poppins(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                              color: _selectedCity != null
+                                  ? CAppTheme.textPrimary
+                                  : CAppTheme.textTertiary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (_selectedCity != null)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: CAppTheme.successColor.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
+                        ),
+                        child: Text(
+                          'Auto',
+                          style: GoogleFonts.poppins(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: CAppTheme.successColor,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
               const SizedBox(height: 16),
               Row(
@@ -1000,7 +1879,33 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
               const SizedBox(height: 24),
 
               // Categories Section
-              _buildSectionHeader('Workspace Categories'),
+              Row(
+                children: [
+                  Expanded(child: _buildSectionHeader('Workspace Categories')),
+                  TextButton.icon(
+                    onPressed: _selectedCity == null
+                        ? null
+                        : _fetchAllEnabledSuggestions,
+                    icon: Icon(
+                      Icons.price_change_outlined,
+                      size: 18,
+                      color: _selectedCity == null
+                          ? CAppTheme.textTertiary
+                          : CAppTheme.primaryColor,
+                    ),
+                    label: Text(
+                      'All price guides',
+                      style: GoogleFonts.poppins(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: _selectedCity == null
+                            ? CAppTheme.textTertiary
+                            : CAppTheme.primaryColor,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
               const SizedBox(height: 12),
               ..._categoryForms.entries.map(
                 (entry) => _buildCategoryCard(entry.key, entry.value),
@@ -1009,6 +1914,14 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
 
               // Amenities Section
               _buildSectionHeader('Amenities *'),
+              const SizedBox(height: 8),
+              Text(
+                'Pick from common options or add your own',
+                style: GoogleFonts.poppins(
+                  fontSize: 13,
+                  color: CAppTheme.textSecondary,
+                ),
+              ),
               const SizedBox(height: 12),
               Wrap(
                 spacing: 8,
@@ -1042,9 +1955,106 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
                           _selectedAmenities.remove(amenity);
                         }
                       });
+                      _schedulePriceSuggestions();
                     },
                   );
                 }).toList(),
+              ),
+              if (_customAmenities.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                Text(
+                  'Custom amenities',
+                  style: GoogleFonts.poppins(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: CAppTheme.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: _customAmenities.map((amenity) {
+                    return InputChip(
+                      label: Text(
+                        amenity,
+                        style: GoogleFonts.poppins(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: CAppTheme.primaryColor,
+                        ),
+                      ),
+                      backgroundColor: CAppTheme.primaryColor.withValues(alpha: 0.08),
+                      deleteIcon: Icon(
+                        Icons.close_rounded,
+                        size: 18,
+                        color: CAppTheme.primaryColor,
+                      ),
+                      onDeleted: () => _removeCustomAmenity(amenity),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                        side: BorderSide(
+                          color: CAppTheme.primaryColor.withValues(alpha: 0.3),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ],
+              const SizedBox(height: 16),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: TextFormField(
+                      controller: _customAmenityController,
+                      textCapitalization: TextCapitalization.words,
+                      decoration: InputDecoration(
+                        hintText: 'Add other amenity (e.g. Printer, Gym)',
+                        hintStyle: GoogleFonts.poppins(
+                          fontSize: 14,
+                          color: CAppTheme.textTertiary,
+                        ),
+                        filled: true,
+                        fillColor: Colors.white,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 14,
+                        ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                          borderSide: const BorderSide(color: CAppTheme.borderColor),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                          borderSide: const BorderSide(color: CAppTheme.borderColor),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                          borderSide: const BorderSide(
+                            color: CAppTheme.primaryColor,
+                            width: 1.5,
+                          ),
+                        ),
+                      ),
+                      onFieldSubmitted: _addCustomAmenity,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Material(
+                    color: CAppTheme.primaryColor,
+                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                    child: InkWell(
+                      onTap: () => _addCustomAmenity(),
+                      borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                      child: const SizedBox(
+                        width: 48,
+                        height: 48,
+                        child: Icon(Icons.add_rounded, color: Colors.white),
+                      ),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 24),
 
@@ -1206,6 +2216,154 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
               borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
             ),
           ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildListedChipSection({
+    required String title,
+    required String subtitle,
+    required List<String> options,
+    required List<String> selected,
+    required List<String> customItems,
+    required TextEditingController customController,
+    required void Function(String item, bool isSelected) onToggle,
+    required void Function([String? raw]) onAddCustom,
+    required void Function(String item) onRemoveCustom,
+    required String customHint,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionHeader(title),
+        const SizedBox(height: 8),
+        Text(
+          subtitle,
+          style: GoogleFonts.poppins(
+            fontSize: 13,
+            color: CAppTheme.textSecondary,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: options.map((item) {
+            final isSelected = selected.contains(item);
+            return FilterChip(
+              label: Text(
+                item,
+                style: GoogleFonts.poppins(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: isSelected ? Colors.white : CAppTheme.textPrimary,
+                ),
+              ),
+              selected: isSelected,
+              selectedColor: CAppTheme.primaryColor,
+              backgroundColor: Colors.white,
+              checkmarkColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                side: BorderSide(
+                  color: isSelected ? CAppTheme.primaryColor : CAppTheme.borderColor,
+                ),
+              ),
+              onSelected: (value) => onToggle(item, value),
+            );
+          }).toList(),
+        ),
+        if (customItems.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Text(
+            'Custom',
+            style: GoogleFonts.poppins(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: CAppTheme.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: customItems.map((item) {
+              return InputChip(
+                label: Text(
+                  item,
+                  style: GoogleFonts.poppins(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: CAppTheme.primaryColor,
+                  ),
+                ),
+                backgroundColor: CAppTheme.primaryColor.withValues(alpha: 0.08),
+                deleteIcon: Icon(
+                  Icons.close_rounded,
+                  size: 18,
+                  color: CAppTheme.primaryColor,
+                ),
+                onDeleted: () => onRemoveCustom(item),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                  side: BorderSide(
+                    color: CAppTheme.primaryColor.withValues(alpha: 0.3),
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+        ],
+        const SizedBox(height: 12),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: TextFormField(
+                controller: customController,
+                style: GoogleFonts.poppins(color: CAppTheme.textPrimary),
+                decoration: InputDecoration(
+                  hintText: customHint,
+                  hintStyle: GoogleFonts.poppins(
+                    fontSize: 13,
+                    color: CAppTheme.textTertiary,
+                  ),
+                  filled: true,
+                  fillColor: Colors.white,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                    borderSide: BorderSide(color: CAppTheme.borderColor),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                    borderSide: BorderSide(color: CAppTheme.borderColor),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                    borderSide: const BorderSide(
+                      color: CAppTheme.primaryColor,
+                      width: 2,
+                    ),
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 12,
+                  ),
+                ),
+                onFieldSubmitted: onAddCustom,
+              ),
+            ),
+            const SizedBox(width: 8),
+            IconButton.filled(
+              onPressed: () => onAddCustom(),
+              icon: const Icon(Icons.add_rounded),
+              style: IconButton.styleFrom(
+                backgroundColor: CAppTheme.primaryColor,
+                foregroundColor: Colors.white,
+              ),
+            ),
+          ],
         ),
       ],
     );

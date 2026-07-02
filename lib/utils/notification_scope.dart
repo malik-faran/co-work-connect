@@ -21,6 +21,13 @@ class NotificationScopeHelper {
     'collaboration_join_request',
     'collaboration_completed',
     'collaboration_milestone',
+    'collaboration_milestone_missed',
+  };
+
+  static const Set<String> reportTypes = {
+    'report_under_review',
+    'report_resolved',
+    'report_dismissed',
   };
 
   static const Set<String> workspaceTypes = {
@@ -28,9 +35,17 @@ class NotificationScopeHelper {
     'booking_cancelled',
     'payment_receipt',
     'payment_rejected',
+    'report_under_review',
+    'report_resolved',
+    'report_dismissed',
+    'owner_earning_credited',
+    'owner_payout_approved',
+    'owner_payout_rejected',
   };
 
   static bool isProjectType(String type) => projectTypes.contains(type);
+
+  static bool isReportType(String type) => reportTypes.contains(type);
 
   static bool isWorkspaceType(String type) => workspaceTypes.contains(type);
 

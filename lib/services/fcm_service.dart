@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
@@ -7,6 +8,7 @@ import 'package:cwc/services/auth_service.dart';
 import 'package:cwc/services/fcm_background.dart';
 import 'package:cwc/services/local_notification_service.dart';
 import 'package:cwc/services/navigation_service.dart';
+import 'package:cwc/utils/notification_scope.dart';
 
 /// Firebase Cloud Messaging — push notifications when app is closed/background.
 class FcmService {
@@ -55,7 +57,7 @@ class FcmService {
 
       final initialMessage = await _messaging.getInitialMessage();
       if (initialMessage != null) {
-        _openChatFromMessage(initialMessage);
+        _openFromMessage(initialMessage);
       }
 
       _messaging.onTokenRefresh.listen((token) async {
@@ -115,22 +117,80 @@ class FcmService {
 
     if (notification == null) return;
 
+    final type = data['type']?.toString();
+    final bookingId = data['booking_id']?.toString();
+    final reportId = data['report_id']?.toString();
+    final collaborationId = data['collaboration_id']?.toString();
+    String? payload;
+    if (chatRoomId != null && chatRoomId.isNotEmpty) {
+      payload = jsonEncode({'type': 'chat_message', 'chat_room_id': chatRoomId});
+    } else if (bookingId != null &&
+        type != null &&
+        NotificationScopeHelper.isWorkspaceType(type)) {
+      payload = jsonEncode({'type': type, 'booking_id': bookingId});
+    } else if (reportId != null &&
+        type != null &&
+        NotificationScopeHelper.isReportType(type)) {
+      payload = jsonEncode({'type': type, 'report_id': reportId});
+    } else if (collaborationId != null &&
+        type != null &&
+        (type == 'collaboration_milestone_missed' ||
+            NotificationScopeHelper.isProjectType(type))) {
+      payload = jsonEncode({'type': type, 'collaboration_id': collaborationId});
+    } else {
+      payload = data['notification_id']?.toString();
+    }
+
     await LocalNotificationService.instance.show(
       id: message.messageId ?? DateTime.now().millisecondsSinceEpoch.toString(),
       title: notification.title ?? 'CWC',
       body: notification.body ?? '',
-      payload: data['notification_id']?.toString(),
+      payload: payload,
     );
   }
 
   void _onMessageOpenedApp(RemoteMessage message) {
-    _openChatFromMessage(message);
+    _openFromMessage(message);
   }
 
-  void _openChatFromMessage(RemoteMessage message) {
-    final chatRoomId = message.data['chat_room_id']?.toString();
+  void _openFromMessage(RemoteMessage message) {
+    final data = message.data;
+    final chatRoomId = data['chat_room_id']?.toString();
     if (chatRoomId != null && chatRoomId.isNotEmpty) {
       NavigationService.openChatFromNotification(chatRoomId);
+      return;
+    }
+
+    final bookingId = data['booking_id']?.toString();
+    final type = data['type']?.toString();
+    if (bookingId != null &&
+        bookingId.isNotEmpty &&
+        type != null &&
+        NotificationScopeHelper.isWorkspaceType(type)) {
+      NavigationService.openBookingFromNotification(
+        bookingId: bookingId,
+        notificationType: type,
+      );
+      return;
+    }
+
+    final collaborationId = data['collaboration_id']?.toString();
+    if (collaborationId != null &&
+        collaborationId.isNotEmpty &&
+        type != null &&
+        (type == 'collaboration_milestone_missed' ||
+            NotificationScopeHelper.isProjectType(type))) {
+      final tab = type == 'collaboration_milestone_missed' ? 2 : 0;
+      NavigationService.openProjectFromNotification(collaborationId, initialTab: tab);
+      return;
+    }
+
+    final reportId = data['report_id']?.toString();
+    if (reportId != null &&
+        reportId.isNotEmpty &&
+        type != null &&
+        NotificationScopeHelper.isReportType(type)) {
+      NavigationService.openReportFromNotification(reportId);
     }
   }
 }

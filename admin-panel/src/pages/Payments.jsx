@@ -25,7 +25,7 @@ const Payments = () => {
         .select(`
           *,
           bookings(id, workspace_name, total_price, start_date, end_date),
-          users(name, email)
+          payer:users!payments_user_id_fkey(name, email)
         `)
         .order('created_at', { ascending: false })
 
@@ -73,8 +73,8 @@ const Payments = () => {
     if (!searchQuery) return true
     const query = searchQuery.toLowerCase()
     return (
-      payment.users?.name?.toLowerCase().includes(query) ||
-      payment.users?.email?.toLowerCase().includes(query) ||
+      payment.payer?.name?.toLowerCase().includes(query) ||
+      payment.payer?.email?.toLowerCase().includes(query) ||
       payment.bookings?.workspace_name?.toLowerCase().includes(query) ||
       payment.id?.toLowerCase().includes(query)
     )
@@ -381,7 +381,7 @@ const Payments = () => {
                       }}
                     >
                       <td style={{ padding: '16px', fontSize: '14px', color: '#1e293b', fontWeight: '500' }}>
-                        {payment.users?.name || 'N/A'}
+                        {payment.payer?.name || 'N/A'}
                       </td>
                       <td style={{ padding: '16px', fontSize: '14px', color: '#64748b' }}>
                         {payment.bookings?.workspace_name || 'N/A'}

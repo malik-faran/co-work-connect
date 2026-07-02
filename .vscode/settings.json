@@ -18,5 +18,6 @@
       "source.fixAll": "always",
       "source.organizeImports": "always"
     }
-  }
+  },
+  "java.configuration.updateBuildConfiguration": "interactive"
 }

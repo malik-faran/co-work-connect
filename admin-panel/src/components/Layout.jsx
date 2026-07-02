@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
+import { getMenuItems, isAdmin } from '../lib/permissions'
 import { 
   LayoutDashboard, 
   UserCheck, 
@@ -15,8 +16,38 @@ import {
   MessageSquare,
   Bell,
   Users as UsersIcon,
-  CreditCard
+  FileCheck,
+  CreditCard,
+  ClipboardCheck,
+  Wallet,
+  Shield,
+  Landmark,
+  History,
+  Flag,
+  Banknote,
 } from 'lucide-react'
+
+const ICON_MAP = {
+  LayoutDashboard,
+  UserCheck,
+  Users,
+  Building2,
+  Calendar,
+  DollarSign,
+  Star,
+  MessageSquare,
+  Bell,
+  UsersIcon,
+  FileCheck,
+  CreditCard,
+  ClipboardCheck,
+  Wallet,
+  Shield,
+  Landmark,
+  History,
+  Flag,
+  Banknote,
+}
 
 const Layout = ({ user, setUser }) => {
   const location = useLocation()
@@ -25,6 +56,11 @@ const Layout = ({ user, setUser }) => {
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [pendingOwners, setPendingOwners] = useState(0)
+  const [pendingWorkspaces, setPendingWorkspaces] = useState(0)
+  const [pendingPayments, setPendingPayments] = useState(0)
+  const [pendingRefunds, setPendingRefunds] = useState(0)
+  const [pendingReports, setPendingReports] = useState(0)
+  const [pendingPayouts, setPendingPayouts] = useState(0)
 
   useEffect(() => {
     const handleResize = () => {
@@ -55,6 +91,62 @@ const Layout = ({ user, setUser }) => {
         if (!error && data) {
           setPendingOwners(data.length)
         }
+
+        const { data: wsData, error: wsError } = await supabase
+          .from('workspaces')
+          .select('id')
+          .is('workspace_approved', null)
+
+        if (!wsError && wsData) {
+          setPendingWorkspaces(wsData.length)
+        }
+
+        let payData = null
+        let payRes = await supabase
+          .from('payments')
+          .select('id')
+          .eq('receipt_status', 'awaiting_verification')
+          .eq('payee_type', 'platform')
+        if (payRes.error?.message?.includes('payee_type')) {
+          payRes = await supabase
+            .from('payments')
+            .select('id')
+            .eq('receipt_status', 'awaiting_verification')
+        }
+        if (!payRes.error && payRes.data) {
+          payData = payRes.data
+        }
+
+        if (payData) {
+          setPendingPayments(payData.length)
+        }
+
+        const refundRes = await supabase
+          .from('refund_requests')
+          .select('id')
+          .eq('status', 'pending')
+
+        if (!refundRes.error && refundRes.data) {
+          setPendingRefunds(refundRes.data.length)
+        }
+
+        const reportRes = await supabase
+          .from('user_reports')
+          .select('id')
+          .eq('status', 'pending')
+
+        if (!reportRes.error && reportRes.data) {
+          setPendingReports(reportRes.data.length)
+        }
+
+        const payoutRes = await supabase
+          .from('owner_payout_requests')
+          .select('id')
+          .eq('status', 'pending')
+
+        if (!payoutRes.error && payoutRes.data) {
+          setPendingPayouts(payoutRes.data.length)
+        }
       } catch (error) {
         console.error('Error fetching pending owner requests count:', error)
       }
@@ -71,19 +163,10 @@ const Layout = ({ user, setUser }) => {
     navigate('/login')
   }
 
-  const menuItems = [
-    { path: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-    { path: '/owner-requests', icon: UserCheck, label: 'Owner Requests' },
-    { path: '/users', icon: Users, label: 'Users' },
-    { path: '/workspaces', icon: Building2, label: 'Workspaces' },
-    { path: '/bookings', icon: Calendar, label: 'Bookings' },
-    { path: '/reviews', icon: Star, label: 'Reviews' },
-    { path: '/collaborations', icon: UsersIcon, label: 'Collaborations' },
-    { path: '/notifications', icon: Bell, label: 'Notifications' },
-    { path: '/chat-monitoring', icon: MessageSquare, label: 'Chat Monitoring' },
-    { path: '/payments', icon: CreditCard, label: 'Payments' },
-    { path: '/owner-revenue', icon: DollarSign, label: 'Owner Revenue' },
-  ]
+  const menuItems = getMenuItems(user?.role || '').map((item) => ({
+    ...item,
+    icon: ICON_MAP[item.icon] || LayoutDashboard,
+  }))
 
   const handleNavClick = (e) => {
     if (!user) {
@@ -114,14 +197,14 @@ const Layout = ({ user, setUser }) => {
                 WebkitTextFillColor: 'transparent',
                 backgroundClip: 'text'
               }}>
-                CWC Admin
+                CWC {isAdmin(user?.role) ? 'Admin' : 'Moderator'}
               </h1>
               <p style={{ 
                 fontSize: '12px', 
                 color: 'rgba(255, 255, 255, 0.7)',
                 marginTop: '4px'
               }}>
-                Management Panel
+                {isAdmin(user?.role) ? 'Management Panel' : 'Digital Assistant Panel'}
               </p>
             </div>
           )}
@@ -152,6 +235,17 @@ const Layout = ({ user, setUser }) => {
           const Icon = item.icon
           const isActive = location.pathname === item.path
           const isOwnerRequests = item.path === '/owner-requests'
+          const isWorkspaceRequests = item.path === '/workspace-requests'
+          const isPaymentVerification = item.path === '/payment-verification'
+          const isWalletRefunds = item.path === '/wallet-refunds'
+          const badgeCount =
+            (item.badge === 'owners' && pendingOwners) ||
+            (item.badge === 'workspaces' && pendingWorkspaces) ||
+            (item.badge === 'payments' && pendingPayments) ||
+            (item.badge === 'refunds' && pendingRefunds) ||
+            (item.badge === 'reports' && pendingReports) ||
+            (item.badge === 'payouts' && pendingPayouts) ||
+            0
           return (
             <Link
               key={item.path}
@@ -192,21 +286,27 @@ const Layout = ({ user, setUser }) => {
                   {item.label}
                 </span>
               )}
-              {isOwnerRequests && pendingOwners > 0 && (
+              {badgeCount > 0 && (
                 <span style={{
-                  background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
+                  background: isPaymentVerification
+                    ? 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)'
+                    : isWalletRefunds
+                    ? 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)'
+                    : isOwnerRequests
+                    ? 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)'
+                    : 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
                   color: 'white',
                   borderRadius: '10px',
                   padding: '2px 8px',
                   fontSize: '11px',
                   fontWeight: '700',
-                  boxShadow: '0 2px 8px rgba(239, 68, 68, 0.4)',
+                  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)',
                   marginLeft: (sidebarOpen || isMobile) ? '8px' : '0',
                   position: (sidebarOpen || isMobile) ? 'static' : 'absolute',
                   top: (sidebarOpen || isMobile) ? 'auto' : '6px',
                   right: (sidebarOpen || isMobile) ? 'auto' : '6px'
                 }}>
-                  {pendingOwners}
+                  {badgeCount}
                 </span>
               )}
             </Link>

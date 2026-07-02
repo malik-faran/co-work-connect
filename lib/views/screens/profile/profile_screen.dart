@@ -13,8 +13,8 @@ import 'package:cwc/utils/helpers/model_helpers.dart';
 import 'package:cwc/utils/helpers/snackbar_helper.dart';
 import 'package:cwc/utils/helpers/error_handler.dart';
 import 'package:cwc/utils/validators/form_validators.dart';
-import 'package:cwc/views/screens/payment/payment_history_screen.dart';
 import 'package:cwc/views/screens/owner/owner_payment_accounts_screen.dart';
+import 'package:cwc/views/screens/owner/owner_wallet_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -437,70 +437,67 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                   const SizedBox(height: 16),
 
-                  // Payment History Card
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-                      boxShadow: CAppTheme.softShadow,
-                    ),
-                    child: InkWell(
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const PaymentHistoryScreen(),
+                  if (user.role == AppConstants.roleOwner) ...[
+                    const SizedBox(height: 16),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+                        boxShadow: CAppTheme.softShadow,
+                      ),
+                      child: InkWell(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (_) => const OwnerWalletScreen()),
+                          );
+                        },
+                        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+                        child: Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: CAppTheme.successColor.withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                                ),
+                                child: const Icon(
+                                  Icons.savings_outlined,
+                                  color: CAppTheme.successColor,
+                                  size: 22,
+                                ),
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Owner Wallet',
+                                      style: GoogleFonts.poppins(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w600,
+                                        color: CAppTheme.textPrimary,
+                                      ),
+                                    ),
+                                    Text(
+                                      'Booking earnings & withdraw to your account',
+                                      style: GoogleFonts.poppins(
+                                        fontSize: 12,
+                                        color: CAppTheme.textSecondary,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const Icon(Icons.chevron_right_rounded, color: CAppTheme.textTertiary),
+                            ],
                           ),
-                        );
-                      },
-                      borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-                      child: Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(10),
-                              decoration: BoxDecoration(
-                                color: CAppTheme.infoColor.withValues(alpha: 0.1),
-                                borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                              ),
-                              child: const Icon(
-                                Icons.payment_rounded,
-                                color: CAppTheme.infoColor,
-                                size: 22,
-                              ),
-                            ),
-                            const SizedBox(width: 14),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Payment History',
-                                    style: GoogleFonts.poppins(
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 16,
-                                      color: CAppTheme.textPrimary,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    'View all your payment transactions',
-                                    style: GoogleFonts.poppins(
-                                      fontSize: 12,
-                                      color: CAppTheme.textSecondary,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const Icon(Icons.chevron_right_rounded, color: CAppTheme.textTertiary),
-                          ],
                         ),
                       ),
                     ),
-                  ),
-                  if (user.role == AppConstants.roleOwner) ...[
                     const SizedBox(height: 16),
                     Container(
                       decoration: BoxDecoration(

@@ -43,4 +43,30 @@ class WorkspaceInteractionService {
       return {};
     }
   }
+
+  /// How many times the user viewed each workspace (recent history).
+  Future<Map<String, int>> getUserViewCounts(
+    String userId, {
+    int limit = 100,
+  }) async {
+    try {
+      final rows = await _supabase
+          .from('workspace_interactions')
+          .select('workspace_id')
+          .eq('user_id', userId)
+          .eq('action', actionView)
+          .order('created_at', ascending: false)
+          .limit(limit);
+
+      final counts = <String, int>{};
+      for (final row in rows) {
+        final id = row['workspace_id'] as String;
+        counts[id] = (counts[id] ?? 0) + 1;
+      }
+      return counts;
+    } catch (e) {
+      debugPrint('Failed to load view counts: $e');
+      return {};
+    }
+  }
 }

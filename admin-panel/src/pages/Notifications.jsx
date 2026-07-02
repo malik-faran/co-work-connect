@@ -5,6 +5,7 @@ import { Bell, RefreshCw, Search, Trash2, CheckCircle } from 'lucide-react'
 import Loading from '../components/Loading'
 import EmptyState from '../components/EmptyState'
 import { showSuccess, showError } from '../utils/toast'
+import { recordStaffAction } from '../lib/auditLog'
 
 const Notifications = () => {
   const [notifications, setNotifications] = useState([])
@@ -46,19 +47,31 @@ const Notifications = () => {
     }
   }
 
-  const handleDeleteNotification = async (notifId) => {
+  const handleDeleteNotification = async (notif) => {
     if (!confirm('Are you sure you want to delete this notification?')) {
       return
     }
 
     try {
-      setDeletingId(notifId)
+      setDeletingId(notif.id)
       const { error } = await supabase
         .from('notifications')
         .delete()
-        .eq('id', notifId)
+        .eq('id', notif.id)
 
       if (error) throw error
+
+      await recordStaffAction({
+        action: 'notification_deleted',
+        entityType: 'notification',
+        entityId: notif.id,
+        summary: `Deleted notification: ${notif.title || 'Untitled'}`,
+        details: {
+          type: notif.type,
+          user_id: notif.user_id,
+          recipient: notif.users?.name || notif.users?.email,
+        },
+      })
 
       showSuccess('Notification deleted successfully')
       fetchNotifications()
@@ -70,7 +83,7 @@ const Notifications = () => {
     }
   }
 
-  const handleMarkAsRead = async (notifId) => {
+  const handleMarkAsRead = async (notif) => {
     try {
       const { error } = await supabase
         .from('notifications')
@@ -78,9 +91,17 @@ const Notifications = () => {
           is_read: true,
           read_at: new Date().toISOString()
         })
-        .eq('id', notifId)
+        .eq('id', notif.id)
 
       if (error) throw error
+
+      await recordStaffAction({
+        action: 'notification_marked_read',
+        entityType: 'notification',
+        entityId: notif.id,
+        summary: `Marked notification as read: ${notif.title || 'Untitled'}`,
+        details: { type: notif.type, user_id: notif.user_id },
+      })
 
       fetchNotifications()
     } catch (error) {
@@ -382,7 +403,7 @@ const Notifications = () => {
                 }}>
                   {!notif.is_read && (
                     <button
-                      onClick={() => handleMarkAsRead(notif.id)}
+                      onClick={() => handleMarkAsRead(notif)}
                       style={{
                         padding: '8px 16px',
                         background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
@@ -404,7 +425,7 @@ const Notifications = () => {
                     </button>
                   )}
                   <button
-                    onClick={() => handleDeleteNotification(notif.id)}
+                    onClick={() => handleDeleteNotification(notif)}
                     disabled={deletingId === notif.id}
                     style={{
                       padding: '8px 16px',

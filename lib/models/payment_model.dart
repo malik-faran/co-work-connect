@@ -20,8 +20,13 @@ class PaymentModel {
   final String? receiptUrl;
   final String? receiptStatus;
   final String? ownerAccountId;
+  final String? platformAccountId;
   final String? transferReference;
   final DateTime? ownerVerifiedAt;
+  final String? payeeType;
+  final String? verifiedBy;
+  final double walletAmount;
+  final double? externalAmount;
 
   PaymentModel({
     required this.id,
@@ -41,11 +46,24 @@ class PaymentModel {
     this.receiptUrl,
     this.receiptStatus,
     this.ownerAccountId,
+    this.platformAccountId,
     this.transferReference,
     this.ownerVerifiedAt,
+    this.payeeType,
+    this.verifiedBy,
+    this.walletAmount = 0,
+    this.externalAmount,
   });
 
-  bool get isManual => paymentMethod == 'manual';
+  bool get isManual => paymentMethod == 'manual' || paymentMethod == 'split';
+
+  bool get isSplit => paymentMethod == 'split';
+
+  double get amountDueExternally =>
+      externalAmount ?? (amount - walletAmount).clamp(0, amount);
+
+  bool get isPlatformPayment =>
+      payeeType == 'platform' || (payeeType == null && ownerAccountId == null);
 
   bool get isAwaitingReceiptReview =>
       receiptStatus == 'awaiting_verification' && status == 'pending';
@@ -100,10 +118,15 @@ class PaymentModel {
     if (receiptUrl != null) map['receipt_url'] = receiptUrl;
     if (receiptStatus != null) map['receipt_status'] = receiptStatus;
     if (ownerAccountId != null) map['owner_account_id'] = ownerAccountId;
+    if (platformAccountId != null) map['platform_account_id'] = platformAccountId;
     if (transferReference != null) map['transfer_reference'] = transferReference;
+    if (payeeType != null) map['payee_type'] = payeeType;
+    if (verifiedBy != null) map['verified_by'] = verifiedBy;
     if (ownerVerifiedAt != null) {
       map['owner_verified_at'] = ownerVerifiedAt!.toIso8601String();
     }
+    if (walletAmount > 0) map['wallet_amount'] = walletAmount;
+    if (externalAmount != null) map['external_amount'] = externalAmount;
 
     return map;
   }
@@ -136,10 +159,15 @@ class PaymentModel {
       receiptUrl: getStringFromMap(map, 'receipt_url', 'receiptUrl'),
       receiptStatus: getStringFromMap(map, 'receipt_status', 'receiptStatus'),
       ownerAccountId: getStringFromMap(map, 'owner_account_id', 'ownerAccountId'),
+      platformAccountId: getStringFromMap(map, 'platform_account_id', 'platformAccountId'),
       transferReference: getStringFromMap(map, 'transfer_reference', 'transferReference'),
+      payeeType: getStringFromMap(map, 'payee_type', 'payeeType'),
+      verifiedBy: getStringFromMap(map, 'verified_by', 'verifiedBy'),
       ownerVerifiedAt: getStringFromMap(map, 'owner_verified_at', 'ownerVerifiedAt') != null
           ? DateTime.parse(getStringFromMap(map, 'owner_verified_at', 'ownerVerifiedAt')!)
           : null,
+      walletAmount: convertToDouble(map['wallet_amount'] ?? map['walletAmount'], 0.0),
+      externalAmount: convertToDoubleNullable(map['external_amount'] ?? map['externalAmount']),
     );
   }
 
@@ -161,8 +189,13 @@ class PaymentModel {
     String? receiptUrl,
     String? receiptStatus,
     String? ownerAccountId,
+    String? platformAccountId,
     String? transferReference,
     DateTime? ownerVerifiedAt,
+    String? payeeType,
+    String? verifiedBy,
+    double? walletAmount,
+    double? externalAmount,
   }) {
     return PaymentModel(
       id: id ?? this.id,
@@ -182,8 +215,13 @@ class PaymentModel {
       receiptUrl: receiptUrl ?? this.receiptUrl,
       receiptStatus: receiptStatus ?? this.receiptStatus,
       ownerAccountId: ownerAccountId ?? this.ownerAccountId,
+      platformAccountId: platformAccountId ?? this.platformAccountId,
       transferReference: transferReference ?? this.transferReference,
       ownerVerifiedAt: ownerVerifiedAt ?? this.ownerVerifiedAt,
+      payeeType: payeeType ?? this.payeeType,
+      verifiedBy: verifiedBy ?? this.verifiedBy,
+      walletAmount: walletAmount ?? this.walletAmount,
+      externalAmount: externalAmount ?? this.externalAmount,
     );
   }
 }

@@ -203,6 +203,12 @@ class CollaborationHubService {
     await _supabase.from('collaboration_milestones').delete().eq('id', id);
   }
 
+  Future<void> notifyOverdueMilestones(String collaborationId) async {
+    await _supabase.rpc('notify_overdue_milestones', params: {
+      'p_collaboration_id': collaborationId,
+    });
+  }
+
   // ----------------------------------------------------------------- FILES
   Future<List<CollaborationFile>> getFiles(String collaborationId) async {
     final rows = await _supabase

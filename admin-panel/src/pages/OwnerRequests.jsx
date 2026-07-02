@@ -4,6 +4,7 @@ import { Check, X, Mail, Phone, Building, RefreshCw, ClipboardCheck, AlertCircle
 import Loading from '../components/Loading'
 import EmptyState from '../components/EmptyState'
 import { showSuccess, showError } from '../utils/toast'
+import { recordStaffAction } from '../lib/auditLog'
 
 const OwnerRequests = () => {
   const [requests, setRequests] = useState([])
@@ -75,6 +76,13 @@ const OwnerRequests = () => {
         })
 
       showSuccess(`Owner "${userName}" approved successfully!`)
+      await recordStaffAction({
+        action: 'owner_approved',
+        entityType: 'user',
+        entityId: userId,
+        summary: `Approved owner application: ${userName}`,
+        details: { user_name: userName },
+      })
       setSelectedRequest(null)
       fetchOwnerRequests()
     } catch (error) {
@@ -108,6 +116,13 @@ const OwnerRequests = () => {
         })
 
       showSuccess(`Owner request for "${userName}" rejected`)
+      await recordStaffAction({
+        action: 'owner_rejected',
+        entityType: 'user',
+        entityId: userId,
+        summary: `Rejected owner application: ${userName}`,
+        details: { reason: finalReason },
+      })
       setSelectedRequest(null)
       setShowRejectForm(false)
       setRejectionReason('')
@@ -280,6 +295,19 @@ const OwnerRequests = () => {
                       📍 {request.city}
                     </div>
                   )}
+                </div>
+
+                <div style={{
+                  display: 'inline-block',
+                  padding: '4px 10px',
+                  borderRadius: 6,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  background: request.cnic_image_url ? '#d1fae5' : '#fee2e2',
+                  color: request.cnic_image_url ? '#065f46' : '#991b1b',
+                  marginBottom: 8,
+                }}>
+                  {request.cnic_image_url ? 'CNIC uploaded' : 'CNIC missing — cannot approve'}
                 </div>
               </div>
 
@@ -622,7 +650,7 @@ const OwnerRequests = () => {
                       
                       <button
                         onClick={() => handleApprove(selectedRequest.id, selectedRequest.name)}
-                        disabled={!checklist.businessName || !checklist.contactInfo || (!checklist.cnicAuthentic && selectedRequest.cnic_image_url)}
+                        disabled={!selectedRequest.cnic_image_url || !checklist.businessName || !checklist.contactInfo || !checklist.cnicAuthentic || !checklist.addressConfirmed}
                         style={{
                           flex: 1.5,
                           padding: '14px',

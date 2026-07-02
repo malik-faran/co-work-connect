@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:cwc/models/user_model.dart';
 import 'package:cwc/services/supabase_service.dart';
@@ -14,7 +15,7 @@ class AuthService {
   /// Email is verified when Supabase has set `email_confirmed_at` / `confirmed_at`.
   bool get isEmailVerified {
     final u = _client.auth.currentUser;
-    return u?.emailConfirmedAt != null;
+    return u?.emailConfirmedAt != null || u?.confirmedAt != null;
   }
 
   Future<UserModel?> signUp({
@@ -26,6 +27,7 @@ class AuthService {
     String? city,
     String? businessName,
     String? businessAddress,
+    String? cnicImageUrl,
   }) async {
     try {
       final trimmedEmail = email.trim();
@@ -57,6 +59,8 @@ class AuthService {
         city: city,
         businessName: businessName,
         businessAddress: businessAddress,
+        cnicImageUrl: cnicImageUrl,
+        ownerApproved: role == AppConstants.roleOwner ? null : true,
         createdAt: DateTime.now(),
       );
 
@@ -99,27 +103,41 @@ class AuthService {
     try {
       final trimmedEmail = email.trim();
 
-      final response = await _client.auth.signInWithPassword(
+      await _client.auth.signInWithPassword(
         email: trimmedEmail,
         password: password,
+      ).timeout(
+        const Duration(seconds: 20),
+        onTimeout: () => throw Exception(
+          'Connection timed out. Check your internet and try again.',
+        ),
       );
 
-      final user = response.user;
+      // Session fields (e.g. email_confirmed_at) are reliable on currentUser.
+      try {
+        await _client.auth.refreshSession().timeout(const Duration(seconds: 10));
+      } catch (_) {}
+
+      final user = _client.auth.currentUser;
       if (user == null) return null;
 
-      if (user.emailConfirmedAt == null) {
+      if (!_isEmailConfirmed(user)) {
         throw Exception(
           'Please verify your email before logging in. Check your inbox for the confirmation link.',
         );
       }
 
-      return await getUserById(user.id);
+      return await ensureUserProfile(user);
     } on AuthException catch (e) {
       throw Exception(formatAuthError(e.message));
     } catch (e) {
+      if (e is Exception) rethrow;
       throw Exception('Error signing in: ${cleanErrorMessage(e.toString())}');
     }
   }
+
+  bool _isEmailConfirmed(User user) =>
+      user.emailConfirmedAt != null || user.confirmedAt != null;
 
   Future<void> signOut() async {
     try {
@@ -127,6 +145,17 @@ class AuthService {
     } catch (e) {
       throw Exception('Error signing out: $e');
     }
+  }
+
+  Future<void> updateOwnerCnic({
+    required String userId,
+    required String cnicImageUrl,
+  }) async {
+    await _client.from(AppConstants.collectionUsers).update({
+      'cnic_image_url': cnicImageUrl,
+      'owner_approved': null,
+      'updated_at': DateTime.now().toIso8601String(),
+    }).eq('id', userId);
   }
 
   Future<UserModel?> getUserById(String userId) async {
@@ -141,6 +170,58 @@ class AuthService {
       return UserModel.fromUserMap(Map<String, dynamic>.from(response));
     } catch (e) {
       throw Exception('Error getting user: $e');
+    }
+  }
+
+  /// Create or fetch public.users row after auth sign-in (handles legacy accounts).
+  Future<UserModel?> ensureUserProfile(User user) async {
+    UserModel buildFromAuth() {
+      final meta = user.userMetadata ?? {};
+      final role = (meta['role'] as String?)?.trim();
+      final resolvedRole = (role == AppConstants.roleOwner ||
+              role == AppConstants.roleModerator ||
+              role == AppConstants.roleUser)
+          ? role!
+          : AppConstants.roleUser;
+
+      return UserModel(
+        id: user.id,
+        email: user.email ?? '',
+        name: (meta['name'] as String?)?.trim().isNotEmpty == true
+            ? (meta['name'] as String).trim()
+            : (user.email?.split('@').first ?? 'User'),
+        phone: (meta['phone'] as String?) ?? '',
+        role: resolvedRole,
+        city: meta['city'] as String?,
+        businessName: meta['business_name'] as String?,
+        businessAddress: meta['business_address'] as String?,
+        ownerApproved: resolvedRole == AppConstants.roleOwner ? null : true,
+        createdAt: DateTime.now(),
+      );
+    }
+
+    try {
+      final existing = await getUserById(user.id)
+          .timeout(const Duration(seconds: 15));
+      if (existing != null) return existing;
+    } catch (_) {}
+
+    final userModel = buildFromAuth();
+    final userData = userModel.toUserMap()..removeWhere((key, value) => value == null);
+
+    try {
+      await _client
+          .from(AppConstants.collectionUsers)
+          .upsert(userData)
+          .timeout(const Duration(seconds: 15));
+    } catch (_) {
+      // Row may already exist from trigger; fall back to auth metadata.
+    }
+
+    try {
+      return await getUserById(user.id).timeout(const Duration(seconds: 10));
+    } catch (_) {
+      return userModel;
     }
   }
 
@@ -227,14 +308,35 @@ class AuthService {
     }
   }
 
+  static String get passwordResetRedirectUrl {
+    if (kIsWeb) {
+      return '${Uri.base.origin}/reset-password';
+    }
+    return AppConstants.passwordResetRedirectUrl;
+  }
+
   /// Send a password reset email via Supabase.
   Future<void> sendPasswordReset(String email) async {
     try {
-      await _client.auth.resetPasswordForEmail(email.trim());
+      await _client.auth.resetPasswordForEmail(
+        email.trim(),
+        redirectTo: passwordResetRedirectUrl,
+      );
     } on AuthException catch (e) {
       throw Exception(formatAuthError(e.message));
     } catch (e) {
       throw Exception('Failed to send reset email: ${e.toString()}');
+    }
+  }
+
+  /// Set a new password after opening the reset link from email.
+  Future<void> completePasswordReset(String newPassword) async {
+    try {
+      await _client.auth.updateUser(UserAttributes(password: newPassword));
+    } on AuthException catch (e) {
+      throw Exception(formatAuthError(e.message));
+    } catch (e) {
+      throw Exception('Failed to update password: ${e.toString()}');
     }
   }
 

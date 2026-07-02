@@ -20,6 +20,7 @@ class _CollaborationProfileScreenState extends State<CollaborationProfileScreen>
   final _headline = TextEditingController();
   final _bio = TextEditingController();
   final _availability = TextEditingController();
+  final _experience = TextEditingController();
   final _skillInput = TextEditingController();
   final List<String> _skills = [];
   bool _open = false;
@@ -34,6 +35,7 @@ class _CollaborationProfileScreenState extends State<CollaborationProfileScreen>
       _headline.text = u.collaborationHeadline ?? '';
       _bio.text = u.bio ?? '';
       _availability.text = u.availability ?? '';
+      _experience.text = u.experience ?? '';
       _skills.addAll(u.skills ?? []);
     }
   }
@@ -43,6 +45,7 @@ class _CollaborationProfileScreenState extends State<CollaborationProfileScreen>
     _headline.dispose();
     _bio.dispose();
     _availability.dispose();
+    _experience.dispose();
     _skillInput.dispose();
     super.dispose();
   }
@@ -67,6 +70,7 @@ class _CollaborationProfileScreenState extends State<CollaborationProfileScreen>
       collaborationHeadline: _headline.text.trim(),
       bio: _bio.text.trim(),
       availability: _availability.text.trim(),
+      experience: _experience.text.trim().isEmpty ? null : _experience.text.trim(),
       skills: _skills,
     );
     await auth.updateProfile(updated);
@@ -134,6 +138,14 @@ class _CollaborationProfileScreenState extends State<CollaborationProfileScreen>
                     hintText: 'e.g. 10 hrs/week, weekends',
                   ),
                 ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _experience,
+                  decoration: const InputDecoration(
+                    labelText: 'Experience',
+                    hintText: 'e.g. 2 years Flutter · 3 FYP projects',
+                  ),
+                ),
               ],
             ),
           ),
@@ -148,8 +160,10 @@ class _CollaborationProfileScreenState extends State<CollaborationProfileScreen>
                   controller: _skillInput,
                   decoration: InputDecoration(
                     labelText: 'Add a skill',
+                    filled: true,
+                    fillColor: CAppTheme.primaryColor.withValues(alpha: 0.08),
                     suffixIcon: IconButton(
-                      icon: const Icon(Icons.add),
+                      icon: const Icon(Icons.add_circle_rounded, color: CAppTheme.primaryColor),
                       onPressed: () => _addSkill(_skillInput.text),
                     ),
                   ),
@@ -163,6 +177,11 @@ class _CollaborationProfileScreenState extends State<CollaborationProfileScreen>
                     children: _skills
                         .map((s) => Chip(
                               label: Text(s),
+                              backgroundColor: CAppTheme.primaryColor.withValues(alpha: 0.12),
+                              labelStyle: GoogleFonts.poppins(
+                                color: CAppTheme.primaryColor,
+                                fontWeight: FontWeight.w600,
+                              ),
                               onDeleted: () => setState(() => _skills.remove(s)),
                             ))
                         .toList(),

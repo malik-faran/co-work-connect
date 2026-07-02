@@ -101,19 +101,13 @@ class NotificationService {
     }
   }
 
-  /// Get stream of notifications for real-time updates
+  /// Realtime notification updates for [userId].
   Stream<List<NotificationModel>> getNotificationsStream(String userId) {
     return _supabase
         .from('notifications')
         .stream(primaryKey: ['id'])
         .eq('user_id', userId)
         .order('created_at', ascending: false)
-        .timeout(
-          const Duration(seconds: 30),
-          onTimeout: (sink) {
-            sink.add([]); // Return empty list on timeout
-          },
-        )
         .map((data) => data
             .map((n) => NotificationModel.fromNotificationMap(n))
             .toList());

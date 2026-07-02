@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:cwc/models/booking_model.dart';
 import 'package:cwc/models/workspace_model.dart';
+import 'package:cwc/utils/constants/app_constants.dart';
 import 'package:cwc/services/booking_service.dart';
 import 'package:cwc/services/workspace_service.dart';
 
@@ -25,12 +26,34 @@ class WorkspaceController with ChangeNotifier {
     }
     return _filteredWorkspaces;
   }
+
+  /// Raw list for owner dashboard — ignores user-side search/filters.
+  List<WorkspaceModel> get ownerWorkspaces => _workspaces;
   
   bool get isLoading => _isLoading;
   bool get isBooking => _isBooking;
   String? get errorMessage => _errorMessage;
   List<String> get selectedAmenities => _selectedAmenities;
   String? get selectedCategory => _selectedCategory;
+
+  /// Preset amenities plus custom ones from listed workspaces (for user filters).
+  List<String> get filterAmenityOptions {
+    final customByLower = <String, String>{};
+    for (final ws in _workspaces) {
+      for (final amenity in ws.amenities) {
+        final trimmed = amenity.trim();
+        if (trimmed.isEmpty) continue;
+        final lower = trimmed.toLowerCase();
+        final isPreset = AppConstants.commonAmenities
+            .any((c) => c.toLowerCase() == lower);
+        if (isPreset) continue;
+        customByLower.putIfAbsent(lower, () => trimmed);
+      }
+    }
+    final custom = customByLower.values.toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return [...AppConstants.commonAmenities, ...custom];
+  }
 
   Future<void> loadWorkspaces() async {
     _isLoading = true;
@@ -52,7 +75,24 @@ class WorkspaceController with ChangeNotifier {
 
   Stream<List<WorkspaceModel>> getWorkspacesStream() => _service.getAllWorkspacesStream();
 
+  Stream<List<WorkspaceModel>> getOwnerWorkspacesStream(String ownerId) =>
+      _service.getWorkspacesByOwnerIdStream(ownerId);
+
+  /// Realtime sync without toggling the full-screen loading state.
+  void applyOwnerWorkspacesFromStream(List<WorkspaceModel> workspaces) {
+    _workspaces = workspaces;
+    notifyListeners();
+  }
+
+  void _clearUserFilters() {
+    _searchQuery = '';
+    _selectedAmenities = [];
+    _selectedCategory = null;
+    _filteredWorkspaces = [];
+  }
+
   Future<void> loadOwnerWorkspaces(String ownerId) async {
+    _clearUserFilters();
     _isLoading = true;
     _errorMessage = null;
     notifyListeners();
@@ -93,7 +133,10 @@ class WorkspaceController with ChangeNotifier {
         final matchesSearch = _searchQuery.isEmpty ||
             w.name.toLowerCase().contains(_searchQuery.toLowerCase()) ||
             w.city.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-            w.address.toLowerCase().contains(_searchQuery.toLowerCase());
+            w.address.toLowerCase().contains(_searchQuery.toLowerCase()) ||
+            w.amenities.any(
+              (a) => a.toLowerCase().contains(_searchQuery.toLowerCase()),
+            );
 
         final matchesAmenities = _selectedAmenities.isEmpty ||
             _selectedAmenities.every((a) => w.amenities.map((e) => e.toLowerCase()).contains(a.toLowerCase()));
