@@ -7,7 +7,8 @@ class NotificationModel {
   final String userId; // User who receives the notification
   final String title;
   final String message;
-  final String type; // 'registration_approved', 'registration_rejected', 'collaboration_response', 'chat_message', etc.
+  final String
+  type; // 'registration_approved', 'registration_rejected', 'collaboration_response', 'chat_message', etc.
   final bool isRead;
   final DateTime createdAt;
   final DateTime? readAt;
@@ -51,7 +52,7 @@ class NotificationModel {
       title: map['title'] ?? '',
       message: map['message'] ?? '',
       type: getStringFromMap(map, 'type', 'type') ?? '',
-      isRead: getValueFromMap(map, 'is_read', 'isRead', false) as bool,
+      isRead: getValueFromMap(map, 'is_read', 'isRead', false),
       createdAt: getStringFromMap(map, 'created_at', 'createdAt') != null
           ? DateTime.parse(getStringFromMap(map, 'created_at', 'createdAt')!)
           : DateTime.now(),

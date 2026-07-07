@@ -96,19 +96,19 @@ class BookingModel {
       workspaceId: getStringFromMap(map, 'workspace_id', 'workspaceId') ?? '',
       workspaceName: getStringFromMap(map, 'workspace_name', 'workspaceName') ?? '',
       startDate: getStringFromMap(map, 'start_date', 'startDate') != null
-          ? DateTime.parse(getStringFromMap(map, 'start_date', 'startDate')!)
+          ? DateTime.parse(getStringFromMap(map, 'start_date', 'startDate')!).toLocal()
           : DateTime.now(),
       endDate: getStringFromMap(map, 'end_date', 'endDate') != null
-          ? DateTime.parse(getStringFromMap(map, 'end_date', 'endDate')!)
+          ? DateTime.parse(getStringFromMap(map, 'end_date', 'endDate')!).toLocal()
           : DateTime.now(),
       numberOfDays: convertToInt(map['number_of_days'] ?? map['numberOfDays'], 0),
       totalPrice: convertToDouble(map['total_price'] ?? map['totalPrice'], 0.0),
       status: map['status'] ?? 'pending',
       createdAt: getStringFromMap(map, 'created_at', 'createdAt') != null
-          ? DateTime.parse(getStringFromMap(map, 'created_at', 'createdAt')!)
+          ? DateTime.parse(getStringFromMap(map, 'created_at', 'createdAt')!).toLocal()
           : DateTime.now(),
       updatedAt: getStringFromMap(map, 'updated_at', 'updatedAt') != null
-          ? DateTime.parse(getStringFromMap(map, 'updated_at', 'updatedAt')!)
+          ? DateTime.parse(getStringFromMap(map, 'updated_at', 'updatedAt')!).toLocal()
           : null,
       notes: getStringFromMap(map, 'notes', 'notes'),
       isHourlyBooking: getValueFromMap(map, 'is_hourly_booking', 'isHourlyBooking', false),
@@ -123,13 +123,128 @@ class BookingModel {
     );
   }
 
-  /// Last moment user can cancel with refund (dynamic lead time before start).
-  DateTime get cancellationDeadline => RefundPolicy.cancellationDeadline(startDate);
+  bool get _isSlotBooking =>
+      isHourlyBooking ||
+      (timeSlotLabel != null && timeSlotLabel!.isNotEmpty) ||
+      (durationHours != null && durationHours! > 0 && durationHours! < 24);
 
-  bool get isWithinCancellationWindow =>
-      RefundPolicy.canCancelWithRefund(startDate);
+  static int? _hourFromSlotLabel(String? label) {
+    if (label == null || label.isEmpty) return null;
+    final match = RegExp(r'(\d{1,2}):\d{2}').firstMatch(label);
+    if (match == null) return null;
+    return int.tryParse(match.group(1)!);
+  }
 
-  Duration get refundWindowRemaining => RefundPolicy.timeRemaining(startDate);
+  static int? _endHourFromSlotLabel(String? label) {
+    if (label == null || label.isEmpty) return null;
+    final match = RegExp(r'-\s*(\d{1,2}):\d{2}').firstMatch(label);
+    if (match == null) return null;
+    return int.tryParse(match.group(1)!);
+  }
+
+  static DateTime? _dateFromKey(String? key) {
+    if (key == null || key.length < 10) return null;
+    try {
+      final p = key.split('-');
+      return DateTime(int.parse(p[0]), int.parse(p[1]), int.parse(p[2]));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  DateTime get _localStart => startDate.isUtc ? startDate.toLocal() : startDate;
+
+  static int? _hourFromSlotId(String? id) {
+    if (id == null || id.isEmpty) return null;
+    final match = RegExp(r'slot_(\d+)_').firstMatch(id);
+    if (match == null) return null;
+    return int.tryParse(match.group(1)!);
+  }
+
+  /// Reliable slot start for refund checks (fixes midnight / timezone issues).
+  DateTime get refundStartDate {
+    final local = _localStart;
+
+    if (_isSlotBooking) {
+      final date = _dateFromKey(bookingDateKey) ??
+          DateTime(local.year, local.month, local.day);
+      final slotHour = _hourFromSlotLabel(timeSlotLabel) ??
+          _hourFromSlotId(timeSlotId) ??
+          (local.hour != 0 || local.minute != 0 ? local.hour : null);
+      if (slotHour != null) {
+        return DateTime(date.year, date.month, date.day, slotHour);
+      }
+    }
+
+    final fromKey = _dateFromKey(bookingDateKey);
+    if (fromKey != null && !_isSlotBooking) {
+      return DateTime(fromKey.year, fromKey.month, fromKey.day, 9);
+    }
+
+    if (local.hour != 0 || local.minute != 0) return local;
+
+    return RefundPolicy.effectiveStart(
+      startDate: startDate,
+      isHourlyBooking: _isSlotBooking,
+    );
+  }
+
+  /// Reliable slot/booking end (for lifecycle + unpaid checks).
+  DateTime get effectiveEndDate {
+    final localEnd = endDate.isUtc ? endDate.toLocal() : endDate;
+
+    if (_isSlotBooking) {
+      final date = _dateFromKey(bookingDateKey) ??
+          DateTime(localEnd.year, localEnd.month, localEnd.day);
+      final endHour = _endHourFromSlotLabel(timeSlotLabel);
+      if (endHour != null) {
+        return DateTime(date.year, date.month, date.day, endHour);
+      }
+    }
+
+    if (!_isSlotBooking &&
+        localEnd.hour == 0 &&
+        localEnd.minute == 0) {
+      return DateTime(localEnd.year, localEnd.month, localEnd.day, 23, 59);
+    }
+
+    return localEnd;
+  }
+
+  bool get isSlotPast => DateTime.now().isAfter(effectiveEndDate);
+
+  bool isUnpaidSlotMissed({required bool isPaid}) {
+    if (isPaid || !isSlotPast) return false;
+    return status == AppConstants.bookingStatusPending ||
+        status == AppConstants.bookingStatusCancelled;
+  }
+
+  DateTime get refundBookedAt => createdAt.isUtc ? createdAt.toLocal() : createdAt;
+
+  DateTime get cancellationDeadline => RefundPolicy.cancellationDeadline(
+        startDate: refundStartDate,
+        bookedAt: refundBookedAt,
+      );
+
+  bool get isWithinCancellationWindow => RefundPolicy.canCancelWithRefund(
+        startDate: refundStartDate,
+        bookedAt: refundBookedAt,
+      );
+
+  Duration get refundWindowRemaining => RefundPolicy.timeRemaining(
+        startDate: refundStartDate,
+        bookedAt: refundBookedAt,
+      );
+
+  String get refundIneligibleMessage => RefundPolicy.ineligibleMessage(
+        startDate: refundStartDate,
+        bookedAt: refundBookedAt,
+      );
+
+  String get refundNoticeLabel => RefundPolicy.noticeLabel(
+        startDate: refundStartDate,
+        bookedAt: refundBookedAt,
+      );
 
   bool canCancelWithRefund({required bool isPaid}) =>
       status == AppConstants.bookingStatusConfirmed && isPaid && isWithinCancellationWindow;

@@ -15,7 +15,7 @@ You must be at least 18 years old and provide accurate, up-to-date information. 
 Bookings are subject to availability and the host's policies. You agree to follow the house rules, check-in/check-out times, capacity limits, and any workspace-specific rules disclosed on the listing. Payment is charged at the time of confirmation.
 
 3. Cancellations and Refunds
-Cancellation windows and refund eligibility are shown on each listing before booking. No-show bookings are non-refundable unless otherwise stated by the host.
+You can cancel for a refund while at least 70% of your booking window remains (from when you booked until the slot starts), with a minimum of 10 minutes notice before start. You must provide a reason when requesting cancellation. Refunds are reviewed by the CWC team and, if approved, credited to your in-app wallet (Profile → My Wallet). Cancellations outside this window, no-shows, and unpaid expired bookings are not eligible.
 
 4. Collaboration and Communication
 When offering or requesting services, you agree to communicate respectfully, deliver work in good faith, and never share harmful, illegal, or unlawful content. Payments for collaborations (if any) are settled between parties unless routed through the platform.

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:cwc/models/collaboration_model.dart';
 import 'package:cwc/services/collaboration_hub_service.dart';
 import 'package:cwc/utils/themes/theme.dart';
@@ -33,7 +34,11 @@ class _CollaborationInviteSheetState extends State<CollaborationInviteSheet> {
   Future<void> _shareText() async {
     final text =
         'Join my project "${widget.project.title}" on Co-Work Connect.\nUse code: $_code\nor open: $_link';
-    await _copy(text, 'Invite message');
+    try {
+      await SharePlus.instance.share(ShareParams(text: text));
+    } catch (_) {
+      await _copy(text, 'Invite message');
+    }
   }
 
   Future<void> _regenerate() async {

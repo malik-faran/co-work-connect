@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
@@ -126,9 +127,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final otherUserName = chatRoom.getOtherUserName(currentUser.id);
       final otherUserProfileImage = chatRoom.getOtherUserProfileImage(currentUser.id);
 
+      final otherUserId = chatRoom.getOtherUserId(currentUser.id);
       String? otherUserRole;
       try {
-        final otherUserId = chatRoom.getOtherUserId(currentUser.id);
         final roleData = await SupabaseService.client
             .from('users')
             .select('role')
@@ -175,13 +176,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       (messages) {
         if (mounted) {
           setState(() {
-            if (messages.length >= _messages.length) {
-              _messages = messages;
-            } else {
-              final streamIds = messages.map((m) => m.id).toSet();
-              final localOnly = _messages.where((m) => !streamIds.contains(m.id)).toList();
-              _messages = [...messages, ...localOnly];
-            }
+            _messages = messages;
           });
           _scrollToBottom();
         }
@@ -298,7 +293,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       });
       _scrollToBottom();
 
-      await _chatService.sendMessage(pendingMessage!);
+      await _chatService.sendMessage(pendingMessage);
       await _chatService.markMessagesAsRead(widget.chatRoomId, currentUser.id);
     } catch (e) {
       if (!mounted) return;
@@ -417,7 +412,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _showMessageOptions(ChatMessageModel message) {
+  void _showMessageOptions(ChatMessageModel message, {required bool isMe}) {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.white,
@@ -437,10 +432,31 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
+            if (message.messageType == 'text')
+              ListTile(
+                leading: const Icon(Icons.copy_rounded, color: CAppTheme.textSecondary),
+                title: Text('Copy', style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  Clipboard.setData(ClipboardData(text: message.message));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Message copied'), backgroundColor: CAppTheme.successColor),
+                  );
+                },
+              ),
+            if (isMe && message.messageType == 'text')
+              ListTile(
+                leading: const Icon(Icons.edit_rounded, color: CAppTheme.primaryColor),
+                title: Text('Edit', style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _showEditMessage(message);
+                },
+              ),
             ListTile(
               leading: const Icon(Icons.delete_outline_rounded, color: CAppTheme.errorColor),
               title: Text(
-                'Delete Message',
+                'Delete',
                 style: GoogleFonts.poppins(
                   color: CAppTheme.errorColor,
                   fontWeight: FontWeight.w600,
@@ -457,6 +473,59 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ),
       ),
     );
+  }
+
+  Future<void> _showEditMessage(ChatMessageModel message) async {
+    final controller = TextEditingController(text: message.message);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(CAppTheme.radiusLarge)),
+        title: Text('Edit Message', style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
+        content: TextField(
+          controller: controller,
+          maxLines: null,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'Edit your message...'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text('Cancel', style: GoogleFonts.poppins(color: CAppTheme.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+            child: Text('Save', style: GoogleFonts.poppins(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (result == null || result.isEmpty || result == message.message) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => controller.dispose());
+      return;
+    }
+    try {
+      await _chatService.editMessage(message.id, result);
+      if (!mounted) return;
+      setState(() {
+        final idx = _messages.indexWhere((m) => m.id == message.id);
+        if (idx != -1) {
+          _messages[idx] = _messages[idx].copyWith(
+            message: result,
+            isEdited: true,
+            editedAt: DateTime.now(),
+            updatedAt: DateTime.now(),
+          );
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to edit message'), backgroundColor: CAppTheme.errorColor),
+      );
+    } finally {
+      WidgetsBinding.instance.addPostFrameCallback((_) => controller.dispose());
+    }
   }
 
   Future<bool> _confirmDeleteMessage() async {
@@ -677,7 +746,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           message: message,
           isMe: isMe,
           showAvatar: showAvatar,
-          onLongPress: isMe ? () => _showMessageOptions(message) : null,
+          onLongPress: () => _showMessageOptions(message, isMe: isMe),
           onImageTap: message.imageUrl != null
               ? () => _showFullImage(message.imageUrl!)
               : null,
@@ -1092,6 +1161,19 @@ class _MessageBubble extends StatelessWidget {
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        if (message.isEdited) ...[
+                          Text(
+                            'edited',
+                            style: GoogleFonts.poppins(
+                              fontSize: 10,
+                              fontStyle: FontStyle.italic,
+                              color: isMe
+                                  ? Colors.white.withValues(alpha: 0.6)
+                                  : CAppTheme.textTertiary,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                        ],
                         Text(
                           _formatTime(message.createdAt),
                           style: GoogleFonts.poppins(

@@ -1,4 +1,5 @@
 import 'package:cwc/services/supabase_service.dart';
+import 'package:cwc/models/refund_request_model.dart';
 import 'package:uuid/uuid.dart';
 
 class WalletModel {
@@ -83,8 +84,13 @@ class WalletService {
     required String bookingId,
     required String paymentId,
     required double amount,
-    String? reason,
+    required String reason,
   }) async {
+    final trimmed = reason.trim();
+    if (trimmed.length < 5) {
+      throw Exception('Please provide a cancellation reason (at least 5 characters).');
+    }
+
     final existing = await _supabase
         .from('refund_requests')
         .select('id')
@@ -102,8 +108,37 @@ class WalletService {
       'booking_id': bookingId,
       'payment_id': paymentId,
       'amount': amount,
-      'reason': reason ?? 'Booking cancellation',
+      'reason': trimmed,
       'status': 'pending',
+    });
+  }
+
+  /// Latest refund/cancellation request per booking for this user.
+  Future<Map<String, RefundRequestModel>> getRefundRequestsByBookingIds(
+    String userId,
+    List<String> bookingIds,
+  ) async {
+    if (bookingIds.isEmpty) return {};
+
+    final rows = await _supabase
+        .from('refund_requests')
+        .select()
+        .eq('user_id', userId)
+        .inFilter('booking_id', bookingIds)
+        .order('created_at', ascending: false);
+
+    final map = <String, RefundRequestModel>{};
+    for (final row in rows) {
+      final req = RefundRequestModel.fromMap(row);
+      map.putIfAbsent(req.bookingId, () => req);
+    }
+    return map;
+  }
+
+  /// Withdraw a pending cancellation/refund request (undo mistaken cancel).
+  Future<void> cancelRefundRequest(String refundRequestId) async {
+    await _supabase.rpc('user_cancel_refund_request', params: {
+      'p_refund_id': refundRequestId,
     });
   }
 
@@ -131,6 +166,39 @@ class WalletService {
       'p_total_amount': totalAmount,
     });
     return result as String;
+  }
+
+  /// Top-up wallet balance via secure RPC (instant — used after Stripe succeeds).
+  Future<void> topUpWallet({
+    required String userId,
+    required double amount,
+  }) async {
+    if (amount <= 0) throw Exception('Amount must be greater than 0');
+    await _supabase.rpc('top_up_wallet', params: {
+      'p_user_id': userId,
+      'p_amount': amount,
+    });
+  }
+
+  /// Request a manual top-up (bank/easypaisa/jazzcash receipt).
+  /// Admin verifies and then calls `top_up_wallet` RPC.
+  Future<void> requestTopUp({
+    required String userId,
+    required double amount,
+    required String platformAccountId,
+    required String receiptUrl,
+    String? transferReference,
+  }) async {
+    await _supabase.from('wallet_topup_requests').insert({
+      'id': _uuid.v4(),
+      'user_id': userId,
+      'amount': amount,
+      'platform_account_id': platformAccountId,
+      'receipt_url': receiptUrl,
+      'transfer_reference': transferReference,
+      'status': 'pending',
+      'created_at': DateTime.now().toIso8601String(),
+    });
   }
 
   Future<double> getPlatformFeePercent() async {

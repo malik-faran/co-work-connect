@@ -219,18 +219,24 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       const SizedBox(height: 16),
                       SizedBox(
+                        width: double.infinity,
                         height: 54,
                         child: ElevatedButton(
                           onPressed: _canSubmit ? _handleLogin : null,
                           style: ElevatedButton.styleFrom(
+                            backgroundColor: CAppTheme.primaryColor,
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            shadowColor: Colors.transparent,
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(
                                 CAppTheme.radiusLarge,
                               ),
                             ),
                             disabledBackgroundColor: CAppTheme.primaryColor
-                                .withValues(alpha: 0.4),
-                            disabledForegroundColor: Colors.white,
+                                .withValues(alpha: 0.35),
+                            disabledForegroundColor:
+                                Colors.white.withValues(alpha: 0.9),
                           ),
                           child: _isLoading
                               ? const SizedBox(
@@ -246,6 +252,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                   style: GoogleFonts.poppins(
                                     fontSize: 16,
                                     fontWeight: FontWeight.w600,
+                                    letterSpacing: 0.2,
                                   ),
                                 ),
                         ),

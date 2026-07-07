@@ -1,12 +1,14 @@
 /// App Constants
 /// Contains all constant values used throughout the application
+library;
 
 class AppConstants {
   AppConstants._();
 
   // App Information
-  static const String appName = 'CWL';
-  static const String appTagline = 'Find teammates. Build projects. Book spaces.';
+  static const String appName = 'CWC';
+  static const String appTagline =
+      ' Find teammates. Build projects. Book spaces.';
 
   /// Deep link Supabase redirects to after password-reset email (add in Dashboard → Redirect URLs).
   static const String passwordResetRedirectUrl = 'cwc://reset-password/';

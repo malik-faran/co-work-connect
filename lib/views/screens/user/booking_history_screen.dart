@@ -8,8 +8,10 @@ import 'package:cwc/services/booking_service.dart';
 import 'package:cwc/services/payment_service.dart';
 import 'package:cwc/services/review_service.dart';
 import 'package:cwc/services/wallet_service.dart';
+import 'package:cwc/services/booking_lifecycle_service.dart';
 import 'package:cwc/models/booking_model.dart';
 import 'package:cwc/models/payment_model.dart';
+import 'package:cwc/models/refund_request_model.dart';
 import 'package:cwc/utils/constants/app_constants.dart';
 import 'package:cwc/utils/refund_policy.dart';
 import 'package:cwc/utils/helpers/snackbar_helper.dart';
@@ -17,6 +19,8 @@ import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/views/screens/reviews/review_dialog.dart';
 import 'package:cwc/views/screens/payment/payment_screen.dart';
 import 'package:cwc/views/screens/booking/booking_confirmation_screen.dart';
+import 'package:cwc/views/widgets/cancel_refund_dialog.dart';
+import 'package:cwc/views/widgets/refund_policy_banner.dart';
 
 class BookingHistoryScreen extends StatefulWidget {
   const BookingHistoryScreen({super.key});
@@ -34,6 +38,8 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> with Single
   bool _isLoading = true;
   String? _errorMessage;
   Map<String, PaymentModel?> _paymentMap = {};
+  Map<String, RefundRequestModel?> _refundMap = {};
+  final Set<String> _cancellingBookingIds = {};
   final Map<String, bool> _reviewCache = {};
   late TabController _tabController;
   StreamSubscription<List<BookingModel>>? _bookingStreamSub;
@@ -47,6 +53,9 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> with Single
     _tabController = TabController(length: _tabs.length, vsync: this);
     _loadBookings();
     _setupStream();
+    BookingLifecycleService.instance.processDueBookings().then((_) {
+      if (mounted) _loadBookings();
+    });
     _refundTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
     });
@@ -92,6 +101,10 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> with Single
         try { payMap[b.id] = await _paymentService.getPaymentByBookingId(b.id); }
         catch (_) { payMap[b.id] = null; }
       }
+      final refundMap = await _walletService.getRefundRequestsByBookingIds(
+        userId,
+        bookings.map((b) => b.id).toList(),
+      );
       if (mounted) {
         bookings.sort((a, b) {
           final aDate = a.bookingDateKey ?? DateFormat('yyyy-MM-dd').format(a.startDate);
@@ -103,6 +116,7 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> with Single
         setState(() {
           _bookings = bookings;
           _paymentMap = payMap;
+          _refundMap = refundMap;
           _isLoading = false;
           _errorMessage = null;
         });
@@ -243,19 +257,31 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> with Single
       color: CAppTheme.primaryColor,
       child: ListView.builder(
         padding: const EdgeInsets.all(16),
-        itemCount: filtered.length,
-        itemBuilder: (context, index) => _BookingCard(
-          booking: filtered[index],
-          displayDate: _bookingDisplayDate(filtered[index]),
-          statusColor: _statusColor(filtered[index].status),
-          payment: _paymentMap[filtered[index].id],
-          reviewService: _reviewService,
-          reviewCache: _reviewCache,
-          onPayTap: () => _navigateToPayment(filtered[index]),
-          onReviewTap: () => _showReviewDialog(filtered[index]),
-          onViewTicket: () => _viewTicket(filtered[index]),
-          onCancelRefund: () => _requestCancelRefund(filtered[index]),
-        ),
+        itemCount: filtered.length + 1,
+        itemBuilder: (context, index) {
+          if (index == 0) {
+            return const Padding(
+              padding: EdgeInsets.only(bottom: 12),
+              child: RefundPolicyBanner(),
+            );
+          }
+          final booking = filtered[index - 1];
+          return _BookingCard(
+            booking: booking,
+            displayDate: _bookingDisplayDate(booking),
+            statusColor: _statusColor(booking.status),
+            payment: _paymentMap[booking.id],
+            refundRequest: _refundMap[booking.id],
+            isCancelling: _cancellingBookingIds.contains(booking.id),
+            reviewService: _reviewService,
+            reviewCache: _reviewCache,
+            onPayTap: () => _navigateToPayment(booking),
+            onReviewTap: () => _showReviewDialog(booking),
+            onViewTicket: () => _viewTicket(booking),
+            onCancelRefund: () => _requestCancelRefund(booking),
+            onUndoCancel: () => _undoCancelRefund(booking),
+          );
+        },
       ),
     );
   }
@@ -271,6 +297,10 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> with Single
   }
 
   void _viewTicket(BookingModel booking) {
+    if (booking.status == AppConstants.bookingStatusCompleted) {
+      showErrorSnackBar(context, 'This booking is completed. Ticket is no longer available.');
+      return;
+    }
     Navigator.push(context, MaterialPageRoute(builder: (_) => BookingConfirmationScreen(booking: booking)));
   }
 
@@ -284,43 +314,87 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> with Single
       return;
     }
 
-    if (!booking.canCancelWithRefund(isPaid: true)) {
-      showErrorSnackBar(
-        context,
-        'Cancellation window closed. Cancel at least ${RefundPolicy.leadTimeLabel(booking.startDate)} before your booking starts.',
-      );
+    final existingRefund = _refundMap[booking.id];
+    if (existingRefund?.isPending == true) {
+      showErrorSnackBar(context, 'Cancellation already requested. Use Undo if this was a mistake.');
       return;
     }
 
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('Cancel & Request Refund?', style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
-        content: Text(
-          'Your refund of Rs. ${booking.totalPrice.toStringAsFixed(0)} will be reviewed by the CWC team. If approved, it will be credited to your in-app wallet (Profile → My Wallet).\n\nCancel at least ${RefundPolicy.leadTimeLabel(booking.startDate)} before the booking start time.',
-          style: GoogleFonts.poppins(fontSize: 14),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('No')),
-          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Request Refund')),
-        ],
-      ),
-    );
-    if (confirm != true || !mounted) return;
+    if (!booking.canCancelWithRefund(isPaid: true)) {
+      showErrorSnackBar(context, booking.refundIneligibleMessage);
+      return;
+    }
 
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (_) => CancelRefundDialog(booking: booking),
+    );
+    if (reason == null || !mounted) return;
+
+    setState(() => _cancellingBookingIds.add(booking.id));
     try {
       await _walletService.requestRefund(
         userId: userId,
         bookingId: booking.id,
         paymentId: payment.id,
         amount: booking.totalPrice,
+        reason: reason,
       );
       if (mounted) {
-        showSuccessSnackBar(context, 'Refund request submitted. CWC team will review it.');
+        showSuccessSnackBar(
+          context,
+          'Cancellation requested. Your booking stays active until CWC reviews it. You can undo if this was a mistake.',
+        );
+        await _loadBookings();
       }
     } catch (e) {
       if (mounted) {
         showErrorSnackBar(context, e.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _cancellingBookingIds.remove(booking.id));
+      }
+    }
+  }
+
+  Future<void> _undoCancelRefund(BookingModel booking) async {
+    final refund = _refundMap[booking.id];
+    if (refund == null || !refund.isPending) {
+      showErrorSnackBar(context, 'No pending cancellation to undo.');
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Undo cancellation?', style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
+        content: Text(
+          'Your booking will stay confirmed and the refund request will be withdrawn.',
+          style: GoogleFonts.poppins(fontSize: 14, height: 1.4),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('No')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Yes, keep booking')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _cancellingBookingIds.add(booking.id));
+    try {
+      await _walletService.cancelRefundRequest(refund.id);
+      if (mounted) {
+        showSuccessSnackBar(context, 'Cancellation undone. Your booking is active again.');
+        await _loadBookings();
+      }
+    } catch (e) {
+      if (mounted) {
+        showErrorSnackBar(context, e.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _cancellingBookingIds.remove(booking.id));
       }
     }
   }
@@ -331,22 +405,41 @@ class _BookingCard extends StatelessWidget {
   final DateTime displayDate;
   final Color statusColor;
   final PaymentModel? payment;
+  final RefundRequestModel? refundRequest;
+  final bool isCancelling;
   final ReviewService reviewService;
   final Map<String, bool> reviewCache;
   final VoidCallback onPayTap;
   final VoidCallback onReviewTap;
   final VoidCallback onViewTicket;
   final VoidCallback onCancelRefund;
+  final VoidCallback onUndoCancel;
 
   const _BookingCard({
     required this.booking,
     required this.displayDate,
-    required this.statusColor, this.payment, required this.reviewService, required this.reviewCache, required this.onPayTap, required this.onReviewTap, required this.onViewTicket, required this.onCancelRefund});
+    required this.statusColor,
+    this.payment,
+    this.refundRequest,
+    this.isCancelling = false,
+    required this.reviewService,
+    required this.reviewCache,
+    required this.onPayTap,
+    required this.onReviewTap,
+    required this.onViewTicket,
+    required this.onCancelRefund,
+    required this.onUndoCancel,
+  });
 
   @override
   Widget build(BuildContext context) {
     final canReview = booking.status == AppConstants.bookingStatusCompleted || booking.status == AppConstants.bookingStatusConfirmed;
+    final isCompleted = booking.status == AppConstants.bookingStatusCompleted;
     final isPaid = payment?.status == 'completed';
+    final unpaidSlotMissed = booking.isUnpaidSlotMissed(isPaid: isPaid);
+    final hasPendingRefund = refundRequest?.isPending == true;
+    final canCancel = booking.canCancelWithRefund(isPaid: true) && !hasPendingRefund;
+    final showTicket = booking.status == AppConstants.bookingStatusConfirmed && isPaid;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -428,33 +521,78 @@ class _BookingCard extends StatelessWidget {
 
             if (booking.status == AppConstants.bookingStatusPending) ...[
               const Divider(height: 24),
-              _buildPaymentStatus(),
+              if (unpaidSlotMissed)
+                _buildUnpaidSlotMissedBanner()
+              else
+                _buildPaymentStatus(),
             ],
 
-            if ((booking.status == AppConstants.bookingStatusConfirmed || booking.status == AppConstants.bookingStatusCompleted) && (isPaid || payment == null)) ...[
+            if (isCompleted) ...[
               const Divider(height: 24),
-              SizedBox(
-                height: 36,
-                child: OutlinedButton.icon(
-                  onPressed: onViewTicket,
-                  icon: const Icon(Icons.qr_code_rounded, size: 16),
-                  label: Text('View Ticket', style: GoogleFonts.poppins(fontSize: 12, fontWeight: FontWeight.w600)),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 14),
-                    side: const BorderSide(color: CAppTheme.primaryColor),
-                    foregroundColor: CAppTheme.primaryColor,
-                  ),
-                ),
-              ),
+              _buildCompletedBanner(),
             ],
 
-            if (booking.status == AppConstants.bookingStatusConfirmed && isPaid) ...[
-              const SizedBox(height: 10),
-              if (booking.canCancelWithRefund(isPaid: true)) ...[
+            if (showTicket) ...[
+              const Divider(height: 24),
+              if (booking.status == AppConstants.bookingStatusConfirmed && isPaid && hasPendingRefund) ...[
                 Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.all(12),
+                  margin: const EdgeInsets.only(bottom: 12),
+                  decoration: BoxDecoration(
+                    color: CAppTheme.warningColor.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                    border: Border.all(color: CAppTheme.warningColor.withValues(alpha: 0.25)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.hourglass_top_rounded, size: 18, color: CAppTheme.warningColor),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Cancellation under review',
+                              style: GoogleFonts.poppins(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: CAppTheme.warningColor,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'Your booking is still active. Tap undo if this was a mistake.',
+                        style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary, height: 1.35),
+                      ),
+                    ],
+                  ),
+                ),
+                _bookingActionButton(
+                  label: isCancelling ? 'Undoing...' : 'Undo Cancellation',
+                  icon: Icons.undo_rounded,
+                  onPressed: isCancelling ? null : onUndoCancel,
+                  isLoading: isCancelling,
+                  filled: true,
+                  color: CAppTheme.primaryColor,
+                ),
+                const SizedBox(height: 10),
+                _bookingActionButton(
+                  label: 'View Ticket',
+                  icon: Icons.qr_code_rounded,
+                  onPressed: onViewTicket,
+                  isLoading: false,
+                  filled: false,
+                  color: CAppTheme.primaryColor,
+                ),
+              ] else if (booking.status == AppConstants.bookingStatusConfirmed && isPaid && canCancel) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  margin: const EdgeInsets.only(bottom: 12),
                   decoration: BoxDecoration(
                     color: CAppTheme.warningColor.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
@@ -465,9 +603,9 @@ class _BookingCard extends StatelessWidget {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Refund window: ${RefundPolicy.formatDuration(booking.refundWindowRemaining)} left',
+                          'Cancel until ${booking.refundNoticeLabel} before start · ${RefundPolicy.formatHumanDuration(booking.refundWindowRemaining)} left',
                           style: GoogleFonts.poppins(
-                            fontSize: 11,
+                            fontSize: 12,
                             fontWeight: FontWeight.w600,
                             color: CAppTheme.warningColor,
                           ),
@@ -476,35 +614,109 @@ class _BookingCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                SizedBox(
-                  height: 36,
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: onCancelRefund,
-                    icon: const Icon(Icons.cancel_outlined, size: 16),
-                    label: Text('Cancel & Request Refund', style: GoogleFonts.poppins(fontSize: 12, fontWeight: FontWeight.w600)),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: CAppTheme.errorColor,
-                      side: BorderSide(color: CAppTheme.errorColor.withValues(alpha: 0.5)),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _bookingActionButton(
+                        label: 'View Ticket',
+                        icon: Icons.qr_code_rounded,
+                        onPressed: onViewTicket,
+                        isLoading: false,
+                        filled: false,
+                        color: CAppTheme.primaryColor,
+                        compact: true,
+                      ),
                     ),
-                  ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _bookingActionButton(
+                        label: isCancelling ? 'Submitting...' : 'Cancel Booking',
+                        icon: Icons.cancel_outlined,
+                        onPressed: isCancelling ? null : onCancelRefund,
+                        isLoading: isCancelling,
+                        filled: false,
+                        color: CAppTheme.errorColor,
+                        compact: true,
+                      ),
+                    ),
+                  ],
                 ),
-              ] else
+              ] else ...[
+                _bookingActionButton(
+                  label: 'View Ticket',
+                  icon: Icons.qr_code_rounded,
+                  onPressed: onViewTicket,
+                  isLoading: false,
+                  filled: false,
+                  color: CAppTheme.primaryColor,
+                ),
+              ],
+            ],
+
+            if (booking.status == AppConstants.bookingStatusConfirmed && isPaid && !hasPendingRefund && !canCancel) ...[
+              if (refundRequest?.isRejected == true) ...[
+                const SizedBox(height: 10),
                 Padding(
-                  padding: const EdgeInsets.only(top: 4),
+                  padding: const EdgeInsets.only(bottom: 4),
                   child: Row(
                     children: [
-                      Icon(Icons.info_outline, size: 14, color: CAppTheme.textTertiary),
+                      const Icon(Icons.info_outline, size: 14, color: CAppTheme.textTertiary),
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(
-                          'Cancellation closed — must cancel ${RefundPolicy.leadTimeLabel(booking.startDate)} before start',
+                          'Previous cancellation was rejected. ${booking.refundIneligibleMessage}',
                           style: GoogleFonts.poppins(fontSize: 11, color: CAppTheme.textTertiary),
                         ),
                       ),
                     ],
                   ),
                 ),
+              ] else if (refundRequest?.isRejected != true) ...[
+                const SizedBox(height: 10),
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.info_outline, size: 14, color: CAppTheme.textTertiary),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          booking.refundIneligibleMessage,
+                          style: GoogleFonts.poppins(fontSize: 11, color: CAppTheme.textTertiary),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+
+            if (booking.status == AppConstants.bookingStatusCancelled) ...[
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: CAppTheme.errorColor.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.cancel_outlined, size: 16, color: CAppTheme.errorColor),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        unpaidSlotMissed
+                            ? 'You did not complete payment. Your slot time has passed — please book this workspace again.'
+                            : refundRequest?.isApproved == true
+                                ? 'Booking cancelled. Refund credited to your wallet.'
+                                : 'This booking was cancelled.',
+                        style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.errorColor),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ],
 
             if (canReview) ...[
@@ -514,6 +726,77 @@ class _BookingCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _bookingActionButton({
+    required String label,
+    required IconData icon,
+    required VoidCallback? onPressed,
+    required bool isLoading,
+    required bool filled,
+    required Color color,
+    bool compact = false,
+  }) {
+    final fontSize = compact ? 12.0 : 14.0;
+    final iconSize = compact ? 17.0 : 20.0;
+    final buttonHeight = compact ? 44.0 : 48.0;
+
+    final child = isLoading
+        ? SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(
+              strokeWidth: 2.5,
+              color: filled ? Colors.white : color,
+            ),
+          )
+        : FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: iconSize),
+                SizedBox(width: compact ? 6 : 8),
+                Text(
+                  label,
+                  maxLines: 1,
+                  style: GoogleFonts.poppins(fontSize: fontSize, fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+          );
+
+    return SizedBox(
+      width: double.infinity,
+      height: buttonHeight,
+      child: filled
+          ? ElevatedButton(
+              onPressed: onPressed,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: color,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                ),
+              ),
+              child: child,
+            )
+          : OutlinedButton(
+              onPressed: onPressed,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: color,
+                padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 16),
+                side: BorderSide(color: color.withValues(alpha: 0.7), width: 1.5),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                ),
+              ),
+              child: child,
+            ),
     );
   }
 
@@ -560,6 +843,64 @@ class _BookingCard extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildCompletedBanner() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: CAppTheme.successColor.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+        border: Border.all(color: CAppTheme.successColor.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.check_circle_outline, size: 18, color: CAppTheme.successColor),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Booking completed. Ticket is no longer available.',
+              style: GoogleFonts.poppins(
+                fontSize: 12,
+                color: CAppTheme.successColor,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildUnpaidSlotMissedBanner() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: CAppTheme.errorColor.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+        border: Border.all(color: CAppTheme.errorColor.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.payment_outlined, size: 18, color: CAppTheme.errorColor),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'You did not complete payment. Your slot time has passed — please book this workspace again.',
+              style: GoogleFonts.poppins(
+                fontSize: 12,
+                color: CAppTheme.errorColor,
+                fontWeight: FontWeight.w500,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 

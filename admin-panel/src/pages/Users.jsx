@@ -29,6 +29,10 @@ const Users = ({ user: staffUser }) => {
       if (filter !== 'all') {
         if (filter === 'pending') {
           query = query.eq('admin_approved', false)
+        } else if (filter === 'suspended') {
+          query = query.not('suspended_at', 'is', null)
+        } else if (filter === 'deleted') {
+          query = query.not('deleted_at', 'is', null)
         } else {
           query = query.eq('role', filter)
         }
@@ -106,6 +110,40 @@ const Users = ({ user: staffUser }) => {
     } catch (error) {
       console.error('Error rejecting user:', error)
       showError('Failed to reject user: ' + error.message)
+    }
+  }
+
+  const handleSuspendUser = async (userId, userName) => {
+    const reason = prompt(`Suspend "${userName}"?\nEnter reason (min 5 characters):`)
+    if (!reason || reason.trim().length < 5) {
+      showError('Suspension reason must be at least 5 characters')
+      return
+    }
+    try {
+      const { error } = await supabase.rpc('staff_suspend_user', {
+        p_user_id: userId,
+        p_reason: reason.trim(),
+      })
+      if (error) throw error
+      showSuccess(`User "${userName}" suspended`)
+      fetchUsers()
+    } catch (error) {
+      showError(error.message || 'Failed to suspend user')
+    }
+  }
+
+  const handleUnsuspendUser = async (userId, userName) => {
+    const note = prompt(`Unsuspend "${userName}"? Optional note:`) ?? ''
+    try {
+      const { error } = await supabase.rpc('staff_unsuspend_user', {
+        p_user_id: userId,
+        p_note: note.trim() || null,
+      })
+      if (error) throw error
+      showSuccess(`User "${userName}" unsuspended`)
+      fetchUsers()
+    } catch (error) {
+      showError(error.message || 'Failed to unsuspend user')
     }
   }
 
@@ -310,6 +348,8 @@ const Users = ({ user: staffUser }) => {
           <option value="pending">Pending Approval</option>
           <option value="user">Regular Users</option>
           <option value="owner">Owners</option>
+          <option value="suspended">Suspended</option>
+          <option value="deleted">Deleted accounts</option>
         </select>
 
         {/* Count */}
@@ -425,6 +465,15 @@ const Users = ({ user: staffUser }) => {
                       )}
                     </td>
                     <td style={{ padding: '16px' }}>
+                      {user.deleted_at ? (
+                        <span style={{ padding: '8px 16px', borderRadius: '20px', fontSize: '12px', fontWeight: '600', backgroundColor: '#f1f5f9', color: '#475569' }}>
+                          Deleted
+                        </span>
+                      ) : user.suspended_at ? (
+                        <span style={{ padding: '8px 16px', borderRadius: '20px', fontSize: '12px', fontWeight: '600', backgroundColor: '#fee2e2', color: '#b91c1c' }}>
+                          Suspended
+                        </span>
+                      ) : (
                       <span style={{
                         padding: '8px 16px',
                         borderRadius: '20px',
@@ -447,6 +496,7 @@ const Users = ({ user: staffUser }) => {
                           ? 'Approved' 
                           : 'N/A'}
                       </span>
+                      )}
                     </td>
                     <td style={{ padding: '16px', fontSize: '14px', color: '#64748b' }}>
                       {format(new Date(user.created_at), 'MMM dd, yyyy')}
@@ -512,6 +562,33 @@ const Users = ({ user: staffUser }) => {
                               ✗ Reject
                             </button>
                           </>
+                        )}
+                        {!user.deleted_at && user.role !== 'admin' && user.role !== 'moderator' && (
+                          user.suspended_at ? (
+                            <button
+                              onClick={() => handleUnsuspendUser(user.id, user.name)}
+                              style={{
+                                padding: '10px 16px',
+                                background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                                color: 'white', border: 'none', borderRadius: '10px', cursor: 'pointer',
+                                fontSize: '13px', fontWeight: '600',
+                              }}
+                            >
+                              Unsuspend
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleSuspendUser(user.id, user.name)}
+                              style={{
+                                padding: '10px 16px',
+                                background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                                color: 'white', border: 'none', borderRadius: '10px', cursor: 'pointer',
+                                fontSize: '13px', fontWeight: '600',
+                              }}
+                            >
+                              Suspend
+                            </button>
+                          )
                         )}
                         {isAdmin(staffUser?.role) && (
                         <button

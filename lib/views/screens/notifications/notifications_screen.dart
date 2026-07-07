@@ -21,6 +21,13 @@ enum InviteCardState {
   unavailable,
 }
 
+enum MilestoneReviewCardState {
+  actionable,
+  approved,
+  rejected,
+  unavailable,
+}
+
 /// Notifications Screen — filtered by [scope] (projects vs workspaces).
 class NotificationsScreen extends StatefulWidget {
   final NotificationScope scope;
@@ -51,6 +58,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   int _unreadCount = 0;
   final Set<String> _respondingInviteIds = {};
   final Map<String, InviteCardState> _inviteStates = {};
+  final Set<String> _respondingMilestoneReviewIds = {};
+  final Map<String, MilestoneReviewCardState> _milestoneReviewStates = {};
   StreamSubscription<List<NotificationModel>>? _notificationStreamSubscription;
   AuthController? _auth;
   bool _hasLoadedOnce = false;
@@ -148,6 +157,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       if (widget.scope == NotificationScope.projects ||
           widget.scope == NotificationScope.all) {
         await _refreshInviteStates(_visibleNotifications, id);
+        await _refreshMilestoneReviewStates(_visibleNotifications, id);
       }
     } catch (e) {
       if (!mounted) return;
@@ -181,6 +191,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         if (widget.scope == NotificationScope.projects ||
             widget.scope == NotificationScope.all) {
           await _refreshInviteStates(_visibleNotifications, userId);
+          await _refreshMilestoneReviewStates(_visibleNotifications, userId);
         }
       },
       onError: (error) {
@@ -281,6 +292,209 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     }
   }
 
+  Future<void> _refreshMilestoneReviewStates(
+    List<NotificationModel> notifications,
+    String userId,
+  ) async {
+    final reviewNotifications = notifications
+        .where((n) => n.type == 'collaboration_milestone_review')
+        .toList();
+    if (reviewNotifications.isEmpty) {
+      if (mounted) setState(() => _milestoneReviewStates.clear());
+      return;
+    }
+
+    try {
+      final states = <String, MilestoneReviewCardState>{};
+      for (final notification in reviewNotifications) {
+        final milestoneId = notification.metadata?['milestone_id'] as String?;
+        final collaborationId =
+            notification.metadata?['collaboration_id'] as String?;
+        if (milestoneId == null || collaborationId == null) {
+          states[notification.id] = MilestoneReviewCardState.unavailable;
+          continue;
+        }
+
+        final isOwner =
+            await _hub.isProjectOwner(collaborationId, userId);
+        if (!isOwner) {
+          states[notification.id] = MilestoneReviewCardState.unavailable;
+          continue;
+        }
+
+        final milestone = await _hub.getMilestoneById(milestoneId);
+        states[notification.id] = _milestoneReviewStateFor(milestone);
+      }
+
+      if (mounted) {
+        setState(() => _milestoneReviewStates..clear()..addAll(states));
+      }
+    } catch (_) {}
+  }
+
+  MilestoneReviewCardState _milestoneReviewStateFor(
+    CollaborationMilestone? milestone,
+  ) {
+    if (milestone == null) return MilestoneReviewCardState.unavailable;
+    if (milestone.isSubmitted) return MilestoneReviewCardState.actionable;
+    if (milestone.isDone) return MilestoneReviewCardState.approved;
+    if (milestone.isPending &&
+        milestone.reviewReason != null &&
+        milestone.reviewReason!.trim().isNotEmpty) {
+      return MilestoneReviewCardState.rejected;
+    }
+    return MilestoneReviewCardState.unavailable;
+  }
+
+  String _milestoneReviewStateMessage(MilestoneReviewCardState state) {
+    switch (state) {
+      case MilestoneReviewCardState.approved:
+        return 'Milestone already approved';
+      case MilestoneReviewCardState.rejected:
+        return 'Milestone already rejected';
+      case MilestoneReviewCardState.unavailable:
+        return 'This milestone review is no longer available';
+      case MilestoneReviewCardState.actionable:
+        return '';
+    }
+  }
+
+  Future<void> _respondToMilestoneReview(
+    NotificationModel notification, {
+    required bool approve,
+  }) async {
+    final user = context.read<AuthController>().currentUser;
+    if (user == null) return;
+
+    final cachedState = _milestoneReviewStates[notification.id];
+    if (cachedState != null &&
+        cachedState != MilestoneReviewCardState.actionable) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_milestoneReviewStateMessage(cachedState)),
+          backgroundColor: CAppTheme.warningColor,
+        ),
+      );
+      return;
+    }
+
+    final milestoneId = notification.metadata?['milestone_id'] as String?;
+    final collaborationId = notification.metadata?['collaboration_id'] as String?;
+    if (milestoneId == null || collaborationId == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Invalid milestone notification'),
+          backgroundColor: CAppTheme.errorColor,
+        ),
+      );
+      return;
+    }
+
+    String? rejectReason;
+    if (!approve) {
+      final controller = TextEditingController();
+      rejectReason = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Reject milestone'),
+          content: TextField(
+            controller: controller,
+            minLines: 2,
+            maxLines: 4,
+            autofocus: true,
+            decoration: const InputDecoration(
+              hintText: 'Tell collaborator what needs to be fixed...',
+              alignLabelWithHint: true,
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+              style: ElevatedButton.styleFrom(backgroundColor: CAppTheme.errorColor),
+              child: const Text('Reject'),
+            ),
+          ],
+        ),
+      );
+      WidgetsBinding.instance.addPostFrameCallback((_) => controller.dispose());
+      if (rejectReason == null || rejectReason.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please add a reason for rejection'),
+            backgroundColor: CAppTheme.errorColor,
+          ),
+        );
+        return;
+      }
+    }
+
+    setState(() => _respondingMilestoneReviewIds.add(notification.id));
+    try {
+      final milestone = await _hub.getMilestoneById(milestoneId);
+      if (milestone == null || !milestone.isSubmitted) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              milestone == null
+                  ? 'Milestone no longer exists'
+                  : 'This milestone was already reviewed',
+            ),
+            backgroundColor: CAppTheme.warningColor,
+          ),
+        );
+        await _markAsRead(notification);
+        await _refreshMilestoneReviewStates(_notifications, user.id);
+        return;
+      }
+
+      if (approve) {
+        await _hub.approveMilestoneCompletion(milestone, user.id, user.name);
+      } else {
+        await _hub.rejectMilestoneCompletion(
+          milestone,
+          user.id,
+          user.name,
+          rejectReason!,
+        );
+      }
+
+      await _markAsRead(notification);
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(approve ? 'Milestone approved' : 'Milestone rejected'),
+          backgroundColor:
+              approve ? CAppTheme.successColor : CAppTheme.textSecondary,
+        ),
+      );
+
+      NavigationService.openProjectFromNotification(
+        collaborationId,
+        initialTab: 2,
+      );
+
+      await _loadNotifications();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(e.toString().replaceFirst('Exception: ', '')),
+          backgroundColor: CAppTheme.errorColor,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _respondingMilestoneReviewIds.remove(notification.id));
+      }
+    }
+  }
+
   Future<void> _markAsRead(NotificationModel notification) async {
     if (notification.isRead) return;
 
@@ -325,7 +539,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     await _markAsRead(notification);
     if (!mounted) return;
 
-    if (notification.type == 'collaboration_milestone_missed') {
+    if (notification.type == 'collaboration_milestone_missed' ||
+        notification.type == 'collaboration_milestone_review' ||
+        notification.type == 'collaboration_milestone_accepted' ||
+        notification.type == 'collaboration_milestone_payment_released') {
       final collaborationId =
           notification.metadata?['collaboration_id'] as String?;
       if (collaborationId != null) {
@@ -599,10 +816,23 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                     inviteState: notification.type == 'collaboration_invite'
                         ? _inviteStates[notification.id]
                         : null,
-                    isResponding: _respondingInviteIds.contains(notification.id),
+                    milestoneReviewState:
+                        notification.type == 'collaboration_milestone_review'
+                            ? _milestoneReviewStates[notification.id]
+                            : null,
+                    isResponding: _respondingInviteIds.contains(notification.id) ||
+                        _respondingMilestoneReviewIds.contains(notification.id),
                     onTap: () => _openNotification(notification),
                     onAcceptInvite: () => _respondToInvite(notification, true),
                     onDeclineInvite: () => _respondToInvite(notification, false),
+                    onApproveMilestone: () => _respondToMilestoneReview(
+                      notification,
+                      approve: true,
+                    ),
+                    onRejectMilestone: () => _respondToMilestoneReview(
+                      notification,
+                      approve: false,
+                    ),
                   )),
             ],
           );
@@ -705,23 +935,34 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 class _NotificationCard extends StatelessWidget {
   final NotificationModel notification;
   final InviteCardState? inviteState;
+  final MilestoneReviewCardState? milestoneReviewState;
   final VoidCallback onTap;
   final VoidCallback? onAcceptInvite;
   final VoidCallback? onDeclineInvite;
+  final VoidCallback? onApproveMilestone;
+  final VoidCallback? onRejectMilestone;
   final bool isResponding;
 
   const _NotificationCard({
     required this.notification,
     this.inviteState,
+    this.milestoneReviewState,
     required this.onTap,
     this.onAcceptInvite,
     this.onDeclineInvite,
+    this.onApproveMilestone,
+    this.onRejectMilestone,
     this.isResponding = false,
   });
 
   bool get _isInvite => notification.type == 'collaboration_invite';
+  bool get _isMilestoneReview =>
+      notification.type == 'collaboration_milestone_review';
   bool get _canRespondToInvite =>
       _isInvite && inviteState == InviteCardState.actionable;
+  bool get _canRespondToMilestoneReview =>
+      _isMilestoneReview &&
+      milestoneReviewState == MilestoneReviewCardState.actionable;
 
   @override
   Widget build(BuildContext context) {
@@ -742,7 +983,7 @@ class _NotificationCard extends StatelessWidget {
             : null,
       ),
       child: InkWell(
-        onTap: _isInvite ? null : onTap,
+        onTap: (_isInvite || _isMilestoneReview) ? null : onTap,
         borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -896,6 +1137,165 @@ class _NotificationCard extends StatelessWidget {
                   ),
                 ),
               ],
+              if (_isMilestoneReview) ...[
+                if (notification.metadata?['submission_note'] != null &&
+                    (notification.metadata?['submission_note'] as String?)
+                            ?.trim()
+                            .isNotEmpty ==
+                        true) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: CAppTheme.infoColor.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                      border: Border.all(
+                        color: CAppTheme.infoColor.withValues(alpha: 0.2),
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Submitted work',
+                          style: GoogleFonts.poppins(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: CAppTheme.infoColor,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          notification.metadata!['submission_note'] as String,
+                          style: GoogleFonts.poppins(
+                            fontSize: 12.5,
+                            color: CAppTheme.textPrimary,
+                            height: 1.35,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 14),
+                if (_canRespondToMilestoneReview) ...[
+                  Row(
+                    children: [
+                      Expanded(
+                        child: SizedBox(
+                          height: 42,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: CAppTheme.successColor,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(
+                                  CAppTheme.radiusMedium,
+                                ),
+                              ),
+                            ),
+                            onPressed: isResponding ? null : onApproveMilestone,
+                            child: isResponding
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white,
+                                    ),
+                                  )
+                                : Text(
+                                    'Approve',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: GoogleFonts.poppins(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: SizedBox(
+                          height: 42,
+                          child: OutlinedButton(
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              foregroundColor: CAppTheme.errorColor,
+                              side: const BorderSide(color: CAppTheme.errorColor),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(
+                                  CAppTheme.radiusMedium,
+                                ),
+                              ),
+                            ),
+                            onPressed: isResponding ? null : onRejectMilestone,
+                            child: Text(
+                              'Reject',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: GoogleFonts.poppins(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ] else ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
+                    decoration: BoxDecoration(
+                      color: _milestoneReviewStatusColor(milestoneReviewState)
+                          .withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                      border: Border.all(
+                        color: _milestoneReviewStatusColor(milestoneReviewState)
+                            .withValues(alpha: 0.25),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          _milestoneReviewStatusIcon(milestoneReviewState),
+                          size: 18,
+                          color: _milestoneReviewStatusColor(milestoneReviewState),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _milestoneReviewStatusLabel(milestoneReviewState),
+                            style: GoogleFonts.poppins(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: _milestoneReviewStatusColor(milestoneReviewState),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: onTap,
+                    child: const Text('Open milestones'),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -949,6 +1349,48 @@ class _NotificationCard extends StatelessWidget {
     }
   }
 
+  String _milestoneReviewStatusLabel(MilestoneReviewCardState? state) {
+    switch (state) {
+      case MilestoneReviewCardState.approved:
+        return 'Milestone approved';
+      case MilestoneReviewCardState.rejected:
+        return 'Milestone rejected';
+      case MilestoneReviewCardState.unavailable:
+        return 'Review no longer available';
+      case MilestoneReviewCardState.actionable:
+      case null:
+        return 'Checking milestone...';
+    }
+  }
+
+  Color _milestoneReviewStatusColor(MilestoneReviewCardState? state) {
+    switch (state) {
+      case MilestoneReviewCardState.approved:
+        return CAppTheme.successColor;
+      case MilestoneReviewCardState.rejected:
+        return CAppTheme.errorColor;
+      case MilestoneReviewCardState.unavailable:
+        return CAppTheme.warningColor;
+      case MilestoneReviewCardState.actionable:
+      case null:
+        return CAppTheme.infoColor;
+    }
+  }
+
+  IconData _milestoneReviewStatusIcon(MilestoneReviewCardState? state) {
+    switch (state) {
+      case MilestoneReviewCardState.approved:
+        return Icons.check_circle_outline_rounded;
+      case MilestoneReviewCardState.rejected:
+        return Icons.cancel_outlined;
+      case MilestoneReviewCardState.unavailable:
+        return Icons.info_outline_rounded;
+      case MilestoneReviewCardState.actionable:
+      case null:
+        return Icons.hourglass_empty_rounded;
+    }
+  }
+
   IconData _getIconForType(String type) {
     switch (type) {
       case 'registration_approved':
@@ -968,6 +1410,10 @@ class _NotificationCard extends StatelessWidget {
         return Icons.chat_bubble_rounded;
       case 'booking_confirmed':
         return Icons.event_available_rounded;
+      case 'booking_ending_soon':
+        return Icons.timer_outlined;
+      case 'booking_completed':
+        return Icons.task_alt_rounded;
       case 'booking_cancelled':
         return Icons.event_busy_rounded;
       case 'report_under_review':
@@ -978,6 +1424,12 @@ class _NotificationCard extends StatelessWidget {
         return Icons.cancel_outlined;
       case 'collaboration_milestone_missed':
         return Icons.flag_circle_outlined;
+      case 'collaboration_milestone_review':
+        return Icons.rate_review_rounded;
+      case 'collaboration_milestone_accepted':
+        return Icons.task_alt_rounded;
+      case 'collaboration_milestone_payment_released':
+        return Icons.account_balance_wallet_rounded;
       default:
         return Icons.notifications_rounded;
     }
@@ -1004,6 +1456,10 @@ class _NotificationCard extends StatelessWidget {
         return CAppTheme.infoColor;
       case 'booking_confirmed':
         return CAppTheme.successColor;
+      case 'booking_ending_soon':
+        return CAppTheme.warningColor;
+      case 'booking_completed':
+        return CAppTheme.primaryColor;
       case 'booking_cancelled':
         return CAppTheme.errorColor;
       case 'report_under_review':
@@ -1014,6 +1470,12 @@ class _NotificationCard extends StatelessWidget {
         return CAppTheme.textTertiary;
       case 'collaboration_milestone_missed':
         return CAppTheme.errorColor;
+      case 'collaboration_milestone_review':
+        return CAppTheme.infoColor;
+      case 'collaboration_milestone_accepted':
+        return CAppTheme.successColor;
+      case 'collaboration_milestone_payment_released':
+        return CAppTheme.primaryColor;
       default:
         return CAppTheme.primaryColor;
     }

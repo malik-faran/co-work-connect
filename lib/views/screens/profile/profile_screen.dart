@@ -1,5 +1,6 @@
 /// Profile Screen
 /// Lets authenticated users view and update their account details
+library;
 import 'package:flutter/material.dart';
 import 'package:cwc/utils/themes/theme.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -12,9 +13,10 @@ import 'package:cwc/utils/constants/app_constants.dart';
 import 'package:cwc/utils/helpers/model_helpers.dart';
 import 'package:cwc/utils/helpers/snackbar_helper.dart';
 import 'package:cwc/utils/helpers/error_handler.dart';
-import 'package:cwc/utils/validators/form_validators.dart';
-import 'package:cwc/views/screens/owner/owner_payment_accounts_screen.dart';
-import 'package:cwc/views/screens/owner/owner_wallet_screen.dart';
+import 'package:cwc/views/screens/payment/payment_history_screen.dart';
+import 'package:cwc/views/screens/report/my_reports_screen.dart';
+import 'package:cwc/views/screens/report/report_screen.dart';
+import 'package:cwc/views/screens/role_selection_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -33,7 +35,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   late TextEditingController _oldPasswordController;
   late TextEditingController _newPasswordController;
   late TextEditingController _confirmPasswordController;
-  String? _selectedCity;
+  late TextEditingController _cityController;
   bool _saving = false;
   bool _changingPassword = false;
   bool _showPasswordSection = false;
@@ -50,7 +52,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _oldPasswordController = TextEditingController();
     _newPasswordController = TextEditingController();
     _confirmPasswordController = TextEditingController();
-    _selectedCity = user?.city;
+    _cityController = TextEditingController(text: user?.city ?? '');
   }
 
   @override
@@ -62,6 +64,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _oldPasswordController.dispose();
     _newPasswordController.dispose();
     _confirmPasswordController.dispose();
+    _cityController.dispose();
     super.dispose();
   }
 
@@ -77,7 +80,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final updatedUser = user.copyUser(
       name: _nameController.text.trim(),
       phone: _phoneController.text.trim(),
-      city: _selectedCity,
+      city: _cityController.text.trim().isEmpty
+          ? null
+          : _cityController.text.trim(),
       businessName: user.role == AppConstants.roleOwner
           ? _businessNameController.text.trim().isEmpty
               ? null
@@ -94,9 +99,45 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (!mounted) return;
       showErrorSnackBar(context, cleanErrorMessage(e.toString()));
     } finally {
-      if (mounted) {
-        setState(() => _saving = false);
-      }
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _confirmDeleteAccount() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete account?'),
+        content: const Text(
+          'This will permanently remove your profile and hide your listings. '
+          'This action cannot be undone.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: CAppTheme.errorColor),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final authController = context.read<AuthController>();
+    final ok = await authController.deleteAccount();
+    if (!mounted) return;
+
+    if (ok) {
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const RoleSelectionScreen()),
+        (_) => false,
+      );
+    } else {
+      showErrorSnackBar(
+        context,
+        cleanErrorMessage(authController.errorMessage ?? 'Could not delete account'),
+      );
     }
   }
 
@@ -197,7 +238,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               labelText: 'Full Name',
                               prefixIcon: Icon(Icons.person_outline_rounded),
                             ),
-                            validator: FormValidators.name,
+                            validator: (value) {
+                              if (value == null || value.trim().isEmpty) {
+                                return 'Name is required';
+                              }
+                              return null;
+                            },
                           ),
                           const SizedBox(height: 16),
                           TextFormField(
@@ -216,25 +262,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               labelText: 'Phone Number',
                               prefixIcon: Icon(Icons.phone_outlined),
                             ),
-                            validator: FormValidators.phone,
+                            validator: (value) {
+                              if (value == null || value.trim().isEmpty) {
+                                return 'Phone is required';
+                              }
+                              return null;
+                            },
                           ),
                           const SizedBox(height: 16),
-                          DropdownButtonFormField<String>(
-                            value: _selectedCity,
+                          TextFormField(
+                            controller: _cityController,
+                            textCapitalization: TextCapitalization.words,
                             decoration: const InputDecoration(
                               labelText: 'City',
+                              hintText: 'Enter your city',
                               prefixIcon: Icon(Icons.location_city_outlined),
                             ),
-                            items: AppConstants.cities
-                                .map(
-                                  (city) => DropdownMenuItem(
-                                    value: city,
-                                    child: Text(city),
-                                  ),
-                                )
-                                .toList(),
-                            onChanged: (value) =>
-                                setState(() => _selectedCity = value),
                           ),
                           if (user.role == AppConstants.roleOwner)
                             ...[
@@ -245,10 +288,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   labelText: 'Business Name',
                                   prefixIcon:
                                       Icon(Icons.business_center_outlined),
-                                ),
-                                validator: (v) => FormValidators.businessName(
-                                  v,
-                                  required: true,
                                 ),
                               ),
                             ],
@@ -379,7 +418,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                       labelText: 'New Password',
                                       prefixIcon: Icon(Icons.lock_rounded),
                                     ),
-                                    validator: FormValidators.password,
+                                    validator: (value) {
+                                      if (value == null || value.trim().isEmpty) {
+                                        return 'New password is required';
+                                      }
+                                      if (value.length < 6) {
+                                        return 'Password must be at least 6 characters';
+                                      }
+                                      return null;
+                                    },
                                   ),
                                   const SizedBox(height: 16),
                                   TextFormField(
@@ -389,10 +436,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                       labelText: 'Confirm New Password',
                                       prefixIcon: Icon(Icons.lock_clock),
                                     ),
-                                    validator: (value) => FormValidators.confirmPassword(
-                                          value,
-                                          _newPasswordController.text,
-                                        ),
+                                    validator: (value) {
+                                      if (value == null || value.trim().isEmpty) {
+                                        return 'Please confirm your password';
+                                      }
+                                      if (value != _newPasswordController.text) {
+                                        return 'Passwords do not match';
+                                      }
+                                      return null;
+                                    },
                                   ),
                                   const SizedBox(height: 24),
                                   SizedBox(
@@ -437,130 +489,95 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                   const SizedBox(height: 16),
 
-                  if (user.role == AppConstants.roleOwner) ...[
-                    const SizedBox(height: 16),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-                        boxShadow: CAppTheme.softShadow,
-                      ),
-                      child: InkWell(
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: (_) => const OwnerWalletScreen()),
-                          );
-                        },
-                        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-                        child: Padding(
-                          padding: const EdgeInsets.all(20),
-                          child: Row(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.all(10),
-                                decoration: BoxDecoration(
-                                  color: CAppTheme.successColor.withValues(alpha: 0.1),
-                                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                                ),
-                                child: const Icon(
-                                  Icons.savings_outlined,
-                                  color: CAppTheme.successColor,
-                                  size: 22,
-                                ),
-                              ),
-                              const SizedBox(width: 14),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      'Owner Wallet',
-                                      style: GoogleFonts.poppins(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w600,
-                                        color: CAppTheme.textPrimary,
-                                      ),
-                                    ),
-                                    Text(
-                                      'Booking earnings & withdraw to your account',
-                                      style: GoogleFonts.poppins(
-                                        fontSize: 12,
-                                        color: CAppTheme.textSecondary,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const Icon(Icons.chevron_right_rounded, color: CAppTheme.textTertiary),
-                            ],
-                          ),
-                        ),
-                      ),
+                  // Payment History Card
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+                      boxShadow: CAppTheme.softShadow,
                     ),
-                    const SizedBox(height: 16),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-                        boxShadow: CAppTheme.softShadow,
-                      ),
-                      child: InkWell(
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const OwnerPaymentAccountsScreen(),
+                    child: InkWell(
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const PaymentHistoryScreen(),
+                          ),
+                        );
+                      },
+                      borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: CAppTheme.infoColor.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                              ),
+                              child: const Icon(
+                                Icons.payment_rounded,
+                                color: CAppTheme.infoColor,
+                                size: 22,
+                              ),
                             ),
-                          );
-                        },
-                        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-                        child: Padding(
-                          padding: const EdgeInsets.all(20),
-                          child: Row(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.all(10),
-                                decoration: BoxDecoration(
-                                  color: CAppTheme.primaryColor.withValues(alpha: 0.1),
-                                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                                ),
-                                child: const Icon(
-                                  Icons.account_balance_wallet_outlined,
-                                  color: CAppTheme.primaryColor,
-                                  size: 22,
-                                ),
-                              ),
-                              const SizedBox(width: 14),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      'Payment Accounts',
-                                      style: GoogleFonts.poppins(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w600,
-                                        color: CAppTheme.textPrimary,
-                                      ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Payment History',
+                                    style: GoogleFonts.poppins(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 16,
+                                      color: CAppTheme.textPrimary,
                                     ),
-                                    Text(
-                                      'Bank, EasyPaisa, JazzCash for bookings',
-                                      style: GoogleFonts.poppins(
-                                        fontSize: 12,
-                                        color: CAppTheme.textSecondary,
-                                      ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'View all your payment transactions',
+                                    style: GoogleFonts.poppins(
+                                      fontSize: 12,
+                                      color: CAppTheme.textSecondary,
                                     ),
-                                  ],
-                                ),
+                                  ),
+                                ],
                               ),
-                              const Icon(Icons.chevron_right_rounded, color: CAppTheme.textTertiary),
-                            ],
-                          ),
+                            ),
+                            const Icon(Icons.chevron_right_rounded, color: CAppTheme.textTertiary),
+                          ],
                         ),
                       ),
                     ),
-                  ],
+                  ),
+                  const SizedBox(height: 16),
+
+                  _ProfileLinkCard(
+                    icon: Icons.flag_outlined,
+                    iconColor: CAppTheme.warningColor,
+                    title: 'Report an Issue',
+                    subtitle: 'Report a problem to our support team',
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const ReportScreen()),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  _ProfileLinkCard(
+                    icon: Icons.list_alt_rounded,
+                    iconColor: CAppTheme.primaryColor,
+                    title: 'My Reports',
+                    subtitle: 'Track status and reply to decisions',
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const MyReportsScreen()),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  _DeleteAccountCard(onDelete: _confirmDeleteAccount),
                   const SizedBox(height: 24),
                 ],
               ),
@@ -734,6 +751,114 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
                   ),
                 ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProfileLinkCard extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  const _ProfileLinkCard({
+    required this.icon,
+    required this.iconColor,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+        boxShadow: CAppTheme.softShadow,
+      ),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: iconColor.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                ),
+                child: Icon(icon, color: iconColor, size: 22),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: GoogleFonts.poppins(
+                            fontWeight: FontWeight.w600, fontSize: 16)),
+                    const SizedBox(height: 2),
+                    Text(subtitle,
+                        style: GoogleFonts.poppins(
+                            fontSize: 12, color: CAppTheme.textSecondary)),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right_rounded, color: CAppTheme.textTertiary),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DeleteAccountCard extends StatelessWidget {
+  final VoidCallback onDelete;
+
+  const _DeleteAccountCard({required this.onDelete});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+        boxShadow: CAppTheme.softShadow,
+        border: Border.all(color: CAppTheme.errorColor.withValues(alpha: 0.25)),
+      ),
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Danger zone',
+              style: GoogleFonts.poppins(
+                  fontSize: 16, fontWeight: FontWeight.w700, color: CAppTheme.errorColor)),
+          const SizedBox(height: 6),
+          Text(
+            'Delete your account permanently. Your profile will be removed and workspaces hidden.',
+            style: GoogleFonts.poppins(fontSize: 13, color: CAppTheme.textSecondary, height: 1.4),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              onPressed: onDelete,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: CAppTheme.errorColor,
+                side: const BorderSide(color: CAppTheme.errorColor),
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+              child: Text('Delete my account',
+                  style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
             ),
           ),
         ],

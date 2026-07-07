@@ -29,6 +29,7 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
   String? _errorMessage;
   StreamSubscription<List<ChatRoomModel>>? _chatRoomsStreamSubscription;
   final Map<String, String> _roleCache = {};
+  final Set<String> _hiddenRoomIds = {};
   final TextEditingController _listSearchController = TextEditingController();
   String _listSearch = '';
 
@@ -71,9 +72,11 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
 
       List<ChatRoomModel> chatRooms;
       try {
+        final hidden = await _chatService.getHiddenRoomIds(currentUser.id);
         chatRooms = await _chatService.getUserChatRooms(currentUser.id).timeout(
           const Duration(seconds: 15),
         );
+        if (mounted) _hiddenRoomIds.addAll(hidden);
       } on TimeoutException {
         if (!mounted) return;
         setState(() {
@@ -87,7 +90,7 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
 
       if (!mounted) return;
       setState(() {
-        _chatRooms = chatRooms;
+        _chatRooms = chatRooms.where((r) => !_hiddenRoomIds.contains(r.id)).toList();
         _isLoading = false;
         _initialLoadCompleted = true;
       });
@@ -111,10 +114,9 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
     _chatRoomsStreamSubscription = _chatService.getChatRoomsStream(currentUser.id).listen(
       (chatRooms) {
         if (!mounted) return;
-        // Don't overwrite existing chats with an empty list (stream timeout or initial empty snapshot)
         if (chatRooms.isEmpty && _chatRooms.isNotEmpty) return;
         setState(() {
-          _chatRooms = chatRooms;
+          _chatRooms = chatRooms.where((r) => !_hiddenRoomIds.contains(r.id)).toList();
         });
       },
       onError: (_) {},
@@ -268,7 +270,7 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
   }
 
   Widget _buildChatRoomsList(UserModel currentUser) {
-    var rooms = List<ChatRoomModel>.from(_chatRooms);
+    var rooms = _chatRooms.where((r) => !_hiddenRoomIds.contains(r.id)).toList();
     rooms.sort((a, b) {
       final aUnread = a.getUnreadCount(currentUser.id);
       final bUnread = b.getUnreadCount(currentUser.id);
@@ -321,8 +323,21 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
                   ),
                   child: const Icon(Icons.delete_outline_rounded, color: Colors.white, size: 28),
                 ),
-                confirmDismiss: (_) => _confirmDeleteChat(otherUserName ?? 'User'),
-                onDismissed: (_) => _deleteChatRoom(chatRoom.id),
+                confirmDismiss: (_) async {
+                  final confirm = await _confirmDeleteChat(otherUserName ?? 'User');
+                  if (!confirm) return false;
+                  return _performDeleteChat(chatRoom.id);
+                },
+                onDismissed: (_) {
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Chat deleted', style: GoogleFonts.poppins()),
+                      backgroundColor: CAppTheme.successColor,
+                      duration: const Duration(seconds: 2),
+                    ),
+                  );
+                },
                 child: _ChatRoomCard(
                   chatRoom: chatRoom,
                   otherUserName: otherUserName ?? 'User',
@@ -354,7 +369,7 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(CAppTheme.radiusLarge)),
         title: Text('Delete Chat', style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
         content: Text(
-          'Are you sure you want to delete your chat with $userName? This will permanently remove all messages.',
+          'Remove your chat with $userName from your list? It will stay hidden until you message them again.',
           style: GoogleFonts.poppins(fontSize: 14, color: CAppTheme.textSecondary),
         ),
         actions: [
@@ -405,7 +420,18 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
               onTap: () async {
                 Navigator.of(ctx).pop();
                 final confirm = await _confirmDeleteChat(userName);
-                if (confirm) await _deleteChatRoom(chatRoomId);
+                if (confirm) {
+                  final deleted = await _performDeleteChat(chatRoomId);
+                  if (deleted && mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Chat deleted', style: GoogleFonts.poppins()),
+                        backgroundColor: CAppTheme.successColor,
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                  }
+                }
               },
             ),
             const SizedBox(height: 8),
@@ -415,29 +441,25 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
     );
   }
 
-  Future<void> _deleteChatRoom(String chatRoomId) async {
-    setState(() {
-      _chatRooms = _chatRooms.where((c) => c.id != chatRoomId).toList();
-    });
+  Future<bool> _performDeleteChat(String chatRoomId) async {
     try {
       await _chatService.deleteChatRoom(chatRoomId);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Chat deleted', style: GoogleFonts.poppins()),
-          backgroundColor: CAppTheme.successColor,
-          duration: const Duration(seconds: 2),
-        ),
-      );
+      if (!mounted) return true;
+      setState(() {
+        _hiddenRoomIds.add(chatRoomId);
+        _chatRooms = _chatRooms.where((c) => c.id != chatRoomId).toList();
+      });
+      return true;
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to delete chat', style: GoogleFonts.poppins()),
-          backgroundColor: CAppTheme.errorColor,
-        ),
-      );
-      _loadChatRooms();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to delete chat', style: GoogleFonts.poppins()),
+            backgroundColor: CAppTheme.errorColor,
+          ),
+        );
+      }
+      return false;
     }
   }
 

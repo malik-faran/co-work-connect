@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:cwc/models/user_model.dart';
 import 'package:cwc/services/auth_service.dart';
 import 'package:cwc/services/notification_listener_service.dart';
+import 'package:cwc/services/booking_lifecycle_service.dart';
 import 'package:cwc/services/fcm_service.dart';
 import 'package:cwc/services/supabase_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' show User, AuthChangeEvent;
@@ -89,6 +90,7 @@ class AuthController with ChangeNotifier {
   void dispose() {
     _authSubscription?.cancel();
     NotificationListenerService.instance.stop();
+    BookingLifecycleService.instance.stopPolling();
     super.dispose();
   }
 
@@ -96,11 +98,13 @@ class AuthController with ChangeNotifier {
     final userId = _currentUser?.id;
     if (userId != null && isEmailVerified) {
       NotificationListenerService.instance.start(userId);
+      BookingLifecycleService.instance.startPolling();
       if (!kIsWeb) {
         FcmService.instance.syncTokenForUser(userId);
       }
     } else {
       NotificationListenerService.instance.stop();
+      BookingLifecycleService.instance.stopPolling();
     }
   }
 
@@ -200,9 +204,64 @@ class AuthController with ChangeNotifier {
     notifyListeners();
     try {
       await _authService.updateUserProfile(userModel);
-      _currentUser = userModel;
+      _currentUser = await _authService.getUserById(userModel.id) ?? userModel;
     } catch (e) {
       _errorMessage = e.toString();
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> deleteAccount() async {
+    _isLoading = true;
+    notifyListeners();
+    try {
+      final userId = _currentUser?.id;
+      if (userId != null && !kIsWeb) {
+        await FcmService.instance.clearTokenForUser(userId);
+      }
+      await _authService.deleteOwnAccount();
+      _currentUser = null;
+      NotificationListenerService.instance.stop();
+      return true;
+    } catch (e) {
+      _errorMessage = e.toString();
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<UserModel?> updateCollaborationProfile({
+    required bool collaborationEnabled,
+    required String collaborationHeadline,
+    required String bio,
+    required String availability,
+    String? experience,
+    required List<String> skills,
+  }) async {
+    final userId = _currentUser?.id;
+    if (userId == null) return null;
+
+    _isLoading = true;
+    notifyListeners();
+    try {
+      final updated = await _authService.updateCollaborationProfile(
+        userId: userId,
+        collaborationEnabled: collaborationEnabled,
+        collaborationHeadline: collaborationHeadline,
+        bio: bio,
+        availability: availability,
+        experience: experience,
+        skills: skills,
+      );
+      _currentUser = updated;
+      return updated;
+    } catch (e) {
+      _errorMessage = e.toString();
+      rethrow;
     } finally {
       _isLoading = false;
       notifyListeners();

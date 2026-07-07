@@ -284,8 +284,9 @@ class _CollaborationDetailScreenState extends State<CollaborationDetailScreen> {
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    if (p.projectType != null)
-                      SkillChip(label: p.projectType!, icon: Icons.category_rounded),
+                    ...p.projectCategories.map(
+                      (c) => SkillChip(label: c, icon: Icons.category_rounded),
+                    ),
                     if (p.timeline != null && p.timeline!.isNotEmpty)
                       SkillChip(label: p.timeline!, icon: Icons.schedule_rounded),
                     if (p.budget != null && p.budget!.isNotEmpty)

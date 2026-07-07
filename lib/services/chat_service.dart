@@ -16,6 +16,38 @@ class ChatService {
   final _supabase = SupabaseService.client;
   final _uuid = const Uuid();
 
+  /// Room IDs the user has removed from their chat list.
+  Future<Set<String>> getHiddenRoomIds(String userId) => _hiddenRoomIds(userId);
+
+  Future<Set<String>> _hiddenRoomIds(String userId) async {
+    try {
+      final rows = await _supabase
+          .from('chat_room_deletions')
+          .select('chat_room_id')
+          .eq('user_id', userId);
+      return rows
+          .map((r) => r['chat_room_id'] as String?)
+          .whereType<String>()
+          .toSet();
+    } catch (_) {
+      return {};
+    }
+  }
+
+  Future<void> _restoreChatRoomForUser(String chatRoomId, String userId) async {
+    try {
+      await _supabase.rpc('restore_chat_room', params: {'p_room_id': chatRoomId});
+    } catch (_) {
+      try {
+        await _supabase
+            .from('chat_room_deletions')
+            .delete()
+            .eq('chat_room_id', chatRoomId)
+            .eq('user_id', userId);
+      } catch (_) {}
+    }
+  }
+
   /// Get or create a chat room between two users
   Future<ChatRoomModel> getOrCreateChatRoom({
     required String user1Id,
@@ -24,6 +56,8 @@ class ChatService {
     String? workspaceId,
   }) async {
     try {
+      final currentUserId = _supabase.auth.currentUser?.id;
+
       // Try to find existing chat room
       final existingRooms = await _supabase
           .from('chat_rooms')
@@ -32,7 +66,11 @@ class ChatService {
           .maybeSingle();
 
       if (existingRooms != null) {
-        return ChatRoomModel.fromChatRoomMap(existingRooms);
+        final room = ChatRoomModel.fromChatRoomMap(existingRooms);
+        if (currentUserId != null) {
+          await _restoreChatRoomForUser(room.id, currentUserId);
+        }
+        return room;
       }
 
       // Get user details for caching
@@ -76,13 +114,18 @@ class ChatService {
   /// Get all chat rooms for a user (direct + group rooms they belong to)
   Future<List<ChatRoomModel>> getUserChatRooms(String userId) async {
     try {
+      final hiddenIds = await _hiddenRoomIds(userId);
+
       final rows = await _supabase
           .from('chat_rooms')
           .select()
           .or('user1_id.eq.$userId,user2_id.eq.$userId')
           .order('last_message_at', ascending: false);
 
-      final rooms = rows.map((r) => ChatRoomModel.fromChatRoomMap(r)).toList();
+      final rooms = rows
+          .map((r) => ChatRoomModel.fromChatRoomMap(r))
+          .where((r) => !hiddenIds.contains(r.id))
+          .toList();
 
       // Include group rooms where the user is a member.
       final memberRows = await _supabase
@@ -100,7 +143,11 @@ class ChatService {
             .from('chat_rooms')
             .select()
             .inFilter('id', memberRoomIds.toList());
-        rooms.addAll(groupRows.map((r) => ChatRoomModel.fromChatRoomMap(r)));
+        rooms.addAll(
+          groupRows
+              .map((r) => ChatRoomModel.fromChatRoomMap(r))
+              .where((r) => !hiddenIds.contains(r.id)),
+        );
       }
 
       rooms.sort((a, b) {
@@ -368,25 +415,41 @@ class ChatService {
     return _supabase
         .from('chat_rooms')
         .stream(primaryKey: ['id'])
-        .map((data) {
-          // Filter chat rooms where user is either user1 or user2
+        .asyncMap((data) async {
+          final hiddenIds = await _hiddenRoomIds(userId);
+
           final filteredData = data.where((room) {
+            final id = room['id'] as String?;
+            if (id != null && hiddenIds.contains(id)) return false;
             return room['user1_id'] == userId || room['user2_id'] == userId;
           }).toList();
-          
-          // Sort by last_message_at
+
           filteredData.sort((a, b) {
-            final aTime = a['last_message_at'] != null 
-                ? DateTime.parse(a['last_message_at']).millisecondsSinceEpoch 
+            final aTime = a['last_message_at'] != null
+                ? DateTime.parse(a['last_message_at']).millisecondsSinceEpoch
                 : 0;
-            final bTime = b['last_message_at'] != null 
-                ? DateTime.parse(b['last_message_at']).millisecondsSinceEpoch 
+            final bTime = b['last_message_at'] != null
+                ? DateTime.parse(b['last_message_at']).millisecondsSinceEpoch
                 : 0;
-            return bTime.compareTo(aTime); // Descending order
+            return bTime.compareTo(aTime);
           });
-          
+
           return filteredData.map((r) => ChatRoomModel.fromChatRoomMap(r)).toList();
         });
+  }
+
+  /// Edit a message
+  Future<void> editMessage(String messageId, String newText) async {
+    try {
+      await _supabase.from('messages').update({
+        'message': newText,
+        'is_edited': true,
+        'edited_at': DateTime.now().toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
+      }).eq('id', messageId);
+    } catch (e) {
+      throw Exception('Failed to edit message: ${e.toString()}');
+    }
   }
 
   /// Delete a message
@@ -420,13 +483,24 @@ class ChatService {
     }
   }
 
-  /// Delete a chat room (and all its messages)
+  /// Hide a chat for the current user (stays hidden after refresh).
   Future<void> deleteChatRoom(String chatRoomId) async {
     try {
-      await _supabase.from('messages').delete().eq('chat_room_id', chatRoomId);
-      await _supabase.from('chat_rooms').delete().eq('id', chatRoomId);
+      await _supabase.rpc('delete_chat_room', params: {'p_room_id': chatRoomId});
     } catch (e) {
-      throw Exception('Failed to delete chat: ${e.toString()}');
+      final userId = _supabase.auth.currentUser?.id;
+      if (userId == null) {
+        throw Exception('Failed to delete chat: not signed in');
+      }
+      try {
+        await _supabase.from('chat_room_deletions').upsert({
+          'chat_room_id': chatRoomId,
+          'user_id': userId,
+          'deleted_at': DateTime.now().toIso8601String(),
+        }, onConflict: 'chat_room_id,user_id');
+      } catch (inner) {
+        throw Exception('Failed to delete chat: ${inner.toString()}');
+      }
     }
   }
 }

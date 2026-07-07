@@ -180,7 +180,12 @@ class FcmService {
         type != null &&
         (type == 'collaboration_milestone_missed' ||
             NotificationScopeHelper.isProjectType(type))) {
-      final tab = type == 'collaboration_milestone_missed' ? 2 : 0;
+      final tab = (type == 'collaboration_milestone_missed' ||
+              type == 'collaboration_milestone_review' ||
+              type == 'collaboration_milestone_accepted' ||
+              type == 'collaboration_milestone_payment_released')
+          ? 2
+          : 0;
       NavigationService.openProjectFromNotification(collaborationId, initialTab: tab);
       return;
     }

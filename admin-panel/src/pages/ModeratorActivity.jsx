@@ -28,6 +28,12 @@ const ACTION_LABELS = {
   report_dismissed: 'Report Dismissed',
   owner_payout_approved: 'Owner Payout Approved',
   owner_payout_rejected: 'Owner Payout Rejected',
+  user_suspended: 'User Suspended',
+  user_unsuspended: 'User Unsuspended',
+  wallet_credit: 'Wallet Credited',
+  wallet_debit: 'Wallet Debited',
+  collab_payment_released: 'Collab Payment Released',
+  collab_payment_refunded: 'Collab Payment Refunded',
 }
 
 const ModeratorActivity = ({ user }) => {

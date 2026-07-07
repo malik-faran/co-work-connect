@@ -19,6 +19,8 @@ import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/views/screens/profile/public_profile_screen.dart';
 import 'package:cwc/views/screens/user/user_home_screen.dart';
 import 'package:cwc/views/widgets/collaboration_widgets.dart';
+import 'package:cwc/services/collaboration_payment_service.dart';
+import 'package:cwc/views/screens/collaboration/collaboration_milestone_payment_sheet.dart';
 import 'package:cwc/views/screens/collaboration/collaboration_invite_sheet.dart';
 
 /// The Project Room — the collaboration hub for an active project.
@@ -39,14 +41,19 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
     with SingleTickerProviderStateMixin {
   final _hub = CollaborationHubService();
   final _collabService = CollaborationService();
+  final _paymentService = CollaborationPaymentService();
   late final TabController _tabController;
 
   CollaborationModel? _project;
   List<CollaborationMember> _members = [];
   List<CollaborationMilestone> _milestones = [];
+  List<CollaborationPayment> _payments = [];
+  List<CollaborationRole> _roles = [];
   List<CollaborationFile> _files = [];
   List<CollaborationActivity> _activity = [];
   bool _isLoading = true;
+  Timer? _autoRefreshTimer;
+  bool _refreshInFlight = false;
 
   @override
   void initState() {
@@ -57,41 +64,120 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
       initialIndex: widget.initialTab.clamp(0, 5),
     );
     _loadAll();
+    _autoRefreshTimer = Timer.periodic(const Duration(seconds: 6), (_) {
+      if (!mounted || _refreshInFlight) return;
+      _refreshInFlight = true;
+      _loadAll(showLoading: false).whenComplete(() => _refreshInFlight = false);
+    });
   }
 
   @override
   void dispose() {
+    _autoRefreshTimer?.cancel();
     _tabController.dispose();
     super.dispose();
   }
 
   String get _uid => context.read<AuthController>().currentUser?.id ?? '';
   bool get _isOwner => _project != null && _project!.userId == _uid;
+  bool get _isContractFullySigned =>
+      (_project?.isPaymentEnabled == false) ||
+      (_members.isNotEmpty && _members.every((m) => m.hasAcceptedContract));
+  String? get _milestoneLockReason {
+    if (_isContractFullySigned) return null;
+    final pending = _members.where((m) => !m.hasAcceptedContract).length;
+    if (pending <= 0) return 'All team members must sign the project contract first.';
+    return pending == 1
+        ? '1 team member still needs to sign the project contract first.'
+        : '$pending team members still need to sign the project contract first.';
+  }
 
-  Future<void> _loadAll() async {
-    setState(() => _isLoading = true);
-    try {
-      final project = await _collabService.getCollaborationById(widget.collaborationId);
-      final members = await _hub.getMembers(widget.collaborationId);
-      final milestones = await _hub.getMilestones(widget.collaborationId);
-      final files = await _hub.getFiles(widget.collaborationId);
-      final activity = await _hub.getActivity(widget.collaborationId);
+  Future<T?> _loadWithRetry<T>(
+    Future<T> Function() loader, {
+    int attempts = 2,
+  }) async {
+    Object? lastError;
+    for (var i = 0; i < attempts; i++) {
       try {
-        await _hub.notifyOverdueMilestones(widget.collaborationId);
-      } catch (_) {}
-      if (!mounted) return;
-      setState(() {
-        _project = project;
-        _members = members;
-        _milestones = milestones;
-        _files = files;
-        _activity = activity;
-        _isLoading = false;
-      });
+        return await loader();
+      } catch (e) {
+        lastError = e;
+        if (i < attempts - 1) {
+          await Future.delayed(Duration(milliseconds: 400 * (i + 1)));
+        }
+      }
+    }
+    throw lastError ?? Exception('Request failed');
+  }
+
+  Future<void> _loadAll({bool showLoading = true}) async {
+    if (showLoading) setState(() => _isLoading = true);
+    final warnings = <String>[];
+    CollaborationModel? project;
+    try {
+      project = await _loadWithRetry<CollaborationModel?>(
+        () => _collabService.getCollaborationById(widget.collaborationId),
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() => _isLoading = false);
       _toast('Failed to load project: $e', isError: true);
+      return;
+    }
+
+    Future<T?> safeLoad<T>(Future<T> Function() loader, String label) async {
+      try {
+        return await _loadWithRetry(loader);
+      } catch (e) {
+        warnings.add(label);
+        return null;
+      }
+    }
+
+    final members = await safeLoad(
+      () => _hub.getMembers(widget.collaborationId),
+      'team members',
+    );
+    final milestones = await safeLoad(
+      () => _hub.getMilestones(widget.collaborationId),
+      'milestones',
+    );
+    final payments = await safeLoad(
+      () => _paymentService.getPayments(widget.collaborationId),
+      'payments',
+    );
+    final roles = await safeLoad(
+      () => _hub.getRoles(widget.collaborationId),
+      'roles',
+    );
+    final files = await safeLoad(
+      () => _hub.getFiles(widget.collaborationId),
+      'files',
+    );
+    final activity = await safeLoad(
+      () => _hub.getActivity(widget.collaborationId),
+      'activity',
+    );
+    try {
+      await _hub.notifyOverdueMilestones(widget.collaborationId);
+    } catch (_) {}
+
+    if (!mounted) return;
+    setState(() {
+      _project = project;
+      if (members != null) _members = members;
+      if (milestones != null) _milestones = milestones;
+      if (payments != null) _payments = payments;
+      if (roles != null) _roles = roles;
+      if (files != null) _files = files;
+      if (activity != null) _activity = activity;
+      _isLoading = false;
+    });
+    if (warnings.isNotEmpty) {
+      _toast(
+        'Some sections could not refresh (${warnings.join(', ')}). Pull to retry.',
+        isError: true,
+      );
     }
   }
 
@@ -100,6 +186,9 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
     final done = _milestones.where((m) => m.isDone).length;
     return done / _milestones.length;
   }
+
+  String? get _projectCompleteBlockReason =>
+      CollaborationMilestoneRules.projectCompleteBlockReason(_milestones);
 
   @override
   Widget build(BuildContext context) {
@@ -213,10 +302,16 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
             _OverviewTab(
               project: p,
               progress: _progress,
-              memberCount: _members.length,
+              members: _members,
+              milestones: _milestones,
+              payments: _payments,
+              roles: _roles,
               milestoneCount: _milestones.length,
               isOwner: _isOwner,
+              currentUserId: _uid,
+              onRefresh: () => _loadAll(showLoading: false),
               onMarkComplete: _confirmComplete,
+              projectCompleteBlockReason: _projectCompleteBlockReason,
               onEditMeetingLink: _editMeetingLink,
               onOpenMeeting: _openMeeting,
             ),
@@ -235,9 +330,16 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
               milestones: _milestones,
               members: _members,
               progress: _progress,
-              onAdd: _addMilestone,
-              onToggle: _toggleMilestone,
-              onDelete: _isOwner ? _deleteMilestone : null,
+              currentUserId: _uid,
+              isOwner: _isOwner,
+              canManageMilestones: _isOwner && _isContractFullySigned,
+              lockReason: _milestoneLockReason,
+              onAdd: _isOwner && _isContractFullySigned ? _addMilestone : null,
+              onSubmit: _submitMilestone,
+              onApprove: _approveMilestone,
+              onReject: _isOwner ? _rejectMilestoneRequest : null,
+              onEdit: _isOwner && _isContractFullySigned ? _editMilestone : null,
+              onDelete: _isOwner && _isContractFullySigned ? _deleteMilestone : null,
             ),
             _FilesTab(
               files: _files,
@@ -348,6 +450,7 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
       ));
       if (!mounted) return;
       _toast('Invite sent to ${selected['name'] ?? 'teammate'}. They join when they accept.');
+      _loadAll(showLoading: false);
     } catch (e) {
       _toast('Failed to invite: $e', isError: true);
     }
@@ -404,10 +507,10 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
     );
     if (ok != true) return;
     try {
-      await _hub.removeMember(_project!.id, member.userId);
+      await _hub.removeMember(_project!.id, member.userId, _project!.title);
       if (!mounted) return;
       _toast('${member.userName} removed from team');
-      _loadAll();
+      _loadAll(showLoading: false);
     } catch (e) {
       _toast('Failed to remove: $e', isError: true);
     }
@@ -436,7 +539,7 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
     );
     if (ok != true) return;
     try {
-      await _hub.removeMember(_project!.id, user.id);
+      await _hub.removeMember(_project!.id, user.id, null);
       if (!mounted) return;
       Navigator.pop(context, true);
       _toast('You left the team');
@@ -448,6 +551,13 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
   Future<void> _confirmComplete() async {
     final user = context.read<AuthController>().currentUser;
     if (user == null || _project == null) return;
+
+    final blockReason = _projectCompleteBlockReason;
+    if (blockReason != null) {
+      _toast(blockReason, isError: true);
+      return;
+    }
+
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -465,9 +575,13 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
       ),
     );
     if (ok != true) return;
-    await _hub.completeProject(_project!, user.name);
-    _toast('Project marked as completed!');
-    _loadAll();
+    try {
+      await _hub.completeProject(_project!, user.name);
+      _toast('Project marked as completed!');
+      _loadAll();
+    } catch (e) {
+      _toast(e.toString().replaceFirst('Exception: ', ''), isError: true);
+    }
   }
 
   Future<void> _editMeetingLink() async {
@@ -507,16 +621,36 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
   }
 
   Future<void> _addMilestone() async {
+    if (!_isOwner) {
+      _toast('Only the project owner can create milestones.', isError: true);
+      return;
+    }
+    if (!_isContractFullySigned) {
+      _toast(_milestoneLockReason ?? 'Project contract must be signed first.', isError: true);
+      return;
+    }
     final user = context.read<AuthController>().currentUser;
     if (user == null) return;
     final result = await showModalBottomSheet<_MilestoneDraft>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => _AddMilestoneSheet(members: _members),
+      builder: (_) => _AddMilestoneSheet(
+        members: _members,
+        enablePayments: _project?.isPaymentEnabled ?? true,
+      ),
     );
     if (result == null) return;
-    await _hub.addMilestone(CollaborationMilestone(
+    if (result.assignedTo == null) {
+      _toast('Please assign the milestone to a teammate.', isError: true);
+      return;
+    }
+    if (result.dueDate == null) {
+      _toast('Please set a due date for the milestone.', isError: true);
+      return;
+    }
+    await _hub.addMilestone(
+      CollaborationMilestone(
       id: const Uuid().v4(),
       collaborationId: widget.collaborationId,
       title: result.title,
@@ -524,20 +658,199 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
       dueDate: result.dueDate,
       assignedTo: result.assignedTo?.userId,
       assignedToName: result.assignedTo?.userName,
+      amount: (_project?.isPaymentEnabled ?? true) ? result.amount : null,
       sortOrder: _milestones.length,
       createdAt: DateTime.now(),
-    ));
+    ),
+      actorId: user.id,
+      actorName: user.name,
+    );
     _loadAll();
   }
 
-  Future<void> _toggleMilestone(CollaborationMilestone m) async {
+  Future<void> _submitMilestone(CollaborationMilestone m) async {
+    if (!_isContractFullySigned) {
+      _toast(_milestoneLockReason ?? 'Project contract must be signed first.', isError: true);
+      return;
+    }
     final user = context.read<AuthController>().currentUser;
     if (user == null) return;
-    await _hub.toggleMilestone(m, user.id, user.name);
+    if (m.isMissed) {
+      _toast('This milestone was missed. Ask the project owner to update the due date.', isError: true);
+      return;
+    }
+    if (m.assignedTo != user.id || !m.isPending) {
+      _toast('Only the assigned teammate can submit this milestone.', isError: true);
+      return;
+    }
+    final controller = TextEditingController();
+    final note = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(CAppTheme.radiusLarge)),
+        title: Text('Submit milestone', style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
+        content: TextField(
+          controller: controller,
+          minLines: 3,
+          maxLines: 6,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'What did you complete?',
+            hintText: 'Describe the work, deliverables, or links...',
+            alignLabelWithHint: true,
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Submit'),
+          ),
+        ],
+      ),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) => controller.dispose());
+    if (note == null || note.isEmpty) {
+      _toast('Please describe what you completed.', isError: true);
+      return;
+    }
+    try {
+      await _hub.submitMilestoneCompletion(
+        m,
+        user.id,
+        user.name,
+        submissionNote: note,
+      );
+      _loadAll();
+      _toast('Milestone submitted for owner review.');
+    } catch (e) {
+      _toast(e.toString().replaceFirst('Exception: ', ''), isError: true);
+    }
+  }
+
+  Future<void> _approveMilestone(CollaborationMilestone m) async {
+    if (!_isOwner || !m.isSubmitted) return;
+    final user = context.read<AuthController>().currentUser;
+    if (user == null) return;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(CAppTheme.radiusLarge)),
+        title: Text('Approve milestone?', style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
+        content: Text(
+          'Mark "${m.title}" as completed? The assignee will be notified.',
+          style: GoogleFonts.poppins(fontSize: 14, color: CAppTheme.textSecondary),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(backgroundColor: CAppTheme.successColor),
+            child: const Text('Approve'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await _hub.approveMilestoneCompletion(m, user.id, user.name);
+      _loadAll();
+      _toast('Milestone approved.');
+    } catch (e) {
+      _toast(e.toString().replaceFirst('Exception: ', ''), isError: true);
+    }
+  }
+
+  Future<void> _rejectMilestoneRequest(CollaborationMilestone m) async {
+    final user = context.read<AuthController>().currentUser;
+    if (user == null || !_isOwner || !m.isSubmitted) return;
+    final controller = TextEditingController();
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Reject milestone request'),
+        content: TextField(
+          controller: controller,
+          minLines: 2,
+          maxLines: 4,
+          decoration: const InputDecoration(
+            hintText: 'Tell collaborator what needs to be fixed...',
+            alignLabelWithHint: true,
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Reject'),
+          ),
+        ],
+      ),
+    );
+    if (reason == null || reason.isEmpty) {
+      _toast('Please add a reason for rejection.', isError: true);
+      return;
+    }
+    try {
+      await _hub.rejectMilestoneCompletion(m, user.id, user.name, reason);
+      _loadAll();
+      _toast('Request rejected with feedback.');
+    } catch (e) {
+      _toast(e.toString().replaceFirst('Exception: ', ''), isError: true);
+    }
+  }
+
+  Future<void> _editMilestone(CollaborationMilestone m) async {
+    if (!_isOwner) {
+      _toast('Only the project owner can edit milestones.', isError: true);
+      return;
+    }
+    if (!_isContractFullySigned) {
+      _toast(_milestoneLockReason ?? 'Project contract must be signed first.', isError: true);
+      return;
+    }
+    final result = await showModalBottomSheet<_MilestoneDraft>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _AddMilestoneSheet(
+        members: _members,
+        initial: m,
+        isEditing: true,
+        enablePayments: _project?.isPaymentEnabled ?? true,
+      ),
+    );
+    if (result == null) return;
+    if (result.assignedTo == null || result.dueDate == null) {
+      _toast('Assignee and due date are required.', isError: true);
+      return;
+    }
+    final user = context.read<AuthController>().currentUser;
+    await _hub.updateMilestone(
+      m.copyWith(
+        title: result.title,
+        description: result.description,
+        dueDate: result.dueDate,
+        assignedTo: result.assignedTo!.userId,
+        assignedToName: result.assignedTo!.userName,
+        amount: (_project?.isPaymentEnabled ?? true) ? result.amount : null,
+      ),
+      actorId: user?.id,
+      actorName: user?.name,
+      previous: m,
+    );
     _loadAll();
   }
 
   Future<void> _deleteMilestone(CollaborationMilestone m) async {
+    if (!_isOwner) {
+      _toast('Only the project owner can delete milestones.', isError: true);
+      return;
+    }
+    if (!_isContractFullySigned) {
+      _toast(_milestoneLockReason ?? 'Project contract must be signed first.', isError: true);
+      return;
+    }
     await _hub.deleteMilestone(m.id);
     _loadAll();
   }
@@ -593,6 +906,9 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
             .toList();
         if (match.isNotEmpty) _showMilestoneDetail(match.first);
         break;
+      case 'milestone_assigned':
+        _tabController.animateTo(2);
+        break;
       case 'milestone_missed':
         _tabController.animateTo(2);
         break;
@@ -640,11 +956,23 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
               Text('Due: ${DateFormat('MMM d, yyyy').format(milestone.dueDate!)}',
                   style: GoogleFonts.poppins(fontSize: 13)),
             Text(
-              milestone.isDone ? 'Status: Completed' : 'Status: Pending',
+              milestone.isDone
+                  ? 'Status: Completed'
+                  : milestone.isMissed
+                      ? 'Status: Missed'
+                      : milestone.isOverdue
+                          ? 'Status: Overdue'
+                          : 'Status: Pending',
               style: GoogleFonts.poppins(
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
-                color: milestone.isDone ? CAppTheme.successColor : CAppTheme.warningColor,
+                color: milestone.isDone
+                    ? CAppTheme.successColor
+                    : milestone.isMissed
+                        ? CAppTheme.errorColor
+                        : milestone.isOverdue
+                            ? CAppTheme.warningColor
+                            : CAppTheme.warningColor,
               ),
             ),
           ],
@@ -673,23 +1001,37 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
 class _OverviewTab extends StatelessWidget {
   final CollaborationModel project;
   final double progress;
-  final int memberCount;
+  final List<CollaborationMember> members;
+  final List<CollaborationMilestone> milestones;
+  final List<CollaborationPayment> payments;
+  final List<CollaborationRole> roles;
   final int milestoneCount;
   final bool isOwner;
+  final String currentUserId;
+  final VoidCallback onRefresh;
   final VoidCallback onMarkComplete;
+  final String? projectCompleteBlockReason;
   final VoidCallback onEditMeetingLink;
   final VoidCallback onOpenMeeting;
 
   const _OverviewTab({
     required this.project,
     required this.progress,
-    required this.memberCount,
+    required this.members,
+    required this.milestones,
+    required this.payments,
+    required this.roles,
     required this.milestoneCount,
     required this.isOwner,
+    required this.currentUserId,
+    required this.onRefresh,
     required this.onMarkComplete,
+    this.projectCompleteBlockReason,
     required this.onEditMeetingLink,
     required this.onOpenMeeting,
   });
+
+  int get memberCount => members.length;
 
   @override
   Widget build(BuildContext context) {
@@ -750,20 +1092,6 @@ class _OverviewTab extends StatelessWidget {
                   children: project.requiredSkills.map((s) => SkillChip(label: s)).toList(),
                 ),
               ],
-              if ((project.timeline != null && project.timeline!.isNotEmpty) ||
-                  (project.budget != null && project.budget!.isNotEmpty)) ...[
-                const SizedBox(height: 14),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    if (project.timeline != null && project.timeline!.isNotEmpty)
-                      _infoPill(Icons.schedule_rounded, project.timeline!),
-                    if (project.budget != null && project.budget!.isNotEmpty)
-                      _infoPill(Icons.payments_rounded, project.budget!),
-                  ],
-                ),
-              ],
             ],
           ),
         ),
@@ -799,7 +1127,19 @@ class _OverviewTab extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 14),
-        // Cross-link to workspaces (secondary feature)
+        if (project.isPaymentEnabled) ...[
+          _ProjectContractCard(
+            project: project,
+            members: members,
+            milestones: milestones,
+            payments: payments,
+            roles: roles,
+            isOwner: isOwner,
+            currentUserId: currentUserId,
+            onRefresh: onRefresh,
+          ),
+          const SizedBox(height: 14),
+        ],
         SectionCard(
           padding: const EdgeInsets.all(14),
           child: Row(
@@ -836,11 +1176,43 @@ class _OverviewTab extends StatelessWidget {
         ),
         if (isOwner && !project.isCompleted) ...[
           const SizedBox(height: 18),
+          if (projectCompleteBlockReason != null) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: CAppTheme.warningColor.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                border: Border.all(color: CAppTheme.warningColor.withValues(alpha: 0.25)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.info_outline_rounded, size: 18, color: CAppTheme.warningColor),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      projectCompleteBlockReason!,
+                      style: GoogleFonts.poppins(
+                        fontSize: 12.5,
+                        color: CAppTheme.warningColor,
+                        height: 1.35,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(backgroundColor: CAppTheme.successColor),
-              onPressed: onMarkComplete,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: CAppTheme.successColor,
+                disabledBackgroundColor: CAppTheme.successColor.withValues(alpha: 0.4),
+              ),
+              onPressed: projectCompleteBlockReason == null ? onMarkComplete : null,
               icon: const Icon(Icons.verified_rounded),
               label: const Text('Mark project complete'),
             ),
@@ -848,24 +1220,6 @@ class _OverviewTab extends StatelessWidget {
         ],
         const SizedBox(height: 24),
       ],
-    );
-  }
-
-  Widget _infoPill(IconData icon, String text) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: CAppTheme.backgroundColor,
-        borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 15, color: CAppTheme.textSecondary),
-          const SizedBox(width: 6),
-          Text(text, style: GoogleFonts.poppins(fontSize: 12.5, fontWeight: FontWeight.w500)),
-        ],
-      ),
     );
   }
 }
@@ -1007,37 +1361,113 @@ class _MilestonesTab extends StatelessWidget {
   final List<CollaborationMilestone> milestones;
   final List<CollaborationMember> members;
   final double progress;
-  final VoidCallback onAdd;
-  final ValueChanged<CollaborationMilestone> onToggle;
+  final String currentUserId;
+  final bool isOwner;
+  final bool canManageMilestones;
+  final String? lockReason;
+  final VoidCallback? onAdd;
+  final ValueChanged<CollaborationMilestone> onSubmit;
+  final ValueChanged<CollaborationMilestone> onApprove;
+  final ValueChanged<CollaborationMilestone>? onReject;
+  final ValueChanged<CollaborationMilestone>? onEdit;
   final ValueChanged<CollaborationMilestone>? onDelete;
 
   const _MilestonesTab({
     required this.milestones,
     required this.members,
     required this.progress,
-    required this.onAdd,
-    required this.onToggle,
+    required this.currentUserId,
+    required this.isOwner,
+    required this.canManageMilestones,
+    this.lockReason,
+    this.onAdd,
+    required this.onSubmit,
+    required this.onApprove,
+    this.onReject,
+    this.onEdit,
     this.onDelete,
   });
 
   @override
   Widget build(BuildContext context) {
+    final lockCard = (!canManageMilestones && lockReason != null)
+        ? Container(
+            margin: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+            child: SectionCard(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.lock_outline_rounded,
+                      size: 18, color: CAppTheme.warningColor),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Contract signing required: $lockReason',
+                      style: GoogleFonts.poppins(
+                        fontSize: 12,
+                        color: CAppTheme.textSecondary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          )
+        : const SizedBox.shrink();
+
     return Stack(
       children: [
         milestones.isEmpty
-            ? EmptyState(
-                icon: Icons.flag_rounded,
-                title: 'No milestones yet',
-                subtitle: 'Break the project into clear, trackable milestones.',
-                action: ElevatedButton.icon(
-                  onPressed: onAdd,
-                  icon: const Icon(Icons.add),
-                  label: const Text('Add milestone'),
-                ),
+            ? Column(
+                children: [
+                  lockCard,
+                  Expanded(
+                    child: EmptyState(
+                      icon: Icons.flag_rounded,
+                      title: 'No milestones yet',
+                      subtitle: canManageMilestones
+                          ? 'Break the project into clear, trackable milestones.'
+                          : isOwner
+                              ? 'Sign the project contract first, then set milestones.'
+                              : 'Milestones will appear here once the owner adds them.',
+                      action: canManageMilestones
+                          ? ElevatedButton.icon(
+                              onPressed: onAdd,
+                              icon: const Icon(Icons.add),
+                              label: const Text('Add milestone'),
+                            )
+                          : null,
+                    ),
+                  ),
+                ],
               )
             : ListView(
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 90),
                 children: [
+                  if (!canManageMilestones && lockReason != null) ...[
+                    SectionCard(
+                      padding: const EdgeInsets.all(12),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.lock_outline_rounded,
+                              size: 18, color: CAppTheme.warningColor),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Contract signing required: $lockReason',
+                              style: GoogleFonts.poppins(
+                                fontSize: 12,
+                                color: CAppTheme.textSecondary,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                   _teamMilestoneSummary(),
                   const SizedBox(height: 16),
                   LinearProgressIndicator(
@@ -1051,15 +1481,16 @@ class _MilestonesTab extends StatelessWidget {
                   ...milestones.map((m) => _milestoneCard(context, m)),
                 ],
               ),
-        Positioned(
-          right: 16,
-          bottom: 16,
-          child: FloatingActionButton.extended(
-            onPressed: onAdd,
-            icon: const Icon(Icons.add),
-            label: const Text('Milestone'),
+        if (canManageMilestones)
+          Positioned(
+            right: 16,
+            bottom: 16,
+            child: FloatingActionButton.extended(
+              onPressed: onAdd,
+              icon: const Icon(Icons.add),
+              label: const Text('Milestone'),
+            ),
           ),
-        ),
       ],
     );
   }
@@ -1083,6 +1514,7 @@ class _MilestonesTab extends StatelessWidget {
           const SizedBox(height: 12),
           ...grouped.entries.map((entry) {
             final done = entry.value.where((m) => m.isDone).length;
+            final missed = entry.value.where((m) => m.isMissed).length;
             final total = entry.value.length;
             return Container(
               margin: const EdgeInsets.only(bottom: 10),
@@ -1101,13 +1533,16 @@ class _MilestonesTab extends StatelessWidget {
                             style: GoogleFonts.poppins(
                                 fontSize: 14, fontWeight: FontWeight.w600)),
                       ),
-                      Text('$done/$total done',
+                      Text(
+                        missed > 0 ? '$done/$total done · $missed missed' : '$done/$total done',
                           style: GoogleFonts.poppins(
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
-                              color: done == total
-                                  ? CAppTheme.successColor
-                                  : CAppTheme.primaryColor)),
+                              color: missed > 0
+                                  ? CAppTheme.errorColor
+                                  : done == total
+                                      ? CAppTheme.successColor
+                                      : CAppTheme.primaryColor)),
                     ],
                   ),
                   const SizedBox(height: 8),
@@ -1117,9 +1552,17 @@ class _MilestonesTab extends StatelessWidget {
                       child: Row(
                         children: [
                           Icon(
-                            m.isDone ? Icons.check_circle_rounded : Icons.radio_button_unchecked,
+                            m.isDone
+                                ? Icons.check_circle_rounded
+                                : m.isMissed
+                                    ? Icons.cancel_rounded
+                                    : Icons.radio_button_unchecked,
                             size: 16,
-                            color: m.isDone ? CAppTheme.successColor : CAppTheme.textTertiary,
+                            color: m.isDone
+                                ? CAppTheme.successColor
+                                : m.isMissed
+                                    ? CAppTheme.errorColor
+                                    : CAppTheme.textTertiary,
                           ),
                           const SizedBox(width: 8),
                           Expanded(
@@ -1146,73 +1589,332 @@ class _MilestonesTab extends StatelessWidget {
   }
 
   Widget _milestoneCard(BuildContext context, CollaborationMilestone m) {
+    final isAssignee = m.assignedTo == currentUserId;
+    final canSubmit = isAssignee && m.isPending && !m.isMissed;
+    final canApprove = isOwner && m.isSubmitted;
+    final canReject = isOwner && m.isSubmitted && onReject != null;
+    final borderColor = m.isMissed
+        ? CAppTheme.errorColor.withValues(alpha: 0.35)
+        : m.isOverdue
+            ? CAppTheme.warningColor.withValues(alpha: 0.35)
+            : m.isDone
+                ? CAppTheme.successColor.withValues(alpha: 0.2)
+                : m.isSubmitted
+                    ? CAppTheme.infoColor.withValues(alpha: 0.25)
+                    : CAppTheme.borderColor;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       child: SectionCard(
         padding: const EdgeInsets.all(12),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            GestureDetector(
-              onTap: () => onToggle(m),
-              child: Container(
-                margin: const EdgeInsets.only(top: 2),
-                width: 24,
-                height: 24,
-                decoration: BoxDecoration(
-                  color: m.isDone ? CAppTheme.successColor : Colors.transparent,
-                  borderRadius: BorderRadius.circular(7),
-                  border: Border.all(
-                    color: m.isDone ? CAppTheme.successColor : CAppTheme.borderColor,
-                    width: 2,
-                  ),
-                ),
-                child: m.isDone
-                    ? const Icon(Icons.check, size: 16, color: Colors.white)
-                    : null,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    m.title,
-                    style: GoogleFonts.poppins(
-                      fontSize: 14.5,
-                      fontWeight: FontWeight.w600,
-                      decoration: m.isDone ? TextDecoration.lineThrough : null,
-                      color: m.isDone ? CAppTheme.textTertiary : CAppTheme.textPrimary,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+            border: Border.all(color: borderColor),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(2),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  margin: const EdgeInsets.only(top: 2),
+                  width: 24,
+                  height: 24,
+                  decoration: BoxDecoration(
+                    color: m.isDone
+                        ? CAppTheme.successColor
+                        : m.isSubmitted
+                            ? CAppTheme.infoColor.withValues(alpha: 0.15)
+                            : m.isMissed
+                                ? CAppTheme.errorColor.withValues(alpha: 0.15)
+                                : Colors.transparent,
+                    borderRadius: BorderRadius.circular(7),
+                    border: Border.all(
+                      color: m.isDone
+                          ? CAppTheme.successColor
+                          : m.isSubmitted
+                              ? CAppTheme.infoColor
+                              : m.isMissed
+                                  ? CAppTheme.errorColor
+                                  : CAppTheme.borderColor,
+                      width: 2,
                     ),
                   ),
-                  if (m.description != null && m.description!.isNotEmpty) ...[
-                    const SizedBox(height: 3),
-                    Text(m.description!,
-                        style: GoogleFonts.poppins(
-                            fontSize: 12.5, color: CAppTheme.textSecondary)),
-                  ],
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 6,
+                  child: m.isDone
+                      ? const Icon(Icons.check, size: 16, color: Colors.white)
+                      : m.isSubmitted
+                          ? const Icon(Icons.hourglass_top_rounded, size: 14, color: CAppTheme.infoColor)
+                          : m.isMissed
+                              ? const Icon(Icons.close, size: 14, color: CAppTheme.errorColor)
+                              : null,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      if (m.assignedToName != null)
-                        _tag(Icons.person_rounded, m.assignedToName!),
-                      if (m.dueDate != null)
-                        _tag(Icons.event_rounded, DateFormat('MMM d').format(m.dueDate!)),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              m.title,
+                              style: GoogleFonts.poppins(
+                                fontSize: 14.5,
+                                fontWeight: FontWeight.w600,
+                                decoration: m.isDone ? TextDecoration.lineThrough : null,
+                                color: m.isDone
+                                    ? CAppTheme.textTertiary
+                                    : m.isMissed
+                                        ? CAppTheme.errorColor
+                                        : CAppTheme.textPrimary,
+                              ),
+                            ),
+                          ),
+                          _milestoneStatusChip(m),
+                        ],
+                      ),
+                      if (m.description != null && m.description!.isNotEmpty) ...[
+                        const SizedBox(height: 3),
+                        Text(m.description!,
+                            style: GoogleFonts.poppins(
+                                fontSize: 12.5, color: CAppTheme.textSecondary)),
+                      ],
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 6,
+                        children: [
+                          if (m.assignedToName != null)
+                            _tag(Icons.person_rounded, m.assignedToName!),
+                          if (m.dueDate != null)
+                            _tag(
+                              Icons.event_rounded,
+                              DateFormat('MMM d, yyyy · h:mm a').format(m.dueDate!),
+                            ),
+                        ],
+                      ),
+                      if (m.submissionNote != null && m.submissionNote!.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: CAppTheme.infoColor.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
+                            border: Border.all(
+                              color: CAppTheme.infoColor.withValues(alpha: 0.2),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Submitted work',
+                                style: GoogleFonts.poppins(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: CAppTheme.infoColor,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                m.submissionNote!,
+                                style: GoogleFonts.poppins(
+                                  fontSize: 12.5,
+                                  color: CAppTheme.textPrimary,
+                                  height: 1.35,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                      if (m.reviewReason != null && m.reviewReason!.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: CAppTheme.errorColor.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(CAppTheme.radiusSmall),
+                            border: Border.all(
+                              color: CAppTheme.errorColor.withValues(alpha: 0.2),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Owner feedback',
+                                style: GoogleFonts.poppins(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: CAppTheme.errorColor,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                m.reviewReason!,
+                                style: GoogleFonts.poppins(
+                                  fontSize: 12.5,
+                                  color: CAppTheme.textPrimary,
+                                  height: 1.35,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                      if (canSubmit) ...[
+                        const SizedBox(height: 10),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: () => onSubmit(m),
+                            icon: const Icon(Icons.upload_file_rounded, size: 18),
+                            label: const Text('Submit work'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: CAppTheme.primaryColor,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                            ),
+                          ),
+                        ),
+                      ],
+                      if (canApprove || canReject) ...[
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            if (canApprove)
+                              Expanded(
+                                child: SizedBox(
+                                  height: 42,
+                                  child: ElevatedButton(
+                                    onPressed: () => onApprove(m),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: CAppTheme.successColor,
+                                      foregroundColor: Colors.white,
+                                      elevation: 0,
+                                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(
+                                          CAppTheme.radiusMedium,
+                                        ),
+                                      ),
+                                    ),
+                                    child: Text(
+                                      'Approve',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: GoogleFonts.poppins(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            if (canApprove && canReject) const SizedBox(width: 10),
+                            if (canReject)
+                              Expanded(
+                                child: SizedBox(
+                                  height: 42,
+                                  child: OutlinedButton(
+                                    onPressed: () => onReject!(m),
+                                    style: OutlinedButton.styleFrom(
+                                      foregroundColor: CAppTheme.errorColor,
+                                      side: BorderSide(
+                                        color: CAppTheme.errorColor.withValues(alpha: 0.55),
+                                      ),
+                                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(
+                                          CAppTheme.radiusMedium,
+                                        ),
+                                      ),
+                                    ),
+                                    child: Text(
+                                      'Reject',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: GoogleFonts.poppins(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ],
+                      if (m.isMissed) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Not completed on time. Owner can extend the due date to reopen.',
+                          style: GoogleFonts.poppins(
+                            fontSize: 11.5,
+                            color: CAppTheme.errorColor,
+                            height: 1.3,
+                          ),
+                        ),
+                      ],
                     ],
                   ),
-                ],
-              ),
+                ),
+                if (onEdit != null)
+                  IconButton(
+                    icon: const Icon(Icons.edit_outlined,
+                        size: 20, color: CAppTheme.textTertiary),
+                    onPressed: () => onEdit!(m),
+                    tooltip: 'Edit milestone',
+                  ),
+                if (onDelete != null)
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline_rounded,
+                        size: 20, color: CAppTheme.textTertiary),
+                    onPressed: () => onDelete!(m),
+                  ),
+              ],
             ),
-            if (onDelete != null)
-              IconButton(
-                icon: const Icon(Icons.delete_outline_rounded,
-                    size: 20, color: CAppTheme.textTertiary),
-                onPressed: () => onDelete!(m),
-              ),
-          ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _milestoneStatusChip(CollaborationMilestone m) {
+    final Color color;
+    final String label;
+    if (m.isDone) {
+      color = CAppTheme.successColor;
+      label = 'Done';
+    } else if (m.isSubmitted) {
+      color = CAppTheme.infoColor;
+      label = 'Awaiting approval';
+    } else if (m.isMissed) {
+      color = CAppTheme.errorColor;
+      label = 'Missed';
+    } else if (m.isOverdue) {
+      color = CAppTheme.warningColor;
+      label = 'Overdue';
+    } else {
+      color = CAppTheme.textSecondary;
+      label = 'Pending';
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(CAppTheme.radiusRound),
+      ),
+      child: Text(
+        label,
+        style: GoogleFonts.poppins(
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+          color: color,
         ),
       ),
     );
@@ -1651,6 +2353,8 @@ class _ActivityTab extends StatelessWidget {
         return 'joined the team';
       case 'milestone_done':
         return 'completed milestone';
+      case 'milestone_assigned':
+        return 'assigned milestone';
       case 'milestone_missed':
         return 'missed milestone';
       case 'file_uploaded':
@@ -1670,6 +2374,8 @@ class _ActivityTab extends StatelessWidget {
         return Icons.person_add_rounded;
       case 'milestone_done':
         return Icons.check_circle_rounded;
+      case 'milestone_assigned':
+        return Icons.assignment_ind_rounded;
       case 'milestone_missed':
         return Icons.warning_amber_rounded;
       case 'file_uploaded':
@@ -1688,6 +2394,8 @@ class _ActivityTab extends StatelessWidget {
       case 'milestone_done':
       case 'completed':
         return CAppTheme.successColor;
+      case 'milestone_assigned':
+        return CAppTheme.infoColor;
       case 'milestone_missed':
         return CAppTheme.errorColor;
       case 'launched':
@@ -1708,12 +2416,22 @@ class _MilestoneDraft {
   final String? description;
   final DateTime? dueDate;
   final CollaborationMember? assignedTo;
-  _MilestoneDraft(this.title, this.description, this.dueDate, this.assignedTo);
+  final double? amount;
+  _MilestoneDraft(this.title, this.description, this.dueDate, this.assignedTo, this.amount);
 }
 
 class _AddMilestoneSheet extends StatefulWidget {
   final List<CollaborationMember> members;
-  const _AddMilestoneSheet({required this.members});
+  final CollaborationMilestone? initial;
+  final bool isEditing;
+  final bool enablePayments;
+
+  const _AddMilestoneSheet({
+    required this.members,
+    this.initial,
+    this.isEditing = false,
+    this.enablePayments = true,
+  });
 
   @override
   State<_AddMilestoneSheet> createState() => _AddMilestoneSheetState();
@@ -1722,30 +2440,90 @@ class _AddMilestoneSheet extends StatefulWidget {
 class _AddMilestoneSheetState extends State<_AddMilestoneSheet> {
   final _title = TextEditingController();
   final _desc = TextEditingController();
+  final _amount = TextEditingController();
   DateTime? _due;
   CollaborationMember? _assignee;
+
+  @override
+  void initState() {
+    super.initState();
+    final initial = widget.initial;
+    if (initial != null) {
+      _title.text = initial.title;
+      _desc.text = initial.description ?? '';
+      if (initial.amount != null && initial.amount! > 0) {
+        _amount.text = initial.amount!.toStringAsFixed(0);
+      }
+      _due = initial.dueDate;
+      if (initial.assignedTo != null) {
+        for (final m in widget.members) {
+          if (m.userId == initial.assignedTo) {
+            _assignee = m;
+            break;
+          }
+        }
+      }
+    }
+  }
 
   @override
   void dispose() {
     _title.dispose();
     _desc.dispose();
+    _amount.dispose();
     super.dispose();
+  }
+
+  Future<void> _pickDueDateTime() async {
+    final now = DateTime.now();
+    final todayOnly = DateTime(now.year, now.month, now.day);
+    final pickedDate = await showDatePicker(
+      context: context,
+      initialDate: _due ?? todayOnly,
+      firstDate: todayOnly,
+      lastDate: todayOnly.add(const Duration(days: 365 * 2)),
+    );
+    if (pickedDate == null || !mounted) return;
+
+    final pickedTime = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(_due ?? now.add(const Duration(hours: 1))),
+    );
+    if (pickedTime == null) return;
+
+    setState(() {
+      _due = DateTime(
+        pickedDate.year,
+        pickedDate.month,
+        pickedDate.day,
+        pickedTime.hour,
+        pickedTime.minute,
+      );
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+    final members = widget.members;
+    final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+    final maxHeight = MediaQuery.sizeOf(context).height * 0.88;
+    final canSubmit =
+        _title.text.trim().isNotEmpty && _due != null && _assignee != null;
+
+    return AnimatedPadding(
+      padding: EdgeInsets.only(bottom: bottomInset),
+      duration: const Duration(milliseconds: 150),
+      curve: Curves.easeOut,
       child: Container(
-        padding: const EdgeInsets.all(20),
+        constraints: BoxConstraints(maxHeight: maxHeight),
         decoration: const BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            const SizedBox(height: 12),
             Center(
               child: Container(
                 width: 40,
@@ -1757,74 +2535,161 @@ class _AddMilestoneSheetState extends State<_AddMilestoneSheet> {
               ),
             ),
             const SizedBox(height: 16),
-            Text('New milestone',
-                style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.w700)),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  widget.isEditing ? 'Edit milestone' : 'New milestone',
+                  style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.w700),
+                ),
+              ),
+            ),
             const SizedBox(height: 16),
-            TextField(
-              controller: _title,
-              decoration: const InputDecoration(labelText: 'Title', hintText: 'e.g. Build login screen'),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TextField(
+                      controller: _title,
+                      onChanged: (_) => setState(() {}),
+                      decoration: const InputDecoration(
+                        labelText: 'Title *',
+                        hintText: 'e.g. Build login screen',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _desc,
+                      minLines: 2,
+                      maxLines: 4,
+                      decoration: const InputDecoration(labelText: 'Description (optional)'),
+                    ),
+                    if (widget.enablePayments) ...[
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _amount,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'Payment amount (PKR)',
+                          hintText: 'e.g. 5000',
+                          prefixText: 'Rs. ',
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: _pickDueDateTime,
+                        icon: const Icon(Icons.event_rounded, size: 18),
+                        label: Text(
+                          _due == null
+                              ? 'Due date & time *'
+                              : DateFormat('MMM d, yyyy · h:mm a').format(_due!),
+                        ),
+                      ),
+                    ),
+                    if (members.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<CollaborationMember>(
+                        value: _assignee != null &&
+                                members.any((m) => m.userId == _assignee!.userId)
+                            ? members.firstWhere((m) => m.userId == _assignee!.userId)
+                            : null,
+                        isExpanded: true,
+                        decoration: const InputDecoration(labelText: 'Assign to *'),
+                        items: members
+                            .map((m) => DropdownMenuItem(
+                                  value: m,
+                                  child: Text('${m.userName}${m.isOwner ? ' (Owner)' : ''}'),
+                                ))
+                            .toList(),
+                        onChanged: (v) => setState(() => _assignee = v),
+                      ),
+                    ] else ...[
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text(
+                          'Add teammates before creating milestones.',
+                          style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.errorColor),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 8),
+                    if (!canSubmit)
+                      Text(
+                        'Title, due date, and assignee are required.',
+                        style: GoogleFonts.poppins(
+                          fontSize: 11.5,
+                          color: CAppTheme.textSecondary,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _desc,
-              minLines: 2,
-              maxLines: 4,
-              decoration: const InputDecoration(labelText: 'Description (optional)'),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () async {
-                      final today = DateTime.now();
-                      final todayOnly = DateTime(today.year, today.month, today.day);
-                      final picked = await showDatePicker(
-                        context: context,
-                        initialDate: todayOnly,
-                        firstDate: todayOnly,
-                        lastDate: todayOnly.add(const Duration(days: 365 * 2)),
-                      );
-                      if (picked != null) setState(() => _due = picked);
-                    },
-                    icon: const Icon(Icons.event_rounded, size: 18),
-                    label: Text(_due == null ? 'Due date' : DateFormat('MMM d, yyyy').format(_due!)),
+            SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 10, 20, 18),
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(14),
+                    boxShadow: canSubmit
+                        ? [
+                            BoxShadow(
+                              color: CAppTheme.primaryColor.withValues(alpha: 0.22),
+                              blurRadius: 14,
+                              offset: const Offset(0, 6),
+                            ),
+                          ]
+                        : const [],
+                  ),
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: 52,
+                    child: ElevatedButton(
+                      onPressed: canSubmit
+                          ? () {
+                              final parsedAmount = widget.enablePayments
+                                  ? double.tryParse(_amount.text.replaceAll(',', '').trim())
+                                  : null;
+                              Navigator.pop(
+                                context,
+                                _MilestoneDraft(
+                                  _title.text.trim(),
+                                  _desc.text.trim().isEmpty ? null : _desc.text.trim(),
+                                  _due,
+                                  _assignee,
+                                  parsedAmount != null && parsedAmount > 0 ? parsedAmount : null,
+                                ),
+                              );
+                            }
+                          : null,
+                      style: ElevatedButton.styleFrom(
+                        elevation: 0,
+                        backgroundColor: CAppTheme.primaryColor,
+                        disabledBackgroundColor: CAppTheme.borderColor,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
+                      child: Text(
+                        widget.isEditing ? 'Save changes' : 'Add milestone',
+                        style: GoogleFonts.poppins(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
                   ),
                 ),
-              ],
-            ),
-            if (widget.members.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              DropdownButtonFormField<CollaborationMember>(
-                value: _assignee,
-                isExpanded: true,
-                decoration: const InputDecoration(labelText: 'Assign to (optional)'),
-                items: widget.members
-                    .map((m) => DropdownMenuItem(value: m, child: Text(m.userName)))
-                    .toList(),
-                onChanged: (v) => setState(() => _assignee = v),
-              ),
-            ],
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () {
-                  if (_title.text.trim().isEmpty) return;
-                  Navigator.pop(
-                    context,
-                    _MilestoneDraft(
-                      _title.text.trim(),
-                      _desc.text.trim().isEmpty ? null : _desc.text.trim(),
-                      _due,
-                      _assignee,
-                    ),
-                  );
-                },
-                child: const Text('Add milestone'),
               ),
             ),
-            const SizedBox(height: 8),
           ],
         ),
       ),
@@ -1980,6 +2845,1172 @@ class _AddTeammateSheetState extends State<_AddTeammateSheet> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// =========================================================================
+// PROJECT CONTRACT
+// =========================================================================
+class _ProjectContractCard extends StatefulWidget {
+  final CollaborationModel project;
+  final List<CollaborationMember> members;
+  final List<CollaborationMilestone> milestones;
+  final List<CollaborationPayment> payments;
+  final List<CollaborationRole> roles;
+  final bool isOwner;
+  final String currentUserId;
+  final VoidCallback onRefresh;
+
+  const _ProjectContractCard({
+    required this.project,
+    required this.members,
+    required this.milestones,
+    required this.payments,
+    required this.roles,
+    required this.isOwner,
+    required this.currentUserId,
+    required this.onRefresh,
+  });
+
+  @override
+  State<_ProjectContractCard> createState() => _ProjectContractCardState();
+}
+
+class _ProjectContractCardState extends State<_ProjectContractCard> {
+  final _hub = CollaborationHubService();
+  final _payService = CollaborationPaymentService();
+  bool _busy = false;
+  bool _agreedToTerms = false;
+
+  static const Color _fiverrGreen = Color(0xFF1DBF73);
+
+  String _fmt(double v) => NumberFormat('#,##0').format(v);
+
+  CollaborationPayment? _paymentFor(String milestoneId) =>
+      _payService.paymentForMilestone(widget.payments, milestoneId);
+
+  CollaborationMember? get _myMembership {
+    for (final m in widget.members) {
+      if (m.userId == widget.currentUserId) return m;
+    }
+    return null;
+  }
+
+  int get _acceptedCount =>
+      widget.members.where((m) => m.hasAcceptedContract).length;
+
+  String get _contractRef =>
+      widget.project.id.replaceAll('-', '').substring(0, 8).toUpperCase();
+
+  String get _defaultTerms =>
+      '• All members commit to honest communication and timely updates.\n'
+      '• Work shared in the project room stays confidential to the team.\n'
+      '• Disputes should be raised with the project lead first.\n'
+      '• Either party may leave with notice via the project room.';
+
+  Future<void> _editTerms() async {
+    final controller = TextEditingController(text: widget.project.contractTerms ?? '');
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(CAppTheme.radiusLarge)),
+        title: Text('Custom contract terms', style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: TextField(
+            controller: controller,
+            minLines: 5,
+            maxLines: 10,
+            decoration: const InputDecoration(
+              hintText: 'Add payment rules, deliverables, IP ownership, etc.',
+              alignLabelWithHint: true,
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save')),
+        ],
+      ),
+    );
+    if (saved != true) return;
+    setState(() => _busy = true);
+    try {
+      await _hub.updateContractTerms(widget.project.id, controller.text.trim());
+      widget.onRefresh();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Contract terms updated'), backgroundColor: CAppTheme.successColor),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed: $e'), backgroundColor: CAppTheme.errorColor),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _acceptContract() async {
+    if (widget.currentUserId.isEmpty) return;
+    if (_myMembership == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('You must be on the project team before signing the contract.'),
+            backgroundColor: CAppTheme.errorColor,
+          ),
+        );
+      }
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      await _hub.acceptProjectContract(widget.project.id, widget.currentUserId);
+      widget.onRefresh();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Contract accepted'), backgroundColor: CAppTheme.successColor),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        final msg = e.toString()
+            .replaceFirst('Exception: ', '')
+            .replaceFirst(RegExp(r'^PostgrestException:\s*'), '')
+            .replaceFirst(RegExp(r'^.*message:\s*'), '')
+            .replaceAll(RegExp(r', code:.*'), '')
+            .trim();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(msg.isEmpty ? 'Could not sign contract' : msg),
+            backgroundColor: CAppTheme.errorColor,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _fundMilestone(CollaborationMilestone m) async {
+    final pay = _paymentFor(m.id);
+    final result = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => CollaborationMilestonePaymentSheet(
+        milestone: m,
+        existingPayment: pay,
+      ),
+    );
+    if (result == true) widget.onRefresh();
+  }
+
+  String _paymentErrorMessage(Object e) {
+    final raw = e.toString()
+        .replaceFirst('Exception: ', '')
+        .replaceFirst(RegExp(r'^PostgrestException:\s*'), '')
+        .replaceFirst(RegExp(r'^.*message:\s*'), '')
+        .replaceAll(RegExp(r', code:.*'), '')
+        .trim();
+    if (raw.contains('No held payment found')) {
+      return 'No escrow payment is held for this milestone. Fund it first, or refresh if it was already released.';
+    }
+    if (raw.contains('Complete the milestone before releasing payment')) {
+      return 'Approve the milestone before releasing payment.';
+    }
+    return raw.isEmpty ? 'Could not release payment' : raw;
+  }
+
+  Future<void> _releasePayment(CollaborationMilestone m) async {
+    setState(() => _busy = true);
+    try {
+      final freshPay = await _payService.getPaymentForMilestone(m.id);
+      if (freshPay == null) {
+        throw Exception('No escrow payment is held for this milestone. Fund it first.');
+      }
+      if (freshPay.isReleased) {
+        widget.onRefresh();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Payment was already released'),
+              backgroundColor: CAppTheme.successColor,
+            ),
+          );
+        }
+        return;
+      }
+      if (!freshPay.isHeld) {
+        throw Exception('This milestone payment is not in escrow (${freshPay.status}).');
+      }
+      if (!m.isDone) {
+        throw Exception('Approve the milestone before releasing payment.');
+      }
+      await _payService.releaseMilestonePayment(m.id);
+      widget.onRefresh();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Payment released to collaborator'),
+            backgroundColor: CAppTheme.successColor,
+          ),
+        );
+      }
+    } catch (e) {
+      widget.onRefresh();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_paymentErrorMessage(e)),
+            backgroundColor: CAppTheme.errorColor,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.project;
+    final isPaymentEnabled = p.isPaymentEnabled;
+    final effectiveDate = p.launchedAt ?? p.createdAt;
+    final terms = (p.contractTerms != null && p.contractTerms!.trim().isNotEmpty)
+        ? p.contractTerms!.trim()
+        : _defaultTerms;
+    final me = _myMembership;
+    final canAccept = me != null && !me.hasAcceptedContract;
+    final milestoneTotal = widget.milestones.fold<double>(
+      0,
+      (sum, m) => sum + (m.amount ?? 0),
+    );
+    final heldTotal = widget.payments
+        .where((pay) => pay.isHeld)
+        .fold<double>(0, (sum, pay) => sum + pay.amount);
+    final releasedTotal = widget.payments
+        .where((pay) => pay.isReleased)
+        .fold<double>(0, (sum, pay) => sum + pay.amount);
+    final hasTimeline = p.timeline != null && p.timeline!.trim().isNotEmpty;
+    final signProgress = widget.members.isEmpty
+        ? 0.0
+        : _acceptedCount / widget.members.length;
+
+    return SectionCard(
+      padding: EdgeInsets.zero,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // —— Order header (Fiverr-style) ——
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            isPaymentEnabled
+                                ? 'ORDER #CWC-$_contractRef'
+                                : 'PROJECT AGREEMENT #CWC-$_contractRef',
+                            style: GoogleFonts.poppins(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0.6,
+                              color: CAppTheme.textTertiary,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            p.title,
+                            style: GoogleFonts.poppins(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w700,
+                              color: CAppTheme.textPrimary,
+                              height: 1.25,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Started ${DateFormat('MMM d, yyyy').format(effectiveDate)}',
+                            style: GoogleFonts.poppins(
+                              fontSize: 12,
+                              color: CAppTheme.textSecondary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    StatusBadge(status: p.status),
+                  ],
+                ),
+                if (widget.isOwner) ...[
+                  const SizedBox(height: 10),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: _busy ? null : _editTerms,
+                      icon: const Icon(Icons.edit_note_rounded, size: 18),
+                      label: const Text('Edit agreement terms'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: CAppTheme.primaryColor,
+                        padding: EdgeInsets.zero,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const Divider(height: 1, thickness: 1),
+
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // —— Payment / collaboration summary ——
+                _orderSummaryCard(
+                  displayBudget: p.displayBudget,
+                  milestoneTotal: milestoneTotal,
+                  heldTotal: heldTotal,
+                  releasedTotal: releasedTotal,
+                  timeline: hasTimeline ? p.timeline!.trim() : null,
+                  milestoneCount: widget.milestones.length,
+                  isPaymentEnabled: isPaymentEnabled,
+                ),
+                const SizedBox(height: 18),
+
+                if (isPaymentEnabled && widget.milestones.isNotEmpty) ...[
+                  _fiverrSectionTitle('MILESTONE PAYMENTS'),
+                  const SizedBox(height: 10),
+                  ...widget.milestones.map((m) => _milestonePaymentRow(m)),
+                  const SizedBox(height: 18),
+                ],
+
+                // —— Signature progress ——
+                _fiverrSectionTitle('AGREEMENT STATUS'),
+                const SizedBox(height: 8),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: LinearProgressIndicator(
+                    value: signProgress,
+                    minHeight: 6,
+                    backgroundColor: CAppTheme.borderColor,
+                    color: _fiverrGreen,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '$_acceptedCount of ${widget.members.length} members signed',
+                  style: GoogleFonts.poppins(
+                    fontSize: 12,
+                    color: CAppTheme.textSecondary,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 18),
+
+                // —— Client & team ——
+                _fiverrSectionTitle('CLIENT & TEAM'),
+                const SizedBox(height: 10),
+                _partyRow(
+                  name: p.userName,
+                  role: 'Client · Project Lead',
+                  imageUrl: p.userProfileImage,
+                  accepted: widget.members.any((m) => m.isOwner && m.hasAcceptedContract),
+                ),
+                ...widget.members.where((m) => !m.isOwner).map(
+                      (m) => _partyRow(
+                        name: m.userName,
+                        role: 'Collaborator · ${m.roleTitle ?? 'Team Member'}',
+                        imageUrl: m.userProfileImage,
+                        accepted: m.hasAcceptedContract,
+                      ),
+                    ),
+                const SizedBox(height: 18),
+
+                // —— Project scope ——
+                _fiverrSectionTitle('PROJECT SCOPE'),
+                const SizedBox(height: 8),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: CAppTheme.backgroundColor,
+                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                    border: Border.all(color: CAppTheme.borderColor),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        p.description,
+                        style: GoogleFonts.poppins(
+                          fontSize: 13,
+                          height: 1.45,
+                          color: CAppTheme.textPrimary,
+                        ),
+                      ),
+                      if (p.projectCategories.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: p.projectCategories
+                              .map((c) => SkillChip(label: c))
+                              .toList(),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+
+                // —— Milestone deliverables (Fiverr order steps) ——
+                if (widget.milestones.isNotEmpty) ...[
+                  const SizedBox(height: 18),
+                  _fiverrSectionTitle('DELIVERABLES & MILESTONES'),
+                  const SizedBox(height: 10),
+                  ...widget.milestones.asMap().entries.map(
+                        (e) => _deliverableStep(e.key + 1, e.value, _paymentFor(e.value.id)),
+                      ),
+                ],
+
+                if (widget.roles.isNotEmpty) ...[
+                  const SizedBox(height: 18),
+                  _fiverrSectionTitle('OPEN ROLES'),
+                  const SizedBox(height: 8),
+                  ...widget.roles.map(
+                    (r) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.work_outline_rounded,
+                              size: 16, color: CAppTheme.textSecondary),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  r.title,
+                                  style: GoogleFonts.poppins(
+                                    fontSize: 13.5,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                if (r.requiredSkills.isNotEmpty)
+                                  Text(
+                                    r.requiredSkills.join(' · '),
+                                    style: GoogleFonts.poppins(
+                                      fontSize: 12,
+                                      color: CAppTheme.textSecondary,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+
+                const SizedBox(height: 18),
+                _fiverrSectionTitle('TERMS OF SERVICE'),
+                const SizedBox(height: 8),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                    border: Border.all(color: CAppTheme.borderColor),
+                  ),
+                  child: Text(
+                    terms,
+                    style: GoogleFonts.poppins(
+                      fontSize: 13,
+                      height: 1.55,
+                      color: CAppTheme.textPrimary,
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 14),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF0FDF4),
+                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                    border: Border.all(color: _fiverrGreen.withValues(alpha: 0.25)),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.shield_outlined, size: 18, color: _fiverrGreen),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Payments and deliverables are tracked through milestones. '
+                          'Complete work on time to receive agreed compensation.',
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            height: 1.4,
+                            color: CAppTheme.textSecondary,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+                if (canAccept) ...[
+                  const SizedBox(height: 16),
+                  InkWell(
+                    onTap: () => setState(() => _agreedToTerms = !_agreedToTerms),
+                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: Checkbox(
+                              value: _agreedToTerms,
+                              onChanged: (v) => setState(() => _agreedToTerms = v ?? false),
+                              activeColor: _fiverrGreen,
+                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              'I have read and agree to the project scope, payment terms, '
+                              'and collaboration agreement.',
+                              style: GoogleFonts.poppins(
+                                fontSize: 12.5,
+                                height: 1.4,
+                                color: CAppTheme.textPrimary,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 52,
+                    child: ElevatedButton(
+                      onPressed: (_busy || !_agreedToTerms) ? null : _acceptContract,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _fiverrGreen,
+                        disabledBackgroundColor: _fiverrGreen.withValues(alpha: 0.4),
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                        ),
+                      ),
+                      child: _busy
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.5,
+                                color: Colors.white,
+                              ),
+                            )
+                          : Text(
+                              'Approve & Sign Agreement',
+                              style: GoogleFonts.poppins(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                    ),
+                  ),
+                ] else if (me?.hasAcceptedContract == true) ...[
+                  const SizedBox(height: 16),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF0FDF4),
+                      borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                      border: Border.all(color: _fiverrGreen.withValues(alpha: 0.35)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.verified_rounded, color: _fiverrGreen, size: 22),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Agreement signed',
+                                style: GoogleFonts.poppins(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700,
+                                  color: _fiverrGreen,
+                                ),
+                              ),
+                              Text(
+                                'Signed on ${DateFormat('MMM d, yyyy · h:mm a').format(me!.contractAcceptedAt!)}',
+                                style: GoogleFonts.poppins(
+                                  fontSize: 12,
+                                  color: CAppTheme.textSecondary,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _fiverrSectionTitle(String title) {
+    return Text(
+      title,
+      style: GoogleFonts.poppins(
+        fontSize: 11,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 0.8,
+        color: CAppTheme.textTertiary,
+      ),
+    );
+  }
+
+  Widget _orderSummaryCard({
+    required String displayBudget,
+    required double milestoneTotal,
+    required double heldTotal,
+    required double releasedTotal,
+    String? timeline,
+    required int milestoneCount,
+    required bool isPaymentEnabled,
+  }) {
+    final escrowShown = heldTotal > 0 ? heldTotal : milestoneTotal;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+        border: Border.all(color: CAppTheme.borderColor, width: 1.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'ORDER SUMMARY',
+            style: GoogleFonts.poppins(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.8,
+              color: CAppTheme.textTertiary,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      isPaymentEnabled ? 'Total compensation' : 'Project type',
+                      style: GoogleFonts.poppins(
+                        fontSize: 12,
+                        color: CAppTheme.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      isPaymentEnabled ? displayBudget : 'Non-paid collaboration',
+                      style: GoogleFonts.poppins(
+                        fontSize: isPaymentEnabled ? 22 : 17,
+                        fontWeight: FontWeight.w700,
+                        color: CAppTheme.textPrimary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: _fiverrGreen.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(
+                  isPaymentEnabled ? Icons.payments_rounded : Icons.groups_rounded,
+                  color: _fiverrGreen,
+                  size: 24,
+                ),
+              ),
+            ],
+          ),
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 14),
+            child: Divider(height: 1),
+          ),
+          _summaryRow(Icons.schedule_rounded, 'Delivery timeline', timeline ?? 'Not specified'),
+          const SizedBox(height: 8),
+          _summaryRow(
+            Icons.flag_rounded,
+            'Milestones',
+            milestoneCount == 0
+                ? 'No milestones set yet'
+                : '$milestoneCount deliverable${milestoneCount == 1 ? '' : 's'}',
+          ),
+          const SizedBox(height: 8),
+          if (isPaymentEnabled) ...[
+            _summaryRow(
+              Icons.account_balance_wallet_outlined,
+              'In escrow',
+              escrowShown > 0 ? 'Rs. ${_fmt(escrowShown)}' : '—',
+            ),
+            if (heldTotal <= 0 && milestoneTotal > 0) ...[
+              const SizedBox(height: 4),
+              Padding(
+                padding: const EdgeInsets.only(left: 26),
+                child: Text(
+                  'Escrow target from order summary. Owner funds milestone-wise.',
+                  style: GoogleFonts.poppins(
+                    fontSize: 11,
+                    color: CAppTheme.textSecondary,
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 8),
+            _summaryRow(
+              Icons.payments_rounded,
+              'Released to team',
+              releasedTotal > 0 ? 'Rs. ${_fmt(releasedTotal)}' : 'Rs. 0',
+            ),
+          ],
+          if (isPaymentEnabled && milestoneTotal > 0) ...[
+            const SizedBox(height: 8),
+            _summaryRow(
+              Icons.calculate_outlined,
+              'Milestone total',
+              'Rs. ${_fmt(milestoneTotal)}',
+            ),
+          ],
+          const SizedBox(height: 8),
+          _summaryRow(
+            isPaymentEnabled ? Icons.account_balance_wallet_outlined : Icons.groups_rounded,
+            isPaymentEnabled ? 'Payment release' : 'Collaboration mode',
+            isPaymentEnabled
+                ? (milestoneCount > 0
+                    ? 'Wallet escrow — release after milestone done'
+                    : 'As per agreed terms')
+                : 'Team collaboration only (no payment flow)',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _summaryRow(IconData icon, String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 16, color: CAppTheme.textTertiary),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: GoogleFonts.poppins(fontSize: 11.5, color: CAppTheme.textTertiary),
+              ),
+              Text(
+                value,
+                style: GoogleFonts.poppins(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: CAppTheme.textPrimary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _milestonePaymentRow(CollaborationMilestone m) {
+    final pay = _paymentFor(m.id);
+    final amount = m.amount ?? 0;
+
+    Color statusColor;
+    String statusLabel;
+    IconData statusIcon;
+    if (pay?.isReleased == true) {
+      statusColor = _fiverrGreen;
+      statusLabel = 'Released';
+      statusIcon = Icons.check_circle_rounded;
+    } else if (pay?.isHeld == true) {
+      statusColor = CAppTheme.infoColor;
+      statusLabel = 'In escrow';
+      statusIcon = Icons.lock_clock_rounded;
+    } else if (amount > 0) {
+      statusColor = CAppTheme.warningColor;
+      statusLabel = 'Unpaid';
+      statusIcon = Icons.pending_outlined;
+    } else {
+      statusColor = CAppTheme.textTertiary;
+      statusLabel = 'No amount set';
+      statusIcon = Icons.money_off_outlined;
+    }
+
+    final canFund = widget.isOwner &&
+        pay == null &&
+        amount > 0 &&
+        m.assignedTo != null &&
+        !_busy;
+    final canRelease = widget.isOwner &&
+        pay?.isHeld == true &&
+        m.isDone &&
+        !_busy;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+        border: Border.all(color: CAppTheme.borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      m.title,
+                      style: GoogleFonts.poppins(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (m.assignedToName != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        'Payee: ${m.assignedToName}',
+                        style: GoogleFonts.poppins(
+                          fontSize: 12,
+                          color: CAppTheme.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    amount > 0 ? 'Rs. ${_fmt(amount)}' : '—',
+                    style: GoogleFonts.poppins(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: statusColor.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(CAppTheme.radiusRound),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(statusIcon, size: 12, color: statusColor),
+                        const SizedBox(width: 4),
+                        Text(
+                          statusLabel,
+                          style: GoogleFonts.poppins(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: statusColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          if (canFund || canRelease) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                if (canFund)
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () => _fundMilestone(m),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _fiverrGreen,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        minimumSize: const Size(0, 44),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                        ),
+                      ),
+                      child: Text(
+                        'Fund milestone',
+                        style: GoogleFonts.poppins(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ),
+                if (canFund && canRelease) const SizedBox(width: 8),
+                if (canRelease)
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => _releasePayment(m),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: _fiverrGreen,
+                        side: const BorderSide(color: _fiverrGreen),
+                        minimumSize: const Size(0, 44),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                        ),
+                      ),
+                      child: Text(
+                        'Release payment',
+                        style: GoogleFonts.poppins(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _deliverableStep(int step, CollaborationMilestone m, CollaborationPayment? pay) {
+    final Color statusColor;
+    final String statusLabel;
+    if (m.isDone) {
+      statusColor = _fiverrGreen;
+      statusLabel = 'Completed';
+    } else if (m.isMissed) {
+      statusColor = CAppTheme.errorColor;
+      statusLabel = 'Missed';
+    } else if (m.isOverdue) {
+      statusColor = CAppTheme.warningColor;
+      statusLabel = 'Overdue';
+    } else {
+      statusColor = CAppTheme.textTertiary;
+      statusLabel = 'In progress';
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+        border: Border.all(
+          color: m.isDone
+              ? _fiverrGreen.withValues(alpha: 0.35)
+              : CAppTheme.borderColor,
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 28,
+            height: 28,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: m.isDone
+                  ? _fiverrGreen
+                  : CAppTheme.backgroundColor,
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: m.isDone ? _fiverrGreen : CAppTheme.borderColor,
+              ),
+            ),
+            child: m.isDone
+                ? const Icon(Icons.check, size: 16, color: Colors.white)
+                : Text(
+                    '$step',
+                    style: GoogleFonts.poppins(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: CAppTheme.textSecondary,
+                    ),
+                  ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        m.title,
+                        style: GoogleFonts.poppins(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: statusColor.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(CAppTheme.radiusRound),
+                      ),
+                      child: Text(
+                        statusLabel,
+                        style: GoogleFonts.poppins(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: statusColor,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                if (m.assignedToName != null || m.dueDate != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    [
+                      if (m.assignedToName != null) 'Assigned to ${m.assignedToName}',
+                      if (m.dueDate != null)
+                        'Due ${DateFormat('MMM d, yyyy').format(m.dueDate!)}',
+                    ].join(' · '),
+                    style: GoogleFonts.poppins(
+                      fontSize: 11.5,
+                      color: CAppTheme.textSecondary,
+                    ),
+                  ),
+                ],
+                if ((m.amount ?? 0) > 0 || pay != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    [
+                      if ((m.amount ?? 0) > 0) 'Rs. ${_fmt(m.amount!)}',
+                      if (pay?.isHeld == true) 'In escrow',
+                      if (pay?.isReleased == true) 'Paid',
+                    ].join(' · '),
+                    style: GoogleFonts.poppins(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w500,
+                      color: pay?.isReleased == true
+                          ? _fiverrGreen
+                          : pay?.isHeld == true
+                              ? CAppTheme.infoColor
+                              : CAppTheme.textSecondary,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _partyRow({
+    required String name,
+    required String role,
+    String? imageUrl,
+    required bool accepted,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          UserAvatar(name: name, imageUrl: imageUrl, size: 36),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(name, style: GoogleFonts.poppins(fontSize: 13.5, fontWeight: FontWeight.w600)),
+                Text(role,
+                    style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary)),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: accepted
+                  ? _fiverrGreen.withValues(alpha: 0.12)
+                  : CAppTheme.warningColor.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(CAppTheme.radiusRound),
+            ),
+            child: Text(
+              accepted ? 'Signed' : 'Pending',
+              style: GoogleFonts.poppins(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: accepted ? _fiverrGreen : CAppTheme.warningColor,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

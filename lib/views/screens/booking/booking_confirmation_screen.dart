@@ -4,7 +4,9 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:cwc/models/booking_model.dart';
+import 'package:cwc/utils/refund_policy.dart';
 import 'package:cwc/utils/themes/theme.dart';
+import 'package:cwc/views/widgets/refund_policy_banner.dart';
 
 class BookingConfirmationScreen extends StatelessWidget {
   final BookingModel booking;
@@ -36,6 +38,8 @@ class BookingConfirmationScreen extends StatelessWidget {
                 _buildSuccessHeader(),
                 const SizedBox(height: 28),
                 _buildTicketCard(),
+                const SizedBox(height: 16),
+                const RefundPolicyBanner(compact: true),
                 const SizedBox(height: 28),
                 _buildDoneButton(context),
                 const SizedBox(height: 20),
@@ -182,23 +186,41 @@ class BookingConfirmationScreen extends StatelessWidget {
   }
 
   Widget _buildTicketBottom() {
+    final displayDate = booking.refundStartDate;
+    final dateText = DateFormat('EEE, MMM dd, yyyy').format(displayDate);
+    final timeText = booking.isHourlyBooking
+        ? (booking.timeSlotLabel ??
+            '${DateFormat('hh:mm a').format(booking.refundStartDate)} - ${DateFormat('hh:mm a').format(booking.endDate)}')
+        : booking.numberOfDays > 1
+            ? '${booking.numberOfDays} days'
+            : 'Full Day';
+
     return Container(
       padding: const EdgeInsets.fromLTRB(24, 4, 24, 24),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildInfoRow(Icons.calendar_today_rounded, 'Date', DateFormat('EEE, MMM dd, yyyy').format(booking.startDate)),
-          _buildInfoRow(
-            Icons.schedule_rounded,
-            'Time',
-            booking.isHourlyBooking
-                ? (booking.timeSlotLabel ?? '${DateFormat('hh:mm a').format(booking.startDate)} - ${DateFormat('hh:mm a').format(booking.endDate)}')
-                : 'Full Day',
+          Text(
+            'Booking Details',
+            style: GoogleFonts.poppins(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: CAppTheme.textPrimary,
+            ),
           ),
+          const SizedBox(height: 4),
+          Text(
+            'Show this ticket at the workspace',
+            style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary),
+          ),
+          const SizedBox(height: 12),
+          _buildInfoRow(Icons.calendar_today_rounded, 'Date', dateText),
+          _buildInfoRow(Icons.schedule_rounded, 'Time', timeText),
           if (booking.categoryType != null)
             _buildInfoRow(Icons.category_rounded, 'Category', booking.categoryType!),
           _buildInfoRow(Icons.event_seat_rounded, 'Seats', '${booking.seatCount}'),
           _buildInfoRow(Icons.receipt_long_rounded, 'Booking ID', '#$_shortId'),
-          const SizedBox(height: 4),
+          const SizedBox(height: 8),
 
           // Price row - highlighted
           Container(
@@ -268,27 +290,50 @@ class BookingConfirmationScreen extends StatelessWidget {
 
   Widget _buildInfoRow(IconData icon, String label, String value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.symmetric(vertical: 7),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
-            width: 34,
-            height: 34,
+            width: 36,
+            height: 36,
             decoration: BoxDecoration(
               color: CAppTheme.primaryColor.withValues(alpha: 0.08),
               borderRadius: BorderRadius.circular(8),
             ),
-            child: Icon(icon, size: 17, color: CAppTheme.primaryColor),
+            child: Icon(icon, size: 18, color: CAppTheme.primaryColor),
           ),
           const SizedBox(width: 12),
-          Text(label, style: GoogleFonts.poppins(fontSize: 13, color: CAppTheme.textSecondary)),
-          const Spacer(),
-          Flexible(
-            child: Text(
-              value,
-              style: GoogleFonts.poppins(fontSize: 13, fontWeight: FontWeight.w600, color: CAppTheme.textPrimary),
-              textAlign: TextAlign.end,
-              overflow: TextOverflow.ellipsis,
+          Expanded(
+            flex: 2,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                label,
+                style: GoogleFonts.poppins(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: CAppTheme.textSecondary,
+                ),
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 3,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                value,
+                style: GoogleFonts.poppins(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: CAppTheme.textPrimary,
+                  height: 1.3,
+                ),
+                textAlign: TextAlign.end,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
           ),
         ],

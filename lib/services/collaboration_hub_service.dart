@@ -163,12 +163,21 @@ class CollaborationHubService {
         .upsert(data, onConflict: 'collaboration_id,user_id');
   }
 
-  Future<void> removeMember(String collaborationId, String userId) async {
+  Future<void> removeMember(String collaborationId, String userId, [String? projectTitle]) async {
     await _supabase
         .from('collaboration_members')
         .delete()
         .eq('collaboration_id', collaborationId)
         .eq('user_id', userId);
+    if (projectTitle != null) {
+      await _notify(
+        userId,
+        'Removed from team',
+        'You have been removed from "$projectTitle".',
+        'collaboration_removed',
+        {'collaboration_id': collaborationId},
+      );
+    }
   }
 
   // ------------------------------------------------------------ MILESTONES
@@ -181,21 +190,230 @@ class CollaborationHubService {
     return rows.map((r) => CollaborationMilestone.fromMap(r)).toList();
   }
 
-  Future<void> addMilestone(CollaborationMilestone milestone) async {
+  Future<CollaborationMilestone?> getMilestoneById(String milestoneId) async {
+    final row = await _supabase
+        .from('collaboration_milestones')
+        .select()
+        .eq('id', milestoneId)
+        .maybeSingle();
+    if (row == null) return null;
+    return CollaborationMilestone.fromMap(row);
+  }
+
+  Future<bool> isProjectOwner(String collaborationId, String userId) async {
+    final row = await _supabase
+        .from('collaborations')
+        .select('user_id')
+        .eq('id', collaborationId)
+        .maybeSingle();
+    return row?['user_id'] == userId;
+  }
+
+  Future<void> addMilestone(
+    CollaborationMilestone milestone, {
+    required String actorId,
+    required String actorName,
+  }) async {
     final data = milestone.toMap()..removeWhere((k, v) => v == null);
     await _supabase.from('collaboration_milestones').insert(data);
+    final assignee = milestone.assignedToName ?? 'a teammate';
+    await logActivity(
+      milestone.collaborationId,
+      actorId,
+      actorName,
+      'milestone_assigned',
+      '${milestone.title} to $assignee',
+    );
   }
 
   Future<void> toggleMilestone(CollaborationMilestone milestone, String userId, String userName) async {
-    final done = !milestone.isDone;
+    if (milestone.isMissed) {
+      throw Exception('This milestone was missed and cannot be toggled.');
+    }
+    final done = milestone.isDone;
     await _supabase.from('collaboration_milestones').update({
-      'status': done ? 'done' : 'pending',
-      'completed_by': done ? userId : null,
-      'completed_at': done ? DateTime.now().toIso8601String() : null,
+      'status': done ? 'pending' : 'submitted',
+      'completed_by': null,
+      'completed_at': null,
+      'completion_requested_by': done ? null : userId,
+      'completion_requested_at': done ? null : DateTime.now().toIso8601String(),
+      'review_reason': null,
     }).eq('id', milestone.id);
-    if (done) {
-      await logActivity(milestone.collaborationId, userId, userName,
-          'milestone_done', milestone.title);
+    if (!done) {
+      await logActivity(
+        milestone.collaborationId,
+        userId,
+        userName,
+        'milestone_submitted',
+        milestone.title,
+      );
+    }
+  }
+
+  Future<void> approveMilestoneCompletion(
+    CollaborationMilestone milestone,
+    String ownerId,
+    String ownerName,
+  ) async {
+    await _supabase.from('collaboration_milestones').update({
+      'status': 'done',
+      'completed_by': milestone.completionRequestedBy ?? ownerId,
+      'completed_at': DateTime.now().toIso8601String(),
+      'review_reason': null,
+    }).eq('id', milestone.id);
+    await logActivity(
+      milestone.collaborationId,
+      ownerId,
+      ownerName,
+      'milestone_done',
+      milestone.title,
+    );
+    try {
+      final assigneeId = milestone.assignedTo ?? milestone.completionRequestedBy;
+      if (assigneeId != null && assigneeId != ownerId) {
+        final collab = await _supabase
+            .from('collaborations')
+            .select('title')
+            .eq('id', milestone.collaborationId)
+            .maybeSingle();
+        final projectTitle = (collab?['title'] as String?) ?? 'project';
+        await _notify(
+          assigneeId,
+          'Milestone approved',
+          'Your submission for "${milestone.title}" on "$projectTitle" was approved.',
+          'collaboration_milestone_accepted',
+          {
+            'collaboration_id': milestone.collaborationId,
+            'milestone_id': milestone.id,
+            'milestone_title': milestone.title,
+          },
+        );
+      }
+    } catch (e) {
+      debugPrint('milestone accepted notification failed: $e');
+    }
+  }
+
+  Future<void> rejectMilestoneCompletion(
+    CollaborationMilestone milestone,
+    String ownerId,
+    String ownerName,
+    String reason,
+  ) async {
+    await _supabase.from('collaboration_milestones').update({
+      'status': 'pending',
+      'completed_by': null,
+      'completed_at': null,
+      'completion_requested_by': null,
+      'completion_requested_at': null,
+      'submission_note': null,
+      'review_reason': reason.trim(),
+    }).eq('id', milestone.id);
+    await logActivity(
+      milestone.collaborationId,
+      ownerId,
+      ownerName,
+      'milestone_rejected',
+      '${milestone.title}: ${reason.trim()}',
+    );
+  }
+
+  Future<void> submitMilestoneCompletion(
+    CollaborationMilestone milestone,
+    String userId,
+    String userName, {
+    required String submissionNote,
+  }) async {
+    if (milestone.isMissed) {
+      throw Exception('This milestone was missed and cannot be submitted.');
+    }
+    final note = submissionNote.trim();
+    if (note.isEmpty) {
+      throw Exception('Please describe what you completed.');
+    }
+    await _supabase.from('collaboration_milestones').update({
+      'status': 'submitted',
+      'completion_requested_by': userId,
+      'completion_requested_at': DateTime.now().toIso8601String(),
+      'submission_note': note,
+      'review_reason': null,
+    }).eq('id', milestone.id);
+    await logActivity(
+      milestone.collaborationId,
+      userId,
+      userName,
+      'milestone_submitted',
+      '${milestone.title}: $note',
+    );
+    try {
+      final collab = await _supabase
+          .from('collaborations')
+          .select('id, title, user_id')
+          .eq('id', milestone.collaborationId)
+          .maybeSingle();
+      final ownerId = collab?['user_id'] as String?;
+      if (ownerId != null && ownerId != userId) {
+        final projectTitle = (collab?['title'] as String?) ?? 'project';
+        await _notify(
+          ownerId,
+          'Milestone review required',
+          '$userName submitted "${milestone.title}" on "$projectTitle".\n\nSubmitted work:\n$note',
+          'collaboration_milestone_review',
+          {
+            'collaboration_id': milestone.collaborationId,
+            'milestone_id': milestone.id,
+            'milestone_title': milestone.title,
+            'submitted_by': userName,
+            'submission_note': note,
+          },
+        );
+      }
+    } catch (e) {
+      debugPrint('milestone review notification failed: $e');
+    }
+  }
+
+  Future<void> updateMilestone(
+    CollaborationMilestone milestone, {
+    String? actorId,
+    String? actorName,
+    CollaborationMilestone? previous,
+  }) async {
+    var status = milestone.status;
+    if (milestone.isMissed &&
+        milestone.dueDate != null &&
+        milestone.dueDate!.isAfter(DateTime.now())) {
+      status = 'pending';
+    }
+    await _supabase.from('collaboration_milestones').update({
+      'title': milestone.title,
+      if (milestone.description != null) 'description': milestone.description,
+      if (milestone.dueDate != null) 'due_date': milestone.dueDate!.toIso8601String(),
+      'assigned_to': milestone.assignedTo,
+      'assigned_to_name': milestone.assignedToName,
+      if (milestone.amount != null) 'amount': milestone.amount,
+      'status': status,
+      if (status == 'pending') 'missed_notified_at': null,
+      if (status == 'pending') 'completed_by': null,
+      if (status == 'pending') 'completed_at': null,
+      if (status == 'pending') 'completion_requested_by': null,
+      if (status == 'pending') 'completion_requested_at': null,
+      if (status == 'pending') 'submission_note': null,
+      if (status == 'pending') 'review_reason': null,
+    }).eq('id', milestone.id);
+
+    if (actorId != null &&
+        actorName != null &&
+        previous != null &&
+        previous.assignedTo != milestone.assignedTo &&
+        milestone.assignedToName != null) {
+      await logActivity(
+        milestone.collaborationId,
+        actorId,
+        actorName,
+        'milestone_assigned',
+        '${milestone.title} to ${milestone.assignedToName}',
+      );
     }
   }
 
@@ -620,21 +838,22 @@ class CollaborationHubService {
           '$userName joined "${collaboration.title}"', 'collaboration_launched',
           {'collaboration_id': collaboration.id});
     }
+    await _notify(userId, 'You are added to a team',
+        'You have been added to the team for "${collaboration.title}".', 'collaboration_added',
+        {'collaboration_id': collaboration.id});
   }
 
   Future<void> completeProject(CollaborationModel collaboration, String actorName) async {
-    await _supabase.from('collaborations').update({
-      'status': 'completed',
-      'updated_at': DateTime.now().toIso8601String(),
-    }).eq('id', collaboration.id);
-    await logActivity(collaboration.id, collaboration.userId, actorName, 'completed', collaboration.title);
-    final members = await getMembers(collaboration.id);
-    for (final m in members) {
-      if (m.userId == collaboration.userId) continue;
-      await _notify(m.userId, 'Project completed',
-          '"${collaboration.title}" has been marked completed. Great work!',
-          'collaboration_completed', {'collaboration_id': collaboration.id});
-    }
+    await _supabase.rpc('complete_collaboration_project', params: {
+      'p_collaboration_id': collaboration.id,
+    });
+    await logActivity(
+      collaboration.id,
+      collaboration.userId,
+      actorName,
+      'completed',
+      collaboration.title,
+    );
   }
 
   Future<void> updateMeetingLink(String collaborationId, String? link) async {
@@ -674,6 +893,19 @@ class CollaborationHubService {
   }
 
   // ---------------------------------------------------------------- HELPER
+  Future<void> updateContractTerms(String collaborationId, String terms) async {
+    await _supabase.from('collaborations').update({
+      'contract_terms': terms.trim(),
+      'updated_at': DateTime.now().toIso8601String(),
+    }).eq('id', collaborationId);
+  }
+
+  Future<void> acceptProjectContract(String collaborationId, String userId) async {
+    await _supabase.rpc('accept_project_contract', params: {
+      'p_collaboration_id': collaborationId,
+    });
+  }
+
   Future<void> _notify(String userId, String title, String message, String type,
       Map<String, dynamic> metadata) async {
     try {

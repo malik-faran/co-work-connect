@@ -16,7 +16,11 @@ import OwnerRevenue from './pages/OwnerRevenue'
 import Moderators from './pages/Moderators'
 import ModeratorActivity from './pages/ModeratorActivity'
 import PaymentVerification from './pages/PaymentVerification'
+import WalletTopUpVerification from './pages/WalletTopUpVerification'
 import WalletRefunds from './pages/WalletRefunds'
+import WalletExplorer from './pages/WalletExplorer'
+import StaffInbox from './pages/StaffInbox'
+import CollaborationHub from './pages/CollaborationHub'
 import Reports from './pages/Reports'
 import OwnerPayouts from './pages/OwnerPayouts'
 import PlatformAccounts from './pages/PlatformAccounts'
@@ -134,6 +138,7 @@ function App() {
         >
           <Route index element={<Navigate to="/dashboard" />} />
           <Route path="dashboard" element={guard(<Dashboard />)} />
+          <Route path="staff-inbox" element={guard(<StaffInbox user={user} />)} />
           <Route path="owner-requests" element={guard(<OwnerRequests />)} />
           <Route path="workspace-requests" element={guard(<WorkspaceRequests />)} />
           <Route path="users" element={guard(<Users user={user} />)} />
@@ -148,9 +153,12 @@ function App() {
           <Route path="moderators" element={guard(<Moderators user={user} />)} />
           <Route path="moderator-activity" element={guard(<ModeratorActivity user={user} />)} />
           <Route path="payment-verification" element={guard(<PaymentVerification />)} />
+          <Route path="wallet-topup-verification" element={guard(<WalletTopUpVerification />)} />
           <Route path="wallet-refunds" element={guard(<WalletRefunds />)} />
+          <Route path="wallet-explorer" element={guard(<WalletExplorer />)} />
           <Route path="owner-payouts" element={guard(<OwnerPayouts />)} />
           <Route path="reports" element={guard(<Reports />)} />
+          <Route path="collaboration-hub" element={guard(<CollaborationHub />)} />
           <Route path="platform-accounts" element={guard(<PlatformAccounts user={user} />)} />
         </Route>
       </Routes>

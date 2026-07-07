@@ -9,6 +9,7 @@ import 'package:cwc/controllers/workspace_controller.dart';
 import 'package:cwc/models/booking_model.dart';
 import 'package:cwc/models/workspace_model.dart';
 import 'package:cwc/utils/constants/app_constants.dart';
+import 'package:cwc/utils/refund_policy.dart';
 import 'package:cwc/utils/helpers/model_helpers.dart';
 import 'package:cwc/utils/helpers/snackbar_helper.dart';
 import 'package:cwc/utils/themes/theme.dart';
@@ -20,6 +21,7 @@ import 'package:cwc/services/workspace_interaction_service.dart';
 import 'package:cwc/models/review_model.dart';
 import 'package:cwc/views/screens/chat/chat_screen.dart';
 import 'package:cwc/views/screens/payment/payment_screen.dart';
+import 'package:cwc/views/screens/report/report_screen.dart';
 import 'package:cwc/views/widgets/location_picker_map.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -260,6 +262,45 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
       if (avail < minAvail) minAvail = avail;
     }
     return minAvail;
+  }
+
+  List<WorkspaceTimeSlotTemplate> _visibleSlotsForDate(String dateKey) {
+    return timeSlots
+        .where((slot) => !_isSlotPastForDate(slot, dateKey))
+        .toList();
+  }
+
+  bool _isSlotPastForDate(WorkspaceTimeSlotTemplate slot, String dateKey) {
+    final date = _parseDateKey(dateKey);
+    final now = DateTime.now();
+    if (date.year != now.year ||
+        date.month != now.month ||
+        date.day != now.day) {
+      return false;
+    }
+    final slotEnd = DateTime(date.year, date.month, date.day, slot.endHour);
+    return !slotEnd.isAfter(now);
+  }
+
+  void _prunePastSlotSelections() {
+    for (final dateKey in _selectedDateKeys.toList()) {
+      final visibleIds =
+          _visibleSlotsForDate(dateKey).map((s) => s.id).toSet();
+      final daySlots = _slotsByDate[dateKey];
+      if (daySlots != null) {
+        daySlots.removeWhere((s) => !visibleIds.contains(s.id));
+        if (daySlots.isEmpty) {
+          _slotsByDate.remove(dateKey);
+        }
+      }
+    }
+    if (!_hourlyPerDaySlots && _selectedDateKeys.isNotEmpty) {
+      final visibleIds = _visibleSlotsForDate(_selectedDateKeys.first)
+          .map((s) => s.id)
+          .toSet();
+      _selectedSlots.removeWhere((s) => !visibleIds.contains(s.id));
+      _selectedSlotIds.removeWhere((id) => !visibleIds.contains(id));
+    }
   }
 
   Future<void> _handleBooking() async {
@@ -517,6 +558,50 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
     isError ? showErrorSnackBar(context, text) : showSuccessSnackBar(context, text);
   }
 
+  Future<void> _reportWorkspace() async {
+    final ws = _workspace;
+    if (ws == null) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ReportScreen(
+          workspaceId: ws.id,
+          workspaceName: ws.name,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _reportOwner() async {
+    final ws = _workspace;
+    if (ws == null) return;
+    try {
+      final ownerData = await SupabaseService.client
+          .from('users')
+          .select('id, name')
+          .eq('id', ws.ownerId)
+          .maybeSingle();
+      if (ownerData == null) {
+        _msg('Owner not found', true);
+        return;
+      }
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ReportScreen(
+            reportedUserId: ownerData['id'] as String,
+            reportedUserName: ownerData['name'] as String? ?? 'Workspace owner',
+            workspaceId: ws.id,
+            workspaceName: ws.name,
+          ),
+        ),
+      );
+    } catch (e) {
+      _msg('Could not open report: $e', true);
+    }
+  }
+
   Future<void> _startChatWithOwner() async {
     try {
       final user = context.read<AuthController>().currentUser;
@@ -564,6 +649,25 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
       pinned: true,
       backgroundColor: CAppTheme.primaryColor,
       foregroundColor: Colors.white,
+      actions: [
+        PopupMenuButton<String>(
+          icon: const Icon(Icons.more_vert_rounded, color: Colors.white),
+          onSelected: (value) {
+            if (value == 'report_listing') _reportWorkspace();
+            if (value == 'report_owner') _reportOwner();
+          },
+          itemBuilder: (_) => [
+            const PopupMenuItem(
+              value: 'report_listing',
+              child: Text('Report listing'),
+            ),
+            const PopupMenuItem(
+              value: 'report_owner',
+              child: Text('Report owner'),
+            ),
+          ],
+        ),
+      ],
       flexibleSpace: FlexibleSpaceBar(
         background: _ImageCarousel(
           imageUrls: _workspace!.imageUrls,
@@ -723,6 +827,10 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
             _buildReviewsSection(),
             const SizedBox(height: 20),
 
+            // Cancellation & refund policy (read before booking)
+            _buildRefundCancellationPolicy(),
+            const SizedBox(height: 20),
+
             // Category selector
             _buildCategorySection(),
             _buildCategoryPhotosSection(),
@@ -753,6 +861,46 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
             const SizedBox(height: 40),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildRefundCancellationPolicy() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: CAppTheme.primaryColor.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+        border: Border.all(color: CAppTheme.primaryColor.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.policy_rounded, color: CAppTheme.primaryColor, size: 22),
+              const SizedBox(width: 8),
+              Text(
+                'Cancellation & Refund Policy',
+                style: GoogleFonts.poppins(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: CAppTheme.textPrimary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            RefundPolicy.userSummary,
+            style: GoogleFonts.poppins(
+              fontSize: 12,
+              height: 1.5,
+              color: CAppTheme.textSecondary,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1048,6 +1196,7 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
   }
 
   Widget _buildPerDaySlotsSection() {
+    _prunePastSlotSelections();
     final sortedKeys = _selectedDateKeys.toList()..sort();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1077,6 +1226,7 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
           ...sortedKeys.map((dateKey) {
             final date = _parseDateKey(dateKey);
             final selected = _slotsForDate(dateKey);
+            final visibleSlots = _visibleSlotsForDate(dateKey);
             return Container(
               width: double.infinity,
               margin: const EdgeInsets.only(bottom: 12),
@@ -1123,10 +1273,19 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
                     ],
                   ),
                   const SizedBox(height: 10),
-                  Wrap(
+                  if (visibleSlots.isEmpty)
+                    Text(
+                      'No slots left for this day — past times are hidden.',
+                      style: GoogleFonts.poppins(
+                        fontSize: 12,
+                        color: CAppTheme.textTertiary,
+                      ),
+                    )
+                  else
+                    Wrap(
                     spacing: 8,
                     runSpacing: 8,
-                    children: timeSlots.map((slot) {
+                    children: visibleSlots.map((slot) {
                       final on = _isSlotSelectedOnDate(dateKey, slot);
                       final avail = _availableSeatsForSlotOnDate(slot, dateKey);
                       final full = avail <= 0 && !on;
@@ -1434,19 +1593,20 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (canBook) Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(dateLabel, style: GoogleFonts.poppins(fontSize: 13, color: CAppTheme.textSecondary)),
-                  Text(
-                    priceLabel,
-                    style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.bold, color: CAppTheme.primaryColor),
-                  ),
-                ],
+            if (canBook)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(dateLabel, style: GoogleFonts.poppins(fontSize: 13, color: CAppTheme.textSecondary)),
+                    Text(
+                      priceLabel,
+                      style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.bold, color: CAppTheme.primaryColor),
+                    ),
+                  ],
+                ),
               ),
-            ),
             Row(
               children: [
                 Expanded(

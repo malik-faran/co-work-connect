@@ -147,6 +147,15 @@ class AuthService {
     }
   }
 
+  Future<void> deleteOwnAccount() async {
+    try {
+      await _client.rpc('delete_own_account');
+      await signOut();
+    } catch (e) {
+      throw Exception(e.toString().replaceFirst('Exception: ', ''));
+    }
+  }
+
   Future<void> updateOwnerCnic({
     required String userId,
     required String cnicImageUrl,
@@ -167,8 +176,20 @@ class AuthService {
           .maybeSingle();
 
       if (response == null) return null;
+      if (response['deleted_at'] != null) {
+        throw Exception('This account has been deleted.');
+      }
+      if (response['suspended_at'] != null) {
+        final reason = (response['suspended_reason'] as String?)?.trim();
+        throw Exception(
+          reason != null && reason.isNotEmpty
+              ? 'Your account is suspended: $reason'
+              : 'Your account has been suspended. Contact support.',
+        );
+      }
       return UserModel.fromUserMap(Map<String, dynamic>.from(response));
     } catch (e) {
+      if (e is Exception && e.toString().contains('deleted')) rethrow;
       throw Exception('Error getting user: $e');
     }
   }
@@ -260,6 +281,36 @@ class AuthService {
     } catch (e) {
       throw Exception('Error updating user profile: $e');
     }
+  }
+
+  Future<UserModel> updateCollaborationProfile({
+    required String userId,
+    required bool collaborationEnabled,
+    required String collaborationHeadline,
+    required String bio,
+    required String availability,
+    String? experience,
+    required List<String> skills,
+  }) async {
+    try {
+      await _client.from(AppConstants.collectionUsers).update({
+        'collaboration_enabled': collaborationEnabled,
+        'collaboration_headline': collaborationHeadline,
+        'bio': bio,
+        'availability': availability,
+        'experience': experience,
+        'skills': skills,
+        'updated_at': DateTime.now().toIso8601String(),
+      }).eq('id', userId);
+    } catch (e) {
+      throw Exception('Error updating collaboration profile: $e');
+    }
+
+    final user = await getUserById(userId);
+    if (user == null) {
+      throw Exception('Could not reload profile after save');
+    }
+    return user;
   }
 
   Future<UserModel> updateResume({

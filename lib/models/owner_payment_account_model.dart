@@ -35,7 +35,9 @@ class OwnerPaymentAccountModel {
       case 'jazzcash':
         return 'JazzCash';
       default:
-        return bankName != null && bankName!.isNotEmpty ? bankName! : 'Bank Account';
+        return bankName != null && bankName!.isNotEmpty
+            ? bankName!
+            : 'Bank Account';
     }
   }
 
@@ -61,12 +63,15 @@ class OwnerPaymentAccountModel {
       id: map['id'] ?? '',
       ownerId: getStringFromMap(map, 'owner_id', 'ownerId') ?? '',
       workspaceId: getStringFromMap(map, 'workspace_id', 'workspaceId'),
-      accountType: getStringFromMap(map, 'account_type', 'accountType') ?? 'bank',
-      accountTitle: getStringFromMap(map, 'account_title', 'accountTitle') ?? '',
-      accountNumber: getStringFromMap(map, 'account_number', 'accountNumber') ?? '',
+      accountType:
+          getStringFromMap(map, 'account_type', 'accountType') ?? 'bank',
+      accountTitle:
+          getStringFromMap(map, 'account_title', 'accountTitle') ?? '',
+      accountNumber:
+          getStringFromMap(map, 'account_number', 'accountNumber') ?? '',
       bankName: getStringFromMap(map, 'bank_name', 'bankName'),
-      isActive: getValueFromMap(map, 'is_active', 'isActive', true) as bool,
-      isDefault: getValueFromMap(map, 'is_default', 'isDefault', false) as bool,
+      isActive: getValueFromMap(map, 'is_active', 'isActive', true),
+      isDefault: getValueFromMap(map, 'is_default', 'isDefault', false),
       createdAt: getStringFromMap(map, 'created_at', 'createdAt') != null
           ? DateTime.parse(getStringFromMap(map, 'created_at', 'createdAt')!)
           : DateTime.now(),

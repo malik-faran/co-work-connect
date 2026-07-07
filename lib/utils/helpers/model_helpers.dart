@@ -69,7 +69,19 @@ String? getStringFromMap(Map<String, dynamic> map, String snakeCaseKey, String c
 /// Gets a typed value from map using snake_case or camelCase keys
 /// Tries snake_case first, then camelCase, returns defaultValue if both fail
 T getValueFromMap<T>(Map<String, dynamic> map, String snakeCaseKey, String camelCaseKey, T defaultValue) {
-  return (map[snakeCaseKey] as T?) ?? (map[camelCaseKey] as T?) ?? defaultValue;
+  final raw = map[snakeCaseKey] ?? map[camelCaseKey];
+  if (raw == null) return defaultValue;
+  if (raw is T) return raw;
+  if (T == bool) {
+    if (raw is bool) return raw as T;
+    if (raw is num) return (raw != 0) as T;
+    if (raw is String) {
+      final lower = raw.toLowerCase();
+      if (lower == 'true' || lower == '1') return true as T;
+      if (lower == 'false' || lower == '0') return false as T;
+    }
+  }
+  return defaultValue;
 }
 
 /// Gets a nullable typed value from map using snake_case or camelCase keys

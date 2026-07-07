@@ -16,10 +16,10 @@ import 'package:flutter_stripe/flutter_stripe.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Use bundled Poppins files from assets/fonts/ (works offline on web + mobile).
   GoogleFonts.config.allowRuntimeFetching = false;
 
   await SupabaseService.initialize();
+
   runApp(const MyApp());
 }
 

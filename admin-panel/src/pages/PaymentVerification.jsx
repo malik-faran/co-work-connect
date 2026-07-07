@@ -6,6 +6,17 @@ import Loading from '../components/Loading'
 import EmptyState from '../components/EmptyState'
 import { showSuccess, showError } from '../utils/toast'
 
+const bankTransferDue = (payment) => {
+  if (payment.payment_method === 'split') {
+    const external = parseFloat(payment.external_amount)
+    if (!Number.isNaN(external) && external > 0) return external
+    const wallet = parseFloat(payment.wallet_amount) || 0
+    const total = parseFloat(payment.amount) || 0
+    return Math.max(total - wallet, 0)
+  }
+  return parseFloat(payment.amount) || 0
+}
+
 const PaymentVerification = () => {
   const [payments, setPayments] = useState([])
   const [loading, setLoading] = useState(true)
@@ -130,7 +141,12 @@ const PaymentVerification = () => {
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
                   <strong>{p.payer?.name || 'User'}</strong>
-                  <span style={{ color: '#10b981', fontWeight: '700' }}>PKR {parseFloat(p.amount).toLocaleString()}</span>
+                  <span style={{ color: '#10b981', fontWeight: '700' }}>
+                    PKR {bankTransferDue(p).toLocaleString()}
+                    {p.payment_method === 'split' && (
+                      <span style={{ color: '#64748b', fontWeight: '500', fontSize: '12px' }}> bank</span>
+                    )}
+                  </span>
                 </div>
                 <div style={{ color: '#64748b', fontSize: '14px' }}>{p.bookings?.workspace_name}</div>
                 <div style={{ color: '#94a3b8', fontSize: '12px', marginTop: '4px' }}>
@@ -145,7 +161,23 @@ const PaymentVerification = () => {
               <h3 style={{ marginBottom: '16px' }}>Review Payment</h3>
               <div style={{ marginBottom: '12px' }}><strong>User:</strong> {selected.payer?.name} ({selected.payer?.email})</div>
               <div style={{ marginBottom: '12px' }}><strong>Workspace:</strong> {selected.bookings?.workspace_name}</div>
-              <div style={{ marginBottom: '12px' }}><strong>Amount:</strong> PKR {parseFloat(selected.amount).toLocaleString()}</div>
+              {selected.payment_method === 'split' ? (
+                <>
+                  <div style={{ marginBottom: '12px' }}>
+                    <strong>Wallet paid:</strong> PKR {(parseFloat(selected.wallet_amount) || 0).toLocaleString()}
+                  </div>
+                  <div style={{ marginBottom: '12px' }}>
+                    <strong>Bank transfer due:</strong> PKR {bankTransferDue(selected).toLocaleString()}
+                  </div>
+                  <div style={{ marginBottom: '12px', color: '#64748b' }}>
+                    <strong>Booking total:</strong> PKR {parseFloat(selected.amount).toLocaleString()}
+                  </div>
+                </>
+              ) : (
+                <div style={{ marginBottom: '12px' }}>
+                  <strong>Amount:</strong> PKR {parseFloat(selected.amount).toLocaleString()}
+                </div>
+              )}
               {selected.transfer_reference && (
                 <div style={{ marginBottom: '12px' }}><strong>Reference:</strong> {selected.transfer_reference}</div>
               )}

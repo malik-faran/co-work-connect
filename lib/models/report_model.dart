@@ -66,6 +66,57 @@ class UserReportModel {
     'other': 'Other',
   };
 
+  /// Context-specific reason lists shown when reporting.
+  static List<MapEntry<String, String>> reasonsFor({
+    String? reportedUserId,
+    String? workspaceId,
+    String? bookingId,
+  }) {
+    if (bookingId != null) {
+      return const [
+        MapEntry('payment_issue', 'Payment / refund problem'),
+        MapEntry('fraud', 'Fraud or misleading booking'),
+        MapEntry('harassment', 'Harassment by host'),
+        MapEntry('safety', 'Safety concern at visit'),
+        MapEntry('inappropriate_content', 'Misleading listing details'),
+        MapEntry('other', 'Other'),
+      ];
+    }
+    if (workspaceId != null) {
+      return const [
+        MapEntry('fake_listing', 'Fake or misleading listing'),
+        MapEntry('payment_issue', 'Pricing / payment issue'),
+        MapEntry('inappropriate_content', 'Inappropriate photos or description'),
+        MapEntry('safety', 'Safety concern'),
+        MapEntry('fraud', 'Scam / fraud'),
+        MapEntry('spam', 'Spam listing'),
+        MapEntry('other', 'Other'),
+      ];
+    }
+    if (reportedUserId != null) {
+      return const [
+        MapEntry('harassment', 'Harassment or bullying'),
+        MapEntry('fraud', 'Fraud / scam behaviour'),
+        MapEntry('spam', 'Spam messages'),
+        MapEntry('inappropriate_content', 'Inappropriate content'),
+        MapEntry('safety', 'Safety concern'),
+        MapEntry('other', 'Other'),
+      ];
+    }
+    return typeLabels.entries.toList();
+  }
+
+  static String contextLabel({
+    String? reportedUserId,
+    String? workspaceId,
+    String? bookingId,
+  }) {
+    if (bookingId != null) return 'Booking issue';
+    if (workspaceId != null) return 'Workspace listing';
+    if (reportedUserId != null) return 'User behaviour';
+    return 'General issue';
+  }
+
   static const Map<String, String> statusLabels = {
     'pending': 'Pending',
     'under_review': 'Under Review',

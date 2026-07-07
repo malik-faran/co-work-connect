@@ -14,6 +14,7 @@ class CollaborationModel {
   final String collaborationType; // legacy: 'need_help' or 'offering_help'
   final String? projectType; // e.g., 'web_dev', 'mobile_app', 'design', etc.
   final String? budget; // Optional budget range
+  final double? budgetAmount; // Parsed numeric budget (PKR)
   final String? timeline; // Expected timeline
   final String status; // 'draft','recruiting','active','completed','cancelled'
   final List<String> responses; // List of user IDs who responded
@@ -30,6 +31,8 @@ class CollaborationModel {
   final String? inviteCode;
   final bool inviteLinkEnabled;
   final DateTime? launchedAt;
+  final String? contractTerms;
+  final String paymentMode; // 'escrow' | 'none'
 
   CollaborationModel({
     required this.id,
@@ -43,6 +46,7 @@ class CollaborationModel {
     this.collaborationType = 'need_help',
     this.projectType,
     this.budget,
+    this.budgetAmount,
     this.timeline,
     this.status = 'recruiting',
     this.responses = const [],
@@ -57,6 +61,8 @@ class CollaborationModel {
     this.inviteCode,
     this.inviteLinkEnabled = true,
     this.launchedAt,
+    this.contractTerms,
+    this.paymentMode = 'escrow',
   });
 
   /// Convert model to map for database storage
@@ -82,6 +88,7 @@ class CollaborationModel {
     if (userProfileImage != null) map['user_profile_image'] = userProfileImage;
     if (projectType != null) map['project_type'] = projectType;
     if (budget != null) map['budget'] = budget;
+    if (budgetAmount != null) map['budget_amount'] = budgetAmount;
     if (timeline != null) map['timeline'] = timeline;
     if (acceptedUserId != null) map['accepted_user_id'] = acceptedUserId;
     if (updatedAt != null) map['updated_at'] = updatedAt!.toIso8601String();
@@ -90,6 +97,8 @@ class CollaborationModel {
     if (meetingLink != null) map['meeting_link'] = meetingLink;
     if (inviteCode != null) map['invite_code'] = inviteCode;
     if (launchedAt != null) map['launched_at'] = launchedAt!.toIso8601String();
+    if (contractTerms != null) map['contract_terms'] = contractTerms;
+    map['payment_mode'] = paymentMode;
 
     return map;
   }
@@ -110,6 +119,9 @@ class CollaborationModel {
       collaborationType: getStringFromMap(map, 'collaboration_type', 'collaborationType') ?? 'need_help',
       projectType: getStringFromMap(map, 'project_type', 'projectType'),
       budget: getStringFromMap(map, 'budget', 'budget'),
+      budgetAmount: convertToDouble(map['budget_amount'] ?? map['budgetAmount'], 0) > 0
+          ? convertToDouble(map['budget_amount'] ?? map['budgetAmount'], 0)
+          : null,
       timeline: getStringFromMap(map, 'timeline', 'timeline'),
       status: getStringFromMap(map, 'status', 'status') ?? 'recruiting',
       responses: getListFromMap(map, 'responses', 'responses') != null
@@ -135,6 +147,8 @@ class CollaborationModel {
       launchedAt: getStringFromMap(map, 'launched_at', 'launchedAt') != null
           ? DateTime.parse(getStringFromMap(map, 'launched_at', 'launchedAt')!)
           : null,
+      contractTerms: getStringFromMap(map, 'contract_terms', 'contractTerms'),
+      paymentMode: getStringFromMap(map, 'payment_mode', 'paymentMode') ?? 'escrow',
     );
   }
 
@@ -151,6 +165,7 @@ class CollaborationModel {
     String? collaborationType,
     String? projectType,
     String? budget,
+    double? budgetAmount,
     String? timeline,
     String? status,
     List<String>? responses,
@@ -165,6 +180,8 @@ class CollaborationModel {
     String? inviteCode,
     bool? inviteLinkEnabled,
     DateTime? launchedAt,
+    String? contractTerms,
+    String? paymentMode,
   }) {
     return CollaborationModel(
       id: id ?? this.id,
@@ -178,6 +195,7 @@ class CollaborationModel {
       collaborationType: collaborationType ?? this.collaborationType,
       projectType: projectType ?? this.projectType,
       budget: budget ?? this.budget,
+      budgetAmount: budgetAmount ?? this.budgetAmount,
       timeline: timeline ?? this.timeline,
       status: status ?? this.status,
       responses: responses ?? this.responses,
@@ -192,6 +210,8 @@ class CollaborationModel {
       inviteCode: inviteCode ?? this.inviteCode,
       inviteLinkEnabled: inviteLinkEnabled ?? this.inviteLinkEnabled,
       launchedAt: launchedAt ?? this.launchedAt,
+      contractTerms: contractTerms ?? this.contractTerms,
+      paymentMode: paymentMode ?? this.paymentMode,
     );
   }
 
@@ -205,6 +225,38 @@ class CollaborationModel {
 
   /// Back-compat: treat recruiting as "open"
   bool get isOpen => status == 'recruiting';
+
+  /// Multiple categories stored as comma-separated `project_type`.
+  List<String> get projectCategories {
+    if (projectType == null || projectType!.trim().isEmpty) return const [];
+    return projectType!
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+  }
+
+  /// Best display value for order total (numeric or text budget).
+  String get displayBudget {
+    if (budgetAmount != null && budgetAmount! > 0) {
+      return 'Rs. ${budgetAmount!.toStringAsFixed(0)}';
+    }
+    if (budget != null && budget!.trim().isNotEmpty) return budget!.trim();
+    return 'To be agreed';
+  }
+
+  double get totalMilestoneBudget =>
+      budgetAmount ?? 0;
+
+  bool get isPaymentEnabled => paymentMode != 'none';
+  bool get isFreeCollaboration => paymentMode == 'none';
+
+  static double? parseBudgetAmount(String? text) {
+    if (text == null || text.trim().isEmpty) return null;
+    final cleaned = text.replaceAll(RegExp(r'[^0-9.]'), '');
+    if (cleaned.isEmpty) return null;
+    return double.tryParse(cleaned);
+  }
 
   String get inviteLink =>
       inviteCode == null ? '' : 'coworkconnect://project/join/$inviteCode';

@@ -4,7 +4,9 @@ import { format } from 'date-fns'
 import { Banknote, RefreshCw, Check, X } from 'lucide-react'
 import Loading from '../components/Loading'
 import EmptyState from '../components/EmptyState'
+import QueryBanner from '../components/QueryBanner'
 import { showSuccess, showError } from '../utils/toast'
+import { fetchPlain, hydrateUserField, isSchemaError } from '../lib/staffQuery'
 
 const OwnerPayouts = () => {
   const [payouts, setPayouts] = useState([])
@@ -13,6 +15,7 @@ const OwnerPayouts = () => {
   const [note, setNote] = useState('')
   const [selected, setSelected] = useState(null)
   const [processing, setProcessing] = useState(false)
+  const [loadError, setLoadError] = useState('')
 
   useEffect(() => {
     fetchPayouts()
@@ -21,63 +24,39 @@ const OwnerPayouts = () => {
   const fetchPayouts = async () => {
     try {
       setLoading(true)
+      setLoadError('')
 
-      let query = supabase
-        .from('owner_payout_requests')
-        .select(`
-          *,
-          owner:users!owner_payout_requests_owner_id_fkey(name, email),
-          owner_payment_accounts(account_type, account_title, account_number, bank_name)
-        `)
-        .order('created_at', { ascending: false })
+      const rows = await fetchPlain('owner_payout_requests', {
+        filter: filter !== 'all' ? (q) => q.eq('status', filter) : undefined,
+        order: { column: 'created_at', ascending: false },
+      })
 
-      if (filter !== 'all') query = query.eq('status', filter)
+      let data = await hydrateUserField(rows, { idKey: 'owner_id', targetKey: 'owner' })
 
-      let { data, error } = await query
-
-      if (error) {
-        const plain = await supabase
-          .from('owner_payout_requests')
+      const accountIds = [...new Set(data.map((r) => r.owner_account_id).filter(Boolean))]
+      if (accountIds.length) {
+        const { data: accounts, error: aErr } = await supabase
+          .from('owner_payment_accounts')
           .select('*')
-          .order('created_at', { ascending: false })
-
-        if (plain.error) {
-          if (plain.error.message?.includes('owner_payout') || plain.error.code === '42P01') {
-            throw new Error('owner_payout_requests missing. Run supabase/23_owner_wallet.sql')
-          }
-          throw plain.error
-        }
-
-        let rows = plain.data || []
-        if (filter !== 'all') rows = rows.filter((r) => r.status === filter)
-
-        const ownerIds = [...new Set(rows.map((r) => r.owner_id).filter(Boolean))]
-        const accountIds = [...new Set(rows.map((r) => r.owner_account_id).filter(Boolean))]
-
-        const [{ data: owners }, { data: accounts }] = await Promise.all([
-          ownerIds.length
-            ? supabase.from('users').select('id, name, email').in('id', ownerIds)
-            : Promise.resolve({ data: [] }),
-          accountIds.length
-            ? supabase.from('owner_payment_accounts').select('*').in('id', accountIds)
-            : Promise.resolve({ data: [] }),
-        ])
-
-        const ownerMap = Object.fromEntries((owners || []).map((o) => [o.id, o]))
+          .in('id', accountIds)
+        if (aErr) throw aErr
         const accountMap = Object.fromEntries((accounts || []).map((a) => [a.id, a]))
-
-        data = rows.map((r) => ({
+        data = data.map((r) => ({
           ...r,
-          owner: ownerMap[r.owner_id] || null,
           owner_payment_accounts: accountMap[r.owner_account_id] || null,
         }))
-        error = null
       }
 
-      if (error) throw error
-      setPayouts(data || [])
+      setPayouts(data)
     } catch (e) {
-      showError(e?.message || String(e))
+      const msg = e?.message || String(e)
+      if (isSchemaError(e, 'owner_payout')) {
+        setLoadError('owner_payout_requests table missing. Run supabase/23_owner_wallet.sql in Supabase.')
+      } else {
+        setLoadError(msg)
+      }
+      setPayouts([])
+      showError(msg)
     } finally {
       setLoading(false)
     }
@@ -115,11 +94,13 @@ const OwnerPayouts = () => {
   return (
     <div className="fade-in">
       <div style={{ marginBottom: '32px' }}>
-        <h1 style={{ fontSize: '32px', fontWeight: '800', marginBottom: '8px' }}>Owner Payouts</h1>
+        <h1 style={{ fontSize: '32px', fontWeight: '800', marginBottom: '8px', color: 'var(--text-primary)' }}>Owner Payouts</h1>
         <p style={{ color: '#64748b' }}>
           Owners withdraw wallet earnings to their bank / JazzCash / EasyPaisa. Approve after you send the transfer.
         </p>
       </div>
+
+      <QueryBanner error={loadError} hint="Run migration 23, then refresh." />
 
       <div style={{ display: 'flex', gap: '8px', marginBottom: '24px', flexWrap: 'wrap' }}>
         {['pending', 'approved', 'rejected', 'all'].map((f) => (

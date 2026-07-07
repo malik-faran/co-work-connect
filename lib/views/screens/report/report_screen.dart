@@ -32,22 +32,46 @@ class ReportScreen extends StatefulWidget {
 
 class _ReportScreenState extends State<ReportScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _subjectController = TextEditingController();
   final _descriptionController = TextEditingController();
   final _reportService = ReportService();
   final _storageService = StorageService();
   final _picker = ImagePicker();
 
-  String _reportType = 'other';
+  late String _reportType;
+  late final List<MapEntry<String, String>> _reasonOptions;
   final List<String> _evidenceUrls = [];
   bool _submitting = false;
   bool _uploading = false;
 
   @override
+  void initState() {
+    super.initState();
+    _reasonOptions = UserReportModel.reasonsFor(
+      reportedUserId: widget.reportedUserId,
+      workspaceId: widget.workspaceId,
+      bookingId: widget.bookingId,
+    );
+    _reportType = _reasonOptions.first.key;
+  }
+
+  @override
   void dispose() {
-    _subjectController.dispose();
     _descriptionController.dispose();
     super.dispose();
+  }
+
+  String get _defaultSubject {
+    final label = _reasonOptions
+        .firstWhere((e) => e.key == _reportType, orElse: () => _reasonOptions.last)
+        .value;
+    final about = widget.reportedUserName ??
+        widget.workspaceName ??
+        UserReportModel.contextLabel(
+          reportedUserId: widget.reportedUserId,
+          workspaceId: widget.workspaceId,
+          bookingId: widget.bookingId,
+        );
+    return '$label — $about';
   }
 
   Future<void> _pickEvidence() async {
@@ -92,9 +116,6 @@ class _ReportScreenState extends State<ReportScreen> {
     if (user == null) return;
 
     final role = user.role == AppConstants.roleOwner ? 'owner' : 'user';
-    final subject = _subjectController.text.trim().isNotEmpty
-        ? _subjectController.text.trim()
-        : UserReportModel.typeLabels[_reportType] ?? 'Report';
 
     setState(() => _submitting = true);
     try {
@@ -102,7 +123,7 @@ class _ReportScreenState extends State<ReportScreen> {
         reporterId: user.id,
         reporterRole: role,
         reportType: _reportType,
-        subject: subject,
+        subject: _defaultSubject,
         description: _descriptionController.text.trim(),
         reportedUserId: widget.reportedUserId,
         workspaceId: widget.workspaceId,
@@ -124,6 +145,12 @@ class _ReportScreenState extends State<ReportScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final contextLabel = UserReportModel.contextLabel(
+      reportedUserId: widget.reportedUserId,
+      workspaceId: widget.workspaceId,
+      bookingId: widget.bookingId,
+    );
+
     return Scaffold(
       backgroundColor: CAppTheme.backgroundColor,
       appBar: AppBar(
@@ -136,26 +163,42 @@ class _ReportScreenState extends State<ReportScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (widget.reportedUserName != null ||
-                  widget.workspaceName != null) ...[
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: CAppTheme.primaryColor.withValues(alpha: 0.08),
-                    borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: CAppTheme.primaryColor.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Report category',
+                      style: GoogleFonts.poppins(
+                        fontSize: 12,
+                        color: CAppTheme.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      contextLabel,
+                      style: GoogleFonts.poppins(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (widget.reportedUserName != null ||
+                        widget.workspaceName != null) ...[
+                      const SizedBox(height: 10),
                       Text(
-                        'Reporting about',
+                        'About',
                         style: GoogleFonts.poppins(
                           fontSize: 12,
                           color: CAppTheme.textSecondary,
                         ),
                       ),
-                      const SizedBox(height: 4),
+                      const SizedBox(height: 2),
                       Text(
                         widget.reportedUserName ?? widget.workspaceName ?? '',
                         style: GoogleFonts.poppins(
@@ -164,50 +207,79 @@ class _ReportScreenState extends State<ReportScreen> {
                         ),
                       ),
                     ],
-                  ),
+                  ],
                 ),
-                const SizedBox(height: 16),
-              ],
+              ),
+              const SizedBox(height: 20),
               Text(
                 'What is the issue?',
-                style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+                style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 15),
               ),
-              const SizedBox(height: 8),
-              DropdownButtonFormField<String>(
-                value: _reportType,
-                decoration: InputDecoration(
-                  filled: true,
-                  fillColor: Colors.white,
-                  border: OutlineInputBorder(
+              const SizedBox(height: 4),
+              Text(
+                'Select the reason that best describes your concern',
+                style: GoogleFonts.poppins(fontSize: 12.5, color: CAppTheme.textSecondary),
+              ),
+              const SizedBox(height: 12),
+              ..._reasonOptions.map((option) {
+                final selected = _reportType == option.key;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Material(
+                    color: selected
+                        ? CAppTheme.primaryColor.withValues(alpha: 0.08)
+                        : Colors.white,
                     borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                    borderSide: BorderSide.none,
+                    child: InkWell(
+                      onTap: () => setState(() => _reportType = option.key),
+                      borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                          border: Border.all(
+                            color: selected
+                                ? CAppTheme.primaryColor
+                                : CAppTheme.borderColor,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              selected
+                                  ? Icons.radio_button_checked
+                                  : Icons.radio_button_off,
+                              size: 20,
+                              color: selected
+                                  ? CAppTheme.primaryColor
+                                  : CAppTheme.textTertiary,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                option.value,
+                                style: GoogleFonts.poppins(
+                                  fontSize: 14,
+                                  fontWeight:
+                                      selected ? FontWeight.w600 : FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
-                ),
-                items: UserReportModel.typeLabels.entries
-                    .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
-                    .toList(),
-                onChanged: (v) => setState(() => _reportType = v ?? 'other'),
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _subjectController,
-                decoration: InputDecoration(
-                  labelText: 'Subject (optional)',
-                  filled: true,
-                  fillColor: Colors.white,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-              ),
+                );
+              }),
               const SizedBox(height: 16),
               TextFormField(
                 controller: _descriptionController,
                 maxLines: 5,
                 decoration: InputDecoration(
-                  labelText: 'Describe the issue *',
-                  hintText: 'Tell us what happened...',
+                  labelText: 'Describe what happened *',
+                  hintText: 'Include dates, messages, or other details...',
                   filled: true,
                   fillColor: Colors.white,
                   alignLabelWithHint: true,
@@ -263,10 +335,10 @@ class _ReportScreenState extends State<ReportScreen> {
               const SizedBox(height: 24),
               SizedBox(
                 width: double.infinity,
+                height: 50,
                 child: ElevatedButton(
                   onPressed: _submitting ? null : _submit,
                   style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
                     ),

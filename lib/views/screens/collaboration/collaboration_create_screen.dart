@@ -10,6 +10,7 @@ import 'package:cwc/models/collaboration_model.dart';
 import 'package:cwc/services/collaboration_hub_service.dart';
 import 'package:cwc/services/collaboration_service.dart';
 import 'package:cwc/services/storage_service.dart';
+import 'package:cwc/services/wallet_service.dart';
 import 'package:cwc/utils/constants/app_constants.dart';
 import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/utils/validators/form_validators.dart';
@@ -33,6 +34,7 @@ class _RoleDraft {
 class _CollaborationCreateScreenState extends State<CollaborationCreateScreen> {
   final _collab = CollaborationService();
   final _hub = CollaborationHubService();
+  final _walletService = WalletService();
   final _uuid = const Uuid();
 
   final _formKey = GlobalKey<FormState>();
@@ -44,14 +46,15 @@ class _CollaborationCreateScreenState extends State<CollaborationCreateScreen> {
   int _step = 0;
   bool _isLoading = false;
 
-  String? _category;
+  List<String> _categories = [];
   String _visibility = 'public';
+  String _paymentMode = 'escrow';
   String? _coverImageUrl;
   bool _uploadingCover = false;
 
   final List<_RoleDraft> _roles = [];
 
-  static const _categories = AppConstants.projectCategories;
+  static const _allCategories = AppConstants.projectCategories;
 
   static const _suggestedSkills = [
     'Flutter', 'React', 'Node.js', 'Python', 'UI/UX', 'Firebase',
@@ -69,8 +72,11 @@ class _CollaborationCreateScreenState extends State<CollaborationCreateScreen> {
       _descController.text = c.description;
       _budgetController.text = c.budget ?? '';
       _timelineController.text = c.timeline ?? '';
-      _category = c.projectType;
+      if (c.projectType != null && c.projectType!.isNotEmpty) {
+        _categories = c.projectType!.split(', ').where((s) => s.isNotEmpty).toList();
+      }
       _visibility = c.visibility;
+      _paymentMode = c.paymentMode;
       _coverImageUrl = c.coverImageUrl;
     }
   }
@@ -217,17 +223,32 @@ class _CollaborationCreateScreenState extends State<CollaborationCreateScreen> {
           validator: FormValidators.collabDescription,
         ),
         const SizedBox(height: 16),
-        Text('Category',
-            style: GoogleFonts.poppins(
-                fontSize: 13.5, fontWeight: FontWeight.w600, color: CAppTheme.textSecondary)),
+        Row(
+          children: [
+            Text('Category',
+                style: GoogleFonts.poppins(
+                    fontSize: 13.5, fontWeight: FontWeight.w600, color: CAppTheme.textSecondary)),
+            const Spacer(),
+            if (_categories.isNotEmpty)
+              Text('${_categories.length} selected',
+                  style: GoogleFonts.poppins(
+                      fontSize: 12, fontWeight: FontWeight.w600, color: CAppTheme.primaryColor)),
+          ],
+        ),
         const SizedBox(height: 10),
         Wrap(
           spacing: 8,
           runSpacing: 8,
-          children: _categories.map((c) {
-            final selected = _category == c;
+          children: _allCategories.map((c) {
+            final selected = _categories.contains(c);
             return GestureDetector(
-              onTap: () => setState(() => _category = c),
+              onTap: () => setState(() {
+                if (selected) {
+                  _categories.remove(c);
+                } else {
+                  _categories.add(c);
+                }
+              }),
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
                 decoration: BoxDecoration(
@@ -236,11 +257,20 @@ class _CollaborationCreateScreenState extends State<CollaborationCreateScreen> {
                   border: Border.all(
                       color: selected ? CAppTheme.primaryColor : CAppTheme.borderColor),
                 ),
-                child: Text(c,
-                    style: GoogleFonts.poppins(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w500,
-                        color: selected ? Colors.white : CAppTheme.textPrimary)),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (selected) ...[
+                      const Icon(Icons.check_rounded, size: 16, color: Colors.white),
+                      const SizedBox(width: 4),
+                    ],
+                    Text(c,
+                        style: GoogleFonts.poppins(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w500,
+                            color: selected ? Colors.white : CAppTheme.textPrimary)),
+                  ],
+                ),
               ),
             );
           }).toList(),
@@ -340,12 +370,37 @@ class _CollaborationCreateScreenState extends State<CollaborationCreateScreen> {
         const SizedBox(height: 14),
         TextFormField(
           controller: _budgetController,
+          enabled: _paymentMode == 'escrow',
           decoration: const InputDecoration(
             labelText: 'Budget (optional)',
             hintText: 'e.g. Volunteer / 50k PKR',
           ),
           validator: (v) => FormValidators.optionalShortText(v, label: 'Budget'),
         ),
+        const SizedBox(height: 20),
+        Text('Collaboration type',
+            style: GoogleFonts.poppins(
+                fontSize: 13.5, fontWeight: FontWeight.w600, color: CAppTheme.textSecondary)),
+        const SizedBox(height: 10),
+        _paymentModeTile(
+          'escrow',
+          Icons.account_balance_wallet_outlined,
+          'Paid collaboration',
+          'Use milestone payments and wallet escrow',
+        ),
+        _paymentModeTile(
+          'none',
+          Icons.groups_rounded,
+          'Non-paid collaboration',
+          'Team collaboration only (no payment flow, like Zoom teamwork)',
+        ),
+        if (_paymentMode == 'none') ...[
+          const SizedBox(height: 8),
+          Text(
+            'Payment sections and funding actions will stay hidden for this project.',
+            style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary),
+          ),
+        ],
         const SizedBox(height: 20),
         Text('Visibility',
             style: GoogleFonts.poppins(
@@ -398,30 +453,92 @@ class _CollaborationCreateScreenState extends State<CollaborationCreateScreen> {
     );
   }
 
+  Widget _paymentModeTile(String value, IconData icon, String title, String subtitle) {
+    final selected = _paymentMode == value;
+    return GestureDetector(
+      onTap: () => setState(() {
+        _paymentMode = value;
+        if (_paymentMode == 'none') {
+          _budgetController.clear();
+        }
+      }),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: selected ? CAppTheme.primaryColor.withValues(alpha: 0.07) : Colors.white,
+          borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+          border: Border.all(
+            color: selected ? CAppTheme.primaryColor : CAppTheme.borderColor,
+            width: selected ? 1.5 : 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: selected ? CAppTheme.primaryColor : CAppTheme.textSecondary),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: GoogleFonts.poppins(fontSize: 14, fontWeight: FontWeight.w600)),
+                  Text(subtitle,
+                      style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary)),
+                ],
+              ),
+            ),
+            if (selected)
+              const Icon(Icons.check_circle_rounded, color: CAppTheme.primaryColor, size: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _bottomBar() {
+    const buttonHeight = 52.0;
+
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
       decoration: BoxDecoration(color: Colors.white, boxShadow: CAppTheme.softShadow),
       child: SafeArea(
         top: false,
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            if (_step > 0)
+            if (_step > 0) ...[
               Expanded(
-                child: OutlinedButton(
-                  onPressed: () => setState(() => _step--),
-                  child: const Text('Back'),
+                child: SizedBox(
+                  height: buttonHeight,
+                  child: OutlinedButton(
+                    onPressed: () => setState(() => _step--),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                    ),
+                    child: const Text('Back'),
+                  ),
                 ),
               ),
-            if (_step > 0) const SizedBox(width: 12),
+              const SizedBox(width: 12),
+            ],
             Expanded(
-              flex: 2,
-              child: ElevatedButton(
-                onPressed: _isLoading ? null : _next,
-                child: _isLoading
-                    ? const SizedBox(
-                        width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                    : Text(_step < 2 ? 'Continue' : (_isEdit ? 'Save changes' : 'Publish project')),
+              flex: _step > 0 ? 2 : 1,
+              child: SizedBox(
+                height: buttonHeight,
+                child: ElevatedButton(
+                  onPressed: _isLoading ? null : _next,
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                  ),
+                  child: _isLoading
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : Text(_step < 2 ? 'Continue' : (_isEdit ? 'Save changes' : 'Publish project')),
+                ),
               ),
             ),
           ],
@@ -434,8 +551,8 @@ class _CollaborationCreateScreenState extends State<CollaborationCreateScreen> {
   void _next() {
     if (_step == 0) {
       if (!(_formKey.currentState?.validate() ?? false)) return;
-      if (_category == null) {
-        _toast('Please pick a category', isError: true);
+      if (_categories.isEmpty) {
+        _toast('Please pick at least one category', isError: true);
         return;
       }
       setState(() => _step = 1);
@@ -487,6 +604,22 @@ class _CollaborationCreateScreenState extends State<CollaborationCreateScreen> {
     if (user == null) return;
     setState(() => _isLoading = true);
     try {
+      final budgetAmount = _paymentMode == 'escrow'
+          ? CollaborationModel.parseBudgetAmount(_budgetController.text)
+          : null;
+
+      if (!_isEdit && _paymentMode == 'escrow') {
+        if (budgetAmount == null || budgetAmount <= 0) {
+          throw Exception('Escrow projects require a valid budget amount before posting.');
+        }
+        final wallet = await _walletService.getWallet(user.id);
+        if (wallet.balance < budgetAmount) {
+          throw Exception(
+            'Insufficient wallet balance. Add at least Rs. ${budgetAmount.toStringAsFixed(0)} to post this escrow project.',
+          );
+        }
+      }
+
       final allSkills = <String>{};
       for (final r in _roles) {
         allSkills.addAll(r.skills);
@@ -503,11 +636,15 @@ class _CollaborationCreateScreenState extends State<CollaborationCreateScreen> {
         requiredSkills: allSkills.toList(),
         collaborationType: 'need_help',
         projectMode: 'team_project',
-        projectType: _category,
-        budget: _budgetController.text.trim().isEmpty ? null : _budgetController.text.trim(),
+        projectType: _categories.join(', '),
+        budget: _paymentMode == 'escrow' && _budgetController.text.trim().isNotEmpty
+            ? _budgetController.text.trim()
+            : null,
+        budgetAmount: budgetAmount,
         timeline: _timelineController.text.trim().isEmpty ? null : _timelineController.text.trim(),
         status: 'recruiting',
         visibility: _visibility,
+        paymentMode: _paymentMode,
         coverImageUrl: _coverImageUrl,
         createdAt: widget.collaboration?.createdAt ?? DateTime.now(),
         updatedAt: DateTime.now(),
@@ -533,7 +670,8 @@ class _CollaborationCreateScreenState extends State<CollaborationCreateScreen> {
       Navigator.pop(context, true);
       _toast(_isEdit ? 'Project updated!' : 'Project published! Start reviewing applicants.');
     } catch (e) {
-      _toast('Error: $e', isError: true);
+      final msg = e.toString().replaceFirst('Exception: ', '').trim();
+      _toast(msg.isEmpty ? 'Something went wrong. Please try again.' : msg, isError: true);
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }

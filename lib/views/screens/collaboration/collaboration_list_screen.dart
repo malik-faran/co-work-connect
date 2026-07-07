@@ -247,7 +247,7 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
             onPressed: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const CollaborationJoinScreen())),
             icon: const Icon(Icons.qr_code_rounded),
-            tooltip: 'Join with code',
+            tooltip: 'Join a project',
             style: IconButton.styleFrom(
               backgroundColor: CAppTheme.primaryColor.withValues(alpha: 0.1),
               foregroundColor: CAppTheme.primaryColor,
@@ -313,7 +313,8 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
 
     if (_discoverCategory != 'All') {
       filtered = filtered
-          .where((c) => c.projectType == _discoverCategory)
+          .where((c) =>
+              c.projectCategories.contains(_discoverCategory))
           .toList();
     }
 
@@ -539,27 +540,44 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
                     left: 10,
                     child: StatusBadge(status: p.status),
                   ),
-                  if (p.projectType != null)
+                  if (p.projectCategories.isNotEmpty)
                     Positioned(
                       top: 10,
                       right: 10,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 5,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.45),
-                          borderRadius:
-                              BorderRadius.circular(CAppTheme.radiusRound),
-                        ),
-                        child: Text(
-                          p.projectType!,
-                          style: GoogleFonts.poppins(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.white,
-                          ),
+                      left: 80,
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          alignment: WrapAlignment.end,
+                          children: p.projectCategories
+                              .take(2)
+                              .map(
+                                (c) => Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 5,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withValues(alpha: 0.45),
+                                    borderRadius: BorderRadius.circular(
+                                      CAppTheme.radiusRound,
+                                    ),
+                                  ),
+                                  child: Text(
+                                    c,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: GoogleFonts.poppins(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              )
+                              .toList(),
                         ),
                       ),
                     ),
@@ -1048,18 +1066,20 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(p.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: GoogleFonts.poppins(
-                                  fontSize: 16, fontWeight: FontWeight.w700)),
-                        ),
-                        if (showStatus) StatusBadge(status: p.status),
-                      ],
+                    Text(
+                      p.title,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.poppins(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        height: 1.3,
+                      ),
                     ),
+                    if (showStatus) ...[
+                      const SizedBox(height: 8),
+                      StatusBadge(status: p.status),
+                    ],
                     const SizedBox(height: 6),
                     Text(p.description,
                         maxLines: 2,
@@ -1077,48 +1097,87 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
                     ],
                     if (canToggleListing) ...[
                       const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton.icon(
-                              onPressed: !p.isRecruiting
-                                  ? () => _setProjectListing(p, true)
-                                  : null,
-                              icon: const Icon(Icons.campaign_rounded, size: 18),
-                              label: const Text('Active'),
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: p.isRecruiting
-                                    ? CAppTheme.successColor
-                                    : CAppTheme.textTertiary,
-                                side: BorderSide(
-                                  color: p.isRecruiting
-                                      ? CAppTheme.successColor
-                                      : CAppTheme.borderColor,
+                      Container(
+                        decoration: BoxDecoration(
+                          color: CAppTheme.backgroundColor,
+                          borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                          border: Border.all(color: CAppTheme.borderColor),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: !p.isRecruiting
+                                    ? () => _setProjectListing(p, true)
+                                    : null,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 10),
+                                  decoration: BoxDecoration(
+                                    color: p.isRecruiting
+                                        ? CAppTheme.successColor
+                                        : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(
+                                        CAppTheme.radiusMedium - 1),
+                                  ),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.campaign_rounded,
+                                          size: 16,
+                                          color: p.isRecruiting
+                                              ? Colors.white
+                                              : CAppTheme.textTertiary),
+                                      const SizedBox(width: 6),
+                                      Text('Active',
+                                          style: GoogleFonts.poppins(
+                                              fontSize: 12.5,
+                                              fontWeight: FontWeight.w600,
+                                              color: p.isRecruiting
+                                                  ? Colors.white
+                                                  : CAppTheme.textTertiary)),
+                                    ],
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: OutlinedButton.icon(
-                              onPressed: !p.isInactive
-                                  ? () => _setProjectListing(p, false)
-                                  : null,
-                              icon: const Icon(Icons.pause_circle_outline_rounded, size: 18),
-                              label: const Text('Inactive'),
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: p.isInactive
-                                    ? CAppTheme.textSecondary
-                                    : CAppTheme.textTertiary,
-                                side: BorderSide(
-                                  color: p.isInactive
-                                      ? CAppTheme.textSecondary
-                                      : CAppTheme.borderColor,
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: !p.isInactive
+                                    ? () => _setProjectListing(p, false)
+                                    : null,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 10),
+                                  decoration: BoxDecoration(
+                                    color: p.isInactive
+                                        ? CAppTheme.textSecondary
+                                        : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(
+                                        CAppTheme.radiusMedium - 1),
+                                  ),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.pause_circle_outline_rounded,
+                                          size: 16,
+                                          color: p.isInactive
+                                              ? Colors.white
+                                              : CAppTheme.textTertiary),
+                                      const SizedBox(width: 6),
+                                      Text('Inactive',
+                                          style: GoogleFonts.poppins(
+                                              fontSize: 12.5,
+                                              fontWeight: FontWeight.w600,
+                                              color: p.isInactive
+                                                  ? Colors.white
+                                                  : CAppTheme.textTertiary)),
+                                    ],
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ],
                     const SizedBox(height: 12),
@@ -1162,7 +1221,11 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
   Future<void> _createProject() async {
     final created = await Navigator.push<bool>(
       context,
-      MaterialPageRoute(builder: (_) => const CollaborationCreateScreen()),
+      MaterialPageRoute(
+        builder: (_) => CollaborationCreateScreen(
+          key: ValueKey('new_project_${DateTime.now().millisecondsSinceEpoch}'),
+        ),
+      ),
     );
     if (created == true) _loadAll();
   }

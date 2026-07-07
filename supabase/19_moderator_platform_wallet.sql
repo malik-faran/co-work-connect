@@ -652,11 +652,17 @@ grant execute on function public.approve_refund_to_wallet(uuid, text) to authent
 grant execute on function public.reject_refund_request(uuid, text) to authenticated;
 grant execute on function public.admin_set_moderator(uuid, boolean) to authenticated;
 
--- Allow wallet payment method
+-- Allow wallet + split payment methods (split added in 24_split_payment_refund_policy.sql)
 alter table public.payments drop constraint if exists payments_payment_method_check;
+
+update public.payments
+set payment_method = 'manual'
+where payment_method is null
+   or payment_method not in ('stripe', 'manual', 'cash', 'wallet', 'split');
+
 alter table public.payments
   add constraint payments_payment_method_check
-  check (payment_method in ('stripe', 'manual', 'cash', 'wallet'));
+  check (payment_method in ('stripe', 'manual', 'cash', 'wallet', 'split'));
 
 -- Default platform account (edit details in admin panel after run)
 insert into public.platform_payment_accounts (

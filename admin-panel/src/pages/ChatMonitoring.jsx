@@ -4,7 +4,9 @@ import { format } from 'date-fns'
 import { MessageSquare, RefreshCw, Search, Eye, Trash2 } from 'lucide-react'
 import Loading from '../components/Loading'
 import EmptyState from '../components/EmptyState'
+import QueryBanner from '../components/QueryBanner'
 import { showSuccess, showError } from '../utils/toast'
+import { hydrateUsersByIds, isSchemaError, roomDisplayLabel } from '../lib/staffQuery'
 
 const ChatMonitoring = () => {
   const [chatRooms, setChatRooms] = useState([])
@@ -14,6 +16,8 @@ const ChatMonitoring = () => {
   const [messages, setMessages] = useState([])
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [deletingId, setDeletingId] = useState(null)
+  const [loadError, setLoadError] = useState('')
+  const [userMap, setUserMap] = useState({})
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
 
   useEffect(() => {
@@ -29,34 +33,60 @@ const ChatMonitoring = () => {
   const fetchChatRooms = async () => {
     try {
       setLoading(true)
+      setLoadError('')
+
       const { data, error } = await supabase
         .from('chat_rooms')
         .select('*')
-        .order('last_message_at', { ascending: false })
+        .order('last_message_at', { ascending: false, nullsFirst: false })
 
       if (error) throw error
-      setChatRooms(data || [])
+
+      const rooms = data || []
+      const userIds = rooms.flatMap((r) => [r.user1_id, r.user2_id].filter(Boolean))
+      const map = await hydrateUsersByIds(userIds)
+      setUserMap(map)
+      setChatRooms(rooms)
     } catch (error) {
       console.error('Error fetching chat rooms:', error)
-      showError('Failed to load chat rooms: ' + error.message)
+      const msg = error?.message || String(error)
+      if (isSchemaError(error, 'chat_rooms')) {
+        setLoadError('chat_rooms table missing or admin access denied. Run supabase/05_existing_db_patch.sql and 51_staff_chat_monitoring.sql.')
+      } else if (msg.includes('permission') || msg.includes('policy')) {
+        setLoadError('Admin cannot read chat rooms (RLS). Run supabase/51_staff_chat_monitoring.sql in Supabase SQL Editor.')
+      } else {
+        setLoadError(msg)
+      }
+      setChatRooms([])
+      showError('Failed to load chat rooms: ' + msg)
     } finally {
       setLoading(false)
     }
   }
 
+  const fetchMessagesFromTable = async (table, roomId) => {
+    const { data, error } = await supabase
+      .from(table)
+      .select('*')
+      .eq('chat_room_id', roomId)
+      .order('created_at', { ascending: true })
+    return { data: data || [], error }
+  }
+
   const fetchMessages = async (roomId) => {
     try {
       setLoadingMessages(true)
-      const { data, error } = await supabase
-        .from('messages')
-        .select('*')
-        .eq('chat_room_id', roomId)
-        .order('created_at', { ascending: true })
 
-      if (error) throw error
-      setMessages(data || [])
+      let result = await fetchMessagesFromTable('messages', roomId)
+      if (result.error && (isSchemaError(result.error, 'messages') || result.error.message?.includes('messages'))) {
+        result = await fetchMessagesFromTable('chat_messages', roomId)
+      }
+      if (result.error) throw result.error
+
+      setMessages(result.data)
     } catch (error) {
       console.error('Error fetching messages:', error)
+      setMessages([])
       showError('Failed to load messages: ' + error.message)
     } finally {
       setLoadingMessages(false)
@@ -76,11 +106,11 @@ const ChatMonitoring = () => {
     try {
       setDeletingId(roomId)
       
-      // Delete messages first
-      await supabase
-        .from('messages')
-        .delete()
-        .eq('chat_room_id', roomId)
+      // Delete messages first (try both table names)
+      const msgDel = await supabase.from('messages').delete().eq('chat_room_id', roomId)
+      if (msgDel.error?.message?.includes('messages')) {
+        await supabase.from('chat_messages').delete().eq('chat_room_id', roomId)
+      }
 
       // Then delete the room
       const { error } = await supabase
@@ -107,9 +137,12 @@ const ChatMonitoring = () => {
   const filteredRooms = chatRooms.filter(room => {
     if (!searchQuery) return true
     const query = searchQuery.toLowerCase()
+    const label = roomDisplayLabel(room, userMap).toLowerCase()
     return (
+      label.includes(query) ||
       room.user1_name?.toLowerCase().includes(query) ||
       room.user2_name?.toLowerCase().includes(query) ||
+      room.name?.toLowerCase().includes(query) ||
       room.last_message?.toLowerCase().includes(query)
     )
   })
@@ -193,6 +226,11 @@ const ChatMonitoring = () => {
           </button>
         </div>
       </div>
+
+      <QueryBanner
+        error={loadError}
+        hint="Chat monitoring needs admin RLS policies. Run 51_staff_chat_monitoring.sql if you see permission errors."
+      />
 
       {/* Search */}
       <div style={{
@@ -285,7 +323,7 @@ const ChatMonitoring = () => {
                           fontWeight: '600', 
                           color: '#1e293b' 
                         }}>
-                          {room.user1_name} ↔ {room.user2_name}
+                          {roomDisplayLabel(room, userMap)}
                         </h3>
                         {(room.unread_count1 > 0 || room.unread_count2 > 0) && (
                           <span style={{
@@ -404,7 +442,7 @@ const ChatMonitoring = () => {
             }}>
               <div>
                 <h3 style={{ fontSize: '18px', fontWeight: '700', color: '#1e293b', marginBottom: '4px' }}>
-                  {selectedRoom.user1_name} ↔ {selectedRoom.user2_name}
+                  {roomDisplayLabel(selectedRoom, userMap)}
                 </h3>
                 <p style={{ fontSize: '12px', color: '#94a3b8' }}>
                   Chat Room Messages
@@ -467,7 +505,7 @@ const ChatMonitoring = () => {
                         fontWeight: '600', 
                         color: '#1e293b' 
                       }}>
-                        {msg.sender_name}
+                        {msg.sender_name || userMap[msg.sender_id]?.name || 'User'}
                       </span>
                       <span style={{ 
                         fontSize: '11px', 
@@ -482,7 +520,7 @@ const ChatMonitoring = () => {
                       lineHeight: '1.5',
                       margin: 0
                     }}>
-                      {msg.message}
+                      {msg.message_type === 'image' ? '📷 Photo' : msg.message_type === 'file' ? '📎 File' : (msg.message || '—')}
                     </p>
                   </div>
                 ))}

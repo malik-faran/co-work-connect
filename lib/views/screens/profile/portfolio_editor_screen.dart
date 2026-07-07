@@ -351,13 +351,25 @@ class _PortfolioForm extends StatefulWidget {
 }
 
 class _PortfolioFormState extends State<_PortfolioForm> {
-  late final _title = TextEditingController(text: widget.existing?.title ?? '');
-  late final _desc = TextEditingController(text: widget.existing?.description ?? '');
-  late final _url = TextEditingController(text: widget.existing?.projectUrl ?? '');
-  late final _skillInput = TextEditingController();
-  late List<String> _skills = List.from(widget.existing?.skills ?? []);
-  late String? _imageUrl = widget.existing?.imageUrl;
+  late final TextEditingController _title;
+  late final TextEditingController _desc;
+  late final TextEditingController _url;
+  late final TextEditingController _skillInput;
+  late List<String> _skills;
+  late String? _imageUrl;
   bool _uploading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final existing = widget.existing;
+    _title = TextEditingController(text: existing?.title ?? '');
+    _desc = TextEditingController(text: existing?.description ?? '');
+    _url = TextEditingController(text: existing?.projectUrl ?? '');
+    _skillInput = TextEditingController();
+    _skills = existing == null ? [] : List<String>.from(existing!.skills);
+    _imageUrl = existing?.imageUrl;
+  }
 
   @override
   void dispose() {

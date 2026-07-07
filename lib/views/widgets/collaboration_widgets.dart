@@ -121,10 +121,17 @@ class SkillChip extends StatelessWidget {
             Icon(icon, size: 13, color: color),
             const SizedBox(width: 4),
           ],
-          Text(
-            label,
-            style: GoogleFonts.poppins(
-                fontSize: 12, fontWeight: FontWeight.w500, color: color),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.poppins(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: color,
+              ),
+            ),
           ),
         ],
       ),

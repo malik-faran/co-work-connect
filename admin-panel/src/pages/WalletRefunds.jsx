@@ -4,7 +4,9 @@ import { format } from 'date-fns'
 import { Wallet, RefreshCw, Check, X } from 'lucide-react'
 import Loading from '../components/Loading'
 import EmptyState from '../components/EmptyState'
+import QueryBanner from '../components/QueryBanner'
 import { showSuccess, showError } from '../utils/toast'
+import { fetchPlain, hydrateUserField, isSchemaError } from '../lib/staffQuery'
 
 const WalletRefunds = () => {
   const [refunds, setRefunds] = useState([])
@@ -13,6 +15,7 @@ const WalletRefunds = () => {
   const [note, setNote] = useState('')
   const [selected, setSelected] = useState(null)
   const [processing, setProcessing] = useState(false)
+  const [loadError, setLoadError] = useState('')
 
   useEffect(() => {
     fetchRefunds()
@@ -21,74 +24,38 @@ const WalletRefunds = () => {
   const fetchRefunds = async () => {
     try {
       setLoading(true)
+      setLoadError('')
 
-      let query = supabase
-        .from('refund_requests')
-        .select(`
-          *,
-          requester:users!refund_requests_user_id_fkey(name, email),
-          bookings(workspace_name, total_price, status)
-        `)
-        .order('created_at', { ascending: false })
+      const rows = await fetchPlain('refund_requests', {
+        filter: filter !== 'all' ? (q) => q.eq('status', filter) : undefined,
+        order: { column: 'created_at', ascending: false },
+      })
 
-      if (filter !== 'all') query = query.eq('status', filter)
+      let data = await hydrateUserField(rows, { idKey: 'user_id', targetKey: 'requester' })
 
-      let { data, error } = await query
-
-      // Fallback if embed fails or table missing
-      if (error) {
-        const plain = await supabase
-          .from('refund_requests')
-          .select('*')
-          .order('created_at', { ascending: false })
-        if (filter !== 'all') {
-          const filtered = await supabase
-            .from('refund_requests')
-            .select('*')
-            .eq('status', filter)
-            .order('created_at', { ascending: false })
-          plain.data = filtered.data
-          plain.error = filtered.error
-        }
-
-        if (plain.error) {
-          if (plain.error.message?.includes('refund_requests') || plain.error.code === '42P01') {
-            throw new Error('refund_requests table missing. Run supabase/19_moderator_platform_wallet.sql in Supabase.')
-          }
-          throw plain.error
-        }
-
-        const rows = plain.data || []
-        const userIds = [...new Set(rows.map((r) => r.user_id).filter(Boolean))]
-        const bookingIds = [...new Set(rows.map((r) => r.booking_id).filter(Boolean))]
-
-        const [{ data: users }, { data: bookings }] = await Promise.all([
-          userIds.length
-            ? supabase.from('users').select('id, name, email').in('id', userIds)
-            : Promise.resolve({ data: [] }),
-          bookingIds.length
-            ? supabase.from('bookings').select('id, workspace_name, total_price, status').in('id', bookingIds)
-            : Promise.resolve({ data: [] }),
-        ])
-
-        const userMap = Object.fromEntries((users || []).map((u) => [u.id, u]))
+      const bookingIds = [...new Set(data.map((r) => r.booking_id).filter(Boolean))]
+      if (bookingIds.length) {
+        const { data: bookings, error: bErr } = await supabase
+          .from('bookings')
+          .select('id, workspace_name, total_price, status')
+          .in('id', bookingIds)
+        if (bErr) throw bErr
         const bookingMap = Object.fromEntries((bookings || []).map((b) => [b.id, b]))
-
-        data = rows.map((r) => ({
-          ...r,
-          requester: userMap[r.user_id] || null,
-          bookings: bookingMap[r.booking_id] || null,
-        }))
-        error = null
+        data = data.map((r) => ({ ...r, bookings: bookingMap[r.booking_id] || null }))
       }
 
-      if (error) throw error
-      setRefunds(data || [])
+      setRefunds(data)
     } catch (e) {
       const msg = e?.message || String(e)
-      showError(msg.includes('Failed to fetch')
-        ? 'Cannot reach Supabase. Check internet or run migration 19_moderator_platform_wallet.sql'
-        : msg)
+      if (isSchemaError(e, 'refund_requests')) {
+        setLoadError('refund_requests table missing. Run supabase/19_moderator_platform_wallet.sql in Supabase.')
+      } else {
+        setLoadError(msg.includes('Failed to fetch')
+          ? 'Cannot reach Supabase — check connection.'
+          : msg)
+      }
+      setRefunds([])
+      showError(msg)
     } finally {
       setLoading(false)
     }
@@ -137,11 +104,13 @@ const WalletRefunds = () => {
   return (
     <div className="fade-in">
       <div style={{ marginBottom: '32px' }}>
-        <h1 style={{ fontSize: '32px', fontWeight: '800', marginBottom: '8px' }}>Wallet & Refunds</h1>
+        <h1 style={{ fontSize: '32px', fontWeight: '800', marginBottom: '8px', color: 'var(--text-primary)' }}>Wallet & Refunds</h1>
         <p style={{ color: '#64748b' }}>
           Approve cancellation refunds — amount goes to user&apos;s in-app wallet (Foodpanda style).
         </p>
       </div>
+
+      <QueryBanner error={loadError} hint="Run migration 19, then refresh." />
 
       <div style={{ display: 'flex', gap: '8px', marginBottom: '24px', flexWrap: 'wrap' }}>
         {['pending', 'approved', 'rejected', 'all'].map((f) => (

@@ -94,24 +94,49 @@ class _PublicProfileScreenState extends State<PublicProfileScreen> {
                 )
               : _buildBody(isSelf),
       bottomNavigationBar: (!_loading && _user != null && !isSelf)
-          ? SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
+          ? Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.05),
+                    blurRadius: 8,
+                    offset: const Offset(0, -2),
+                  ),
+                ],
+              ),
+              child: SafeArea(
+                top: false,
                 child: Row(
                   children: [
                     Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _messageUser,
-                        icon: const Icon(Icons.chat_bubble_outline_rounded),
-                        label: const Text('Message'),
+                      child: SizedBox(
+                        height: 44,
+                        child: OutlinedButton.icon(
+                          onPressed: _messageUser,
+                          icon: const Icon(Icons.chat_bubble_outline_rounded, size: 18),
+                          label: const Text('Message'),
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            textStyle: GoogleFonts.poppins(fontSize: 13, fontWeight: FontWeight.w600),
+                          ),
+                        ),
                       ),
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 10),
                     Expanded(
-                      child: ElevatedButton.icon(
-                        onPressed: _user!.collaborationEnabled == true ? _inviteToProject : null,
-                        icon: const Icon(Icons.group_add_rounded),
-                        label: const Text('Invite'),
+                      child: SizedBox(
+                        height: 44,
+                        child: ElevatedButton.icon(
+                          onPressed: _user!.collaborationEnabled == true ? _inviteToProject : null,
+                          icon: const Icon(Icons.group_add_rounded, size: 18),
+                          label: const Text('Invite'),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            textStyle: GoogleFonts.poppins(fontSize: 13, fontWeight: FontWeight.w600),
+                          ),
+                        ),
                       ),
                     ),
                   ],

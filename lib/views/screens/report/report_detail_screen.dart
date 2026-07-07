@@ -60,7 +60,9 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
 
   bool get _canObject =>
       _report != null &&
-      (_report!.status == 'resolved' || _report!.status == 'dismissed');
+      (_report!.status == 'resolved' ||
+          _report!.status == 'dismissed' ||
+          _report!.status == 'under_review');
 
   Future<void> _submitObjection() async {
     final text = _objectionController.text.trim();
@@ -328,7 +330,9 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
           ),
           const SizedBox(height: 8),
           Text(
-            'If you believe this decision was incorrect, explain your concern professionally. We will reopen the review.',
+            _report!.status == 'under_review'
+                ? 'Add more details for our team while your report is being reviewed.'
+                : 'If you believe this decision was incorrect, explain your concern. We will reopen the review.',
             style: GoogleFonts.poppins(fontSize: 13, color: CAppTheme.textSecondary, height: 1.45),
           ),
           const SizedBox(height: 12),
@@ -336,8 +340,10 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
             controller: _objectionController,
             minLines: 3,
             maxLines: 6,
-            decoration: const InputDecoration(
-              labelText: 'Your objection',
+            decoration: InputDecoration(
+              labelText: _report!.status == 'under_review'
+                  ? 'Your follow-up'
+                  : 'Your objection',
               hintText: 'Explain why you disagree and share any new details...',
               alignLabelWithHint: true,
             ),
@@ -345,16 +351,20 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
           const SizedBox(height: 12),
           SizedBox(
             width: double.infinity,
-            child: ElevatedButton.icon(
+            child: ElevatedButton(
               onPressed: _submitting ? null : _submitObjection,
-              icon: _submitting
+              child: _submitting
                   ? const SizedBox(
                       width: 18,
                       height: 18,
                       child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                     )
-                  : const Icon(Icons.send_rounded),
-              label: const Text('Submit objection'),
+                  : Text(
+                      _report!.status == 'under_review'
+                          ? 'Send follow-up'
+                          : 'Submit objection',
+                      style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+                    ),
             ),
           ),
         ],

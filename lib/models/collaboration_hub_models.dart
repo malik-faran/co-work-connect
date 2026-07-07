@@ -67,6 +67,7 @@ class CollaborationMember {
   final String? roleTitle;
   final String joinedVia;
   final DateTime joinedAt;
+  final DateTime? contractAcceptedAt;
 
   CollaborationMember({
     required this.id,
@@ -78,9 +79,19 @@ class CollaborationMember {
     this.roleTitle,
     this.joinedVia = 'discover',
     required this.joinedAt,
+    this.contractAcceptedAt,
   });
 
   bool get isOwner => role == 'owner';
+  bool get hasAcceptedContract => contractAcceptedAt != null;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CollaborationMember && userId == other.userId;
+
+  @override
+  int get hashCode => userId.hashCode;
 
   Map<String, dynamic> toMap() => {
         'id': id,
@@ -92,6 +103,8 @@ class CollaborationMember {
         if (roleTitle != null) 'role_title': roleTitle,
         'joined_via': joinedVia,
         'joined_at': joinedAt.toIso8601String(),
+        if (contractAcceptedAt != null)
+          'contract_accepted_at': contractAcceptedAt!.toIso8601String(),
       };
 
   factory CollaborationMember.fromMap(Map<String, dynamic> map) => CollaborationMember(
@@ -104,6 +117,7 @@ class CollaborationMember {
         roleTitle: getStringFromMap(map, 'role_title', 'roleTitle'),
         joinedVia: getStringFromMap(map, 'joined_via', 'joinedVia') ?? 'discover',
         joinedAt: _date(map, 'joined_at', 'joinedAt') ?? DateTime.now(),
+        contractAcceptedAt: _date(map, 'contract_accepted_at', 'contractAcceptedAt'),
       );
 }
 
@@ -196,12 +210,18 @@ class CollaborationMilestone {
   final String title;
   final String? description;
   final DateTime? dueDate;
-  final String status; // pending | done
+  final String status; // pending | submitted | done | missed
   final String? assignedTo;
   final String? assignedToName;
   final int sortOrder;
   final String? completedBy;
   final DateTime? completedAt;
+  final DateTime? missedNotifiedAt;
+  final String? completionRequestedBy;
+  final DateTime? completionRequestedAt;
+  final String? submissionNote;
+  final String? reviewReason;
+  final double? amount;
   final DateTime createdAt;
 
   CollaborationMilestone({
@@ -216,10 +236,64 @@ class CollaborationMilestone {
     this.sortOrder = 0,
     this.completedBy,
     this.completedAt,
+    this.missedNotifiedAt,
+    this.completionRequestedBy,
+    this.completionRequestedAt,
+    this.submissionNote,
+    this.reviewReason,
+    this.amount,
     required this.createdAt,
   });
 
   bool get isDone => status == 'done';
+  bool get isMissed => status == 'missed';
+  bool get isPending => status == 'pending';
+  bool get isSubmitted => status == 'submitted';
+
+  bool get isOverdue =>
+      (isPending || isSubmitted) && dueDate != null && DateTime.now().isAfter(dueDate!);
+
+  bool canToggleBy(String userId, {required bool isProjectOwner}) {
+    if (isMissed) return false;
+    if (isDone) return isProjectOwner;
+    if (isSubmitted) return isProjectOwner;
+    return assignedTo == userId || isProjectOwner;
+  }
+
+  CollaborationMilestone copyWith({
+    String? title,
+    String? description,
+    DateTime? dueDate,
+    String? status,
+    String? assignedTo,
+    String? assignedToName,
+    DateTime? missedNotifiedAt,
+    String? completionRequestedBy,
+    DateTime? completionRequestedAt,
+    String? submissionNote,
+    String? reviewReason,
+    double? amount,
+  }) =>
+      CollaborationMilestone(
+        id: id,
+        collaborationId: collaborationId,
+        title: title ?? this.title,
+        description: description ?? this.description,
+        dueDate: dueDate ?? this.dueDate,
+        status: status ?? this.status,
+        assignedTo: assignedTo ?? this.assignedTo,
+        assignedToName: assignedToName ?? this.assignedToName,
+        sortOrder: sortOrder,
+        completedBy: completedBy,
+        completedAt: completedAt,
+        missedNotifiedAt: missedNotifiedAt ?? this.missedNotifiedAt,
+        completionRequestedBy: completionRequestedBy ?? this.completionRequestedBy,
+        completionRequestedAt: completionRequestedAt ?? this.completionRequestedAt,
+        submissionNote: submissionNote ?? this.submissionNote,
+        reviewReason: reviewReason ?? this.reviewReason,
+        amount: amount ?? this.amount,
+        createdAt: createdAt,
+      );
 
   Map<String, dynamic> toMap() => {
         'id': id,
@@ -233,6 +307,14 @@ class CollaborationMilestone {
         'sort_order': sortOrder,
         if (completedBy != null) 'completed_by': completedBy,
         if (completedAt != null) 'completed_at': completedAt!.toIso8601String(),
+        if (missedNotifiedAt != null)
+          'missed_notified_at': missedNotifiedAt!.toIso8601String(),
+        if (completionRequestedBy != null) 'completion_requested_by': completionRequestedBy,
+        if (completionRequestedAt != null)
+          'completion_requested_at': completionRequestedAt!.toIso8601String(),
+        if (submissionNote != null) 'submission_note': submissionNote,
+        if (reviewReason != null) 'review_reason': reviewReason,
+        if (amount != null) 'amount': amount,
         'created_at': createdAt.toIso8601String(),
       };
 
@@ -248,8 +330,94 @@ class CollaborationMilestone {
         sortOrder: convertToInt(map['sort_order'] ?? map['sortOrder'], 0),
         completedBy: getStringFromMap(map, 'completed_by', 'completedBy'),
         completedAt: _date(map, 'completed_at', 'completedAt'),
+        missedNotifiedAt: _date(map, 'missed_notified_at', 'missedNotifiedAt'),
+        completionRequestedBy:
+            getStringFromMap(map, 'completion_requested_by', 'completionRequestedBy'),
+        completionRequestedAt:
+            _date(map, 'completion_requested_at', 'completionRequestedAt'),
+        submissionNote: getStringFromMap(map, 'submission_note', 'submissionNote'),
+        reviewReason: getStringFromMap(map, 'review_reason', 'reviewReason'),
+        amount: () {
+          final v = map['amount'];
+          if (v == null) return null;
+          final d = convertToDouble(v, 0);
+          return d > 0 ? d : null;
+        }(),
         createdAt: _date(map, 'created_at', 'createdAt') ?? DateTime.now(),
       );
+}
+
+/// Escrow payment for a project milestone (Fiverr-style).
+class CollaborationPayment {
+  final String id;
+  final String collaborationId;
+  final String milestoneId;
+  final String payerId;
+  final String? payeeId;
+  final double amount;
+  final String status; // pending | held | released | failed
+  final String paymentMethod;
+  final DateTime createdAt;
+  final DateTime? releasedAt;
+
+  CollaborationPayment({
+    required this.id,
+    required this.collaborationId,
+    required this.milestoneId,
+    required this.payerId,
+    this.payeeId,
+    required this.amount,
+    required this.status,
+    required this.paymentMethod,
+    required this.createdAt,
+    this.releasedAt,
+  });
+
+  bool get isHeld => status == 'held';
+  bool get isReleased => status == 'released';
+  bool get isPending => status == 'pending';
+
+  factory CollaborationPayment.fromMap(Map<String, dynamic> map) => CollaborationPayment(
+        id: map['id'] ?? '',
+        collaborationId: getStringFromMap(map, 'collaboration_id', 'collaborationId') ?? '',
+        milestoneId: getStringFromMap(map, 'milestone_id', 'milestoneId') ?? '',
+        payerId: getStringFromMap(map, 'payer_id', 'payerId') ?? '',
+        payeeId: getStringFromMap(map, 'payee_id', 'payeeId'),
+        amount: convertToDouble(map['amount'], 0),
+        status: getStringFromMap(map, 'status', 'status') ?? 'pending',
+        paymentMethod: getStringFromMap(map, 'payment_method', 'paymentMethod') ?? 'wallet',
+        createdAt: _date(map, 'created_at', 'createdAt') ?? DateTime.now(),
+        releasedAt: _date(map, 'released_at', 'releasedAt'),
+      );
+}
+
+/// Rules for when a project can be marked complete.
+class CollaborationMilestoneRules {
+  static bool canMarkProjectComplete(List<CollaborationMilestone> milestones) =>
+      projectCompleteBlockReason(milestones) == null;
+
+  static String? projectCompleteBlockReason(List<CollaborationMilestone> milestones) {
+    if (milestones.isEmpty) {
+      return 'Add milestones before marking the project complete.';
+    }
+    final missed = milestones.where((m) => m.isMissed).length;
+    if (missed > 0) {
+      return missed == 1
+          ? '1 milestone was missed. Update or replace it before completing the project.'
+          : '$missed milestones were missed. Resolve them before completing the project.';
+    }
+    final done = milestones.where((m) => m.isDone).length;
+    final submitted = milestones.where((m) => m.isSubmitted).length;
+    if (submitted > 0) {
+      return submitted == 1
+          ? '1 milestone completion request is waiting for owner approval.'
+          : '$submitted milestone completion requests are waiting for owner approval.';
+    }
+    if (done < milestones.length) {
+      return 'Complete all milestones first ($done/${milestones.length} done).';
+    }
+    return null;
+  }
 }
 
 /// A shared file on a project.

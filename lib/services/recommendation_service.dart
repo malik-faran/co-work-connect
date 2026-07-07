@@ -32,6 +32,9 @@ class RecommendationService {
   final WorkspaceInteractionService _interactionService =
       WorkspaceInteractionService();
 
+  /// Only recommend workspaces within this radius of the user's GPS fix.
+  static const double nearbyRadiusKm = 50.0;
+
   Future<List<WorkspaceRecommendation>> getRecommendations({
     required String userId,
     required List<WorkspaceModel> workspaces,
@@ -42,6 +45,12 @@ class RecommendationService {
     final available =
         workspaces.where((w) => w.isAvailable).toList(growable: false);
     if (available.isEmpty) return [];
+
+    final hasUserLocation = userLat != null &&
+        userLng != null &&
+        isValidCoords(userLat, userLng);
+
+    if (!hasUserLocation) return [];
 
     final bookings = await _bookingService.getUserBookings(userId);
     final meaningful = bookings
@@ -60,19 +69,41 @@ class RecommendationService {
       userLng: userLng,
     );
 
+    final candidates = _filterNearby(available, distances);
+
+    if (candidates.isEmpty) return [];
+
     final scored = meaningful.isEmpty
-        ? _scoreColdStart(available, distances)
+        ? _scoreColdStart(candidates, distances, true)
         : _scoreWarmStart(
-            available,
+            candidates,
             _buildTasteProfile(meaningful, available),
             viewedIds,
             viewCounts,
             meaningful,
             distances,
+            true,
           );
 
-    scored.sort((a, b) => b.score.compareTo(a.score));
+    scored.sort((a, b) {
+      final byScore = b.score.compareTo(a.score);
+      if (byScore != 0) return byScore;
+      final aDist = a.distanceKm ?? double.infinity;
+      final bDist = b.distanceKm ?? double.infinity;
+      return aDist.compareTo(bDist);
+    });
     return _applyDiversity(scored, limit);
+  }
+
+  List<WorkspaceModel> _filterNearby(
+    List<WorkspaceModel> workspaces,
+    Map<String, double> distances,
+  ) {
+    return workspaces.where((w) {
+      if (!hasValidWorkspaceCoords(w.latitude, w.longitude)) return false;
+      final km = distances[w.id];
+      return km != null && km <= nearbyRadiusKm;
+    }).toList(growable: false);
   }
 
   Future<Map<String, double>> _resolveDistances(
@@ -124,13 +155,13 @@ class RecommendationService {
     return 0.5;
   }
 
-  double _distanceScore(double? km) {
-    if (km == null) return 0.5;
+  double _distanceScore(double? km, {required bool hasUserLocation}) {
+    if (km == null) return hasUserLocation ? 0.0 : 0.5;
     if (km <= 5) return 1.0;
     if (km <= 15) return 0.85;
     if (km <= 30) return 0.65;
-    if (km <= 60) return 0.4;
-    return 0.2;
+    if (km <= nearbyRadiusKm) return 0.45;
+    return 0.0;
   }
 
   List<WorkspaceRecommendation> _applyDiversity(
@@ -164,6 +195,7 @@ class RecommendationService {
   List<WorkspaceRecommendation> _scoreColdStart(
     List<WorkspaceModel> workspaces,
     Map<String, double> distances,
+    bool hasUserLocation,
   ) {
     final maxPrice = workspaces
         .map((w) => w.pricePerDay)
@@ -175,13 +207,14 @@ class RecommendationService {
       final reviewBoost = ((ws.totalReviews ?? 0) / 10.0).clamp(0.0, 1.0);
       final affordability = 1.0 - (ws.pricePerDay / maxPrice);
       final distKm = distances[ws.id];
-      final distScore = _distanceScore(distKm);
+      final distScore = _distanceScore(distKm, hasUserLocation: hasUserLocation);
       final verified = ws.workspaceApproved == true ? 0.06 : 0.0;
 
-      final score = rating * 0.30 +
-          affordability * 0.32 +
-          reviewBoost * 0.18 +
-          distScore * 0.15 +
+      final distanceWeight = hasUserLocation ? 0.40 : 0.15;
+      final score = rating * 0.26 +
+          affordability * 0.28 +
+          reviewBoost * 0.16 +
+          distScore * distanceWeight +
           verified +
           0.05;
 
@@ -288,6 +321,7 @@ class RecommendationService {
     Map<String, int> viewCounts,
     List<BookingModel> bookings,
     Map<String, double> distances,
+    bool hasUserLocation,
   ) {
     final bookedIds = bookings.map((b) => b.workspaceId).toSet();
     final maxPrice = workspaces
@@ -297,7 +331,7 @@ class RecommendationService {
 
     return workspaces.map((ws) {
       final distKm = distances[ws.id];
-      final distScore = _distanceScore(distKm);
+      final distScore = _distanceScore(distKm, hasUserLocation: hasUserLocation);
 
       final cityMatch = profile.preferredCities.isEmpty ||
               profile.preferredCities.contains(ws.city)
@@ -351,13 +385,15 @@ class RecommendationService {
 
       final verified = ws.workspaceApproved == true ? 0.06 : 0.0;
 
-      final score = cityMatch * 0.18 +
-          typeMatch * 0.15 +
-          priceSimilarity * 0.17 +
+      final distanceWeight = hasUserLocation ? 0.28 : 0.14;
+
+      final score = cityMatch * 0.16 +
+          typeMatch * 0.14 +
+          priceSimilarity * 0.16 +
           amenityOverlap * 0.10 +
           rating * 0.08 +
           affordability * 0.08 +
-          distScore * 0.14 +
+          distScore * distanceWeight +
           hourlyFit +
           interactionBoost +
           verified;
@@ -437,7 +473,7 @@ class RecommendationService {
     String primary;
     if (bookedBefore) {
       primary = 'Book again';
-    } else if (distKm != null && _distanceScore(distKm) >= 0.85) {
+    } else if (distKm != null && _distanceScore(distKm, hasUserLocation: true) >= 0.85) {
       primary = 'Near you';
     } else if (cityMatch >= 0.99 && profile.preferredCities.isNotEmpty) {
       primary = 'In your area';

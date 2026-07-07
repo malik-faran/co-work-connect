@@ -22,6 +22,9 @@ class NotificationScopeHelper {
     'collaboration_completed',
     'collaboration_milestone',
     'collaboration_milestone_missed',
+    'collaboration_milestone_review',
+    'collaboration_milestone_accepted',
+    'collaboration_milestone_payment_released',
   };
 
   static const Set<String> reportTypes = {
@@ -33,6 +36,8 @@ class NotificationScopeHelper {
   static const Set<String> workspaceTypes = {
     'booking_confirmed',
     'booking_cancelled',
+    'booking_ending_soon',
+    'booking_completed',
     'payment_receipt',
     'payment_rejected',
     'report_under_review',

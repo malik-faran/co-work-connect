@@ -136,8 +136,10 @@ class ChatMessageModel {
   final String? imageUrl; // If message type is image
   final String? fileUrl; // If message type is file
   final bool isRead;
+  final bool isEdited;
   final DateTime createdAt;
   final DateTime? updatedAt;
+  final DateTime? editedAt;
 
   ChatMessageModel({
     required this.id,
@@ -150,8 +152,10 @@ class ChatMessageModel {
     this.imageUrl,
     this.fileUrl,
     this.isRead = false,
+    this.isEdited = false,
     required this.createdAt,
     this.updatedAt,
+    this.editedAt,
   });
 
   /// Convert to map for database
@@ -171,6 +175,8 @@ class ChatMessageModel {
     if (imageUrl != null) map['image_url'] = imageUrl;
     if (fileUrl != null) map['file_url'] = fileUrl;
     if (updatedAt != null) map['updated_at'] = updatedAt!.toIso8601String();
+    if (isEdited) map['is_edited'] = true;
+    if (editedAt != null) map['edited_at'] = editedAt!.toIso8601String();
 
     return map;
   }
@@ -187,16 +193,45 @@ class ChatMessageModel {
       messageType: getStringFromMap(map, 'message_type', 'messageType') ?? 'text',
       imageUrl: getStringFromMap(map, 'image_url', 'imageUrl'),
       fileUrl: getStringFromMap(map, 'file_url', 'fileUrl'),
-      isRead: getValueFromMap(map, 'is_read', 'isRead', false) as bool,
+      isRead: getValueFromMap(map, 'is_read', 'isRead', false),
+      isEdited: getValueFromMap(map, 'is_edited', 'isEdited', false),
       createdAt: getStringFromMap(map, 'created_at', 'createdAt') != null
           ? DateTime.parse(getStringFromMap(map, 'created_at', 'createdAt')!)
           : DateTime.now(),
       updatedAt: getStringFromMap(map, 'updated_at', 'updatedAt') != null
           ? DateTime.parse(getStringFromMap(map, 'updated_at', 'updatedAt')!)
           : null,
+      editedAt: getStringFromMap(map, 'edited_at', 'editedAt') != null
+          ? DateTime.parse(getStringFromMap(map, 'edited_at', 'editedAt')!)
+          : null,
     );
   }
 
   /// Check if message is from current user
   bool isFromUser(String userId) => senderId == userId;
+
+  ChatMessageModel copyWith({
+    String? message,
+    bool? isEdited,
+    DateTime? editedAt,
+    DateTime? updatedAt,
+    bool? isRead,
+  }) {
+    return ChatMessageModel(
+      id: id,
+      chatRoomId: chatRoomId,
+      senderId: senderId,
+      senderName: senderName,
+      senderProfileImage: senderProfileImage,
+      message: message ?? this.message,
+      messageType: messageType,
+      imageUrl: imageUrl,
+      fileUrl: fileUrl,
+      isRead: isRead ?? this.isRead,
+      isEdited: isEdited ?? this.isEdited,
+      createdAt: createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      editedAt: editedAt ?? this.editedAt,
+    );
+  }
 }

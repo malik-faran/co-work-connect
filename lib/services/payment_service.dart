@@ -112,8 +112,10 @@ class PaymentService {
     required String receiptUrl,
     String? transferReference,
   }) async {
+    final existing = await getPaymentById(paymentId);
     final payment = await _requireUpdatedPayment(paymentId, {
-      'payment_method': AppConstants.paymentMethodManual,
+      if (existing?.isSplit != true)
+        'payment_method': AppConstants.paymentMethodManual,
       'status': 'pending',
       'payee_type': AppConstants.payeePlatform,
       'platform_account_id': platformAccountId,
@@ -216,6 +218,61 @@ class PaymentService {
       throw Exception('Split payment could not be initialized');
     }
     return payment;
+  }
+
+  /// Stripe checkout for the external (non-wallet) portion of a split payment.
+  Future<PaymentModel> createSplitExternalCardPayment({
+    required String paymentId,
+    required double externalAmount,
+  }) async {
+    final paymentIntent = await _createStripePaymentIntent(
+      amount: _pkrToUsdCents(externalAmount),
+      currency: 'usd',
+    );
+    final expiresAt = DateTime.now().add(const Duration(minutes: 30));
+
+    return _requireUpdatedPayment(paymentId, {
+      'payment_method': AppConstants.paymentMethodSplit,
+      'status': 'pending',
+      'stripe_payment_intent_id': paymentIntent['id'],
+      'stripe_client_secret': paymentIntent['client_secret'],
+      'receipt_status': null,
+      'platform_account_id': null,
+      'owner_account_id': null,
+      'receipt_url': null,
+      'transfer_reference': null,
+      'failure_reason': null,
+      'expires_at': expiresAt.toIso8601String(),
+      'updated_at': DateTime.now().toIso8601String(),
+    });
+  }
+
+  /// Bank / EasyPaisa for the external portion of a split payment.
+  Future<PaymentModel> prepareSplitExternalManual({required String paymentId}) async {
+    final existing = await getPaymentById(paymentId);
+    if (existing == null) throw Exception('Payment not found');
+
+    final keepReceipt =
+        existing.receiptStatus == AppConstants.receiptAwaitingVerification ||
+            existing.receiptStatus == AppConstants.receiptApproved;
+    final expiresAt = DateTime.now().add(const Duration(hours: 24));
+
+    return _requireUpdatedPayment(paymentId, {
+      'payment_method': AppConstants.paymentMethodSplit,
+      'status': 'pending',
+      'stripe_payment_intent_id': null,
+      'stripe_client_secret': null,
+      'failure_reason': null,
+      'receipt_status': keepReceipt
+          ? existing.receiptStatus
+          : AppConstants.receiptAwaitingUpload,
+      if (!keepReceipt) 'platform_account_id': null,
+      if (!keepReceipt) 'owner_account_id': null,
+      if (!keepReceipt) 'receipt_url': null,
+      if (!keepReceipt) 'transfer_reference': null,
+      'expires_at': expiresAt.toIso8601String(),
+      'updated_at': DateTime.now().toIso8601String(),
+    });
   }
 
   /// Refund wallet portion when split payment is cancelled or expires.
@@ -418,6 +475,32 @@ class PaymentService {
       return payment;
     } catch (e) {
       throw Exception('Failed to create payment: ${e.toString()}');
+    }
+  }
+
+  /// Create a Stripe payment intent for wallet top-up (no booking needed).
+  static Future<Map<String, dynamic>> createStripeTopUpIntent(int amountCents) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$stripeApiUrl/payment_intents'),
+        headers: {
+          'Authorization': 'Bearer $stripeSecretKey',
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: {
+          'amount': amountCents.toString(),
+          'currency': 'usd',
+          'payment_method_types[]': 'card',
+          'metadata[source]': 'cwc_wallet_topup',
+        },
+      );
+      if (response.statusCode == 200) {
+        return json.decode(response.body) as Map<String, dynamic>;
+      }
+      throw Exception('Stripe API error (${response.statusCode})');
+    } catch (e) {
+      if (e is Exception && e.toString().contains('Stripe')) rethrow;
+      throw Exception('Card payment is unavailable right now. Please use bank transfer.');
     }
   }
 

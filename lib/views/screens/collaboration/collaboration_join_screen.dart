@@ -135,7 +135,7 @@ class _CollaborationJoinScreenState extends State<CollaborationJoinScreen> {
             ),
             child: Row(
               children: [
-                const Icon(Icons.link_rounded, color: Colors.white, size: 36),
+                const Icon(Icons.qr_code_rounded, color: Colors.white, size: 36),
                 const SizedBox(width: 14),
                 Expanded(
                   child: Text(
@@ -155,7 +155,7 @@ class _CollaborationJoinScreenState extends State<CollaborationJoinScreen> {
               labelText: 'Invite code or link',
               hintText: 'e.g. FYP8X2K9',
               suffixIcon: IconButton(
-                icon: const Icon(Icons.search_rounded),
+                icon: const Icon(Icons.qr_code_rounded),
                 onPressed: _resolve,
               ),
             ),

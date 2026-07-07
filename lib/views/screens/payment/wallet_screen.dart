@@ -5,7 +5,8 @@ import 'package:intl/intl.dart';
 import 'package:cwc/controllers/auth_controller.dart';
 import 'package:cwc/services/wallet_service.dart';
 import 'package:cwc/utils/themes/theme.dart';
-import 'package:cwc/utils/helpers/snackbar_helper.dart';
+import 'package:cwc/views/screens/payment/wallet_topup_screen.dart';
+
 
 class WalletScreen extends StatefulWidget {
   const WalletScreen({super.key});
@@ -43,6 +44,121 @@ class _WalletScreenState extends State<WalletScreen> {
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  Future<void> _showTopUp() async {
+    final amountController = TextEditingController();
+    final presets = [100, 500, 1000, 2000, 5000];
+    final selectedAmount = await showModalBottomSheet<double>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setLocal) => Padding(
+            padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+            child: Container(
+              padding: const EdgeInsets.all(20),
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 40, height: 4,
+                      decoration: BoxDecoration(
+                        color: CAppTheme.borderColor,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text('Top Up Wallet',
+                      style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 4),
+                  Text('Choose amount to add',
+                      style: GoogleFonts.poppins(fontSize: 12.5, color: CAppTheme.textSecondary)),
+                  const SizedBox(height: 18),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: presets.map((p) {
+                      return GestureDetector(
+                        onTap: () {
+                          amountController.text = p.toString();
+                          setLocal(() {});
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: amountController.text == p.toString()
+                                ? CAppTheme.primaryColor
+                                : CAppTheme.backgroundColor,
+                            borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                            border: Border.all(
+                              color: amountController.text == p.toString()
+                                  ? CAppTheme.primaryColor
+                                  : CAppTheme.borderColor,
+                            ),
+                          ),
+                          child: Text(
+                            'Rs. $p',
+                            style: GoogleFonts.poppins(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: amountController.text == p.toString()
+                                  ? Colors.white
+                                  : CAppTheme.textPrimary,
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: amountController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Amount (PKR)',
+                      hintText: 'Enter amount',
+                      prefixText: 'Rs. ',
+                    ),
+                    onChanged: (_) => setLocal(() {}),
+                  ),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () {
+                        final amt = double.tryParse(amountController.text.trim());
+                        if (amt != null && amt > 0) {
+                          Navigator.pop(ctx, amt);
+                        }
+                      },
+                      child: const Text('Continue to Payment'),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+    if (selectedAmount == null || !mounted) return;
+    final result = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => WalletTopUpScreen(amount: selectedAmount),
+      ),
+    );
+    if (result == true && mounted) _load();
   }
 
   @override
@@ -87,8 +203,25 @@ class _WalletScreenState extends State<WalletScreen> {
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          'Use wallet balance when paying for bookings. Refunds from cancellations are credited here.',
+                          'Refunds from approved booking cancellations are credited here.',
                           style: GoogleFonts.poppins(color: Colors.white70, fontSize: 12, height: 1.4),
+                        ),
+                        const SizedBox(height: 16),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.white,
+                              foregroundColor: CAppTheme.primaryColor,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                              ),
+                            ),
+                            onPressed: _showTopUp,
+                            icon: const Icon(Icons.add_rounded, size: 20),
+                            label: Text('Top Up', style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
+                          ),
                         ),
                       ],
                     ),

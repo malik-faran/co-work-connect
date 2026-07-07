@@ -18,6 +18,7 @@ import 'package:flutter_stripe/flutter_stripe.dart' hide Card;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:intl/intl.dart';
 import 'package:cwc/views/screens/booking/booking_confirmation_screen.dart';
+import 'package:cwc/views/widgets/refund_policy_banner.dart';
 
 class PaymentScreen extends StatefulWidget {
   final BookingModel booking;
@@ -47,6 +48,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
   double _walletBalance = 0;
   XFile? _receiptFile;
   String? _selectedMethod; // stripe | manual | wallet | split
+  String? _splitExternalMethod; // stripe | manual — remainder after wallet
   double _walletPortion = 0;
   bool _splitWalletDebited = false;
   bool _isLoading = true;
@@ -111,6 +113,13 @@ class _PaymentScreenState extends State<PaymentScreen> {
         if (existing?.isSplit == true && existing!.walletAmount > 0) {
           _splitWalletDebited = true;
           _walletPortion = existing.walletAmount;
+          if (existing.stripeClientSecret != null &&
+              existing.stripeClientSecret!.isNotEmpty) {
+            _splitExternalMethod = AppConstants.paymentMethodStripe;
+          } else if (existing.receiptUrl != null ||
+              existing.receiptStatus == AppConstants.receiptAwaitingVerification) {
+            _splitExternalMethod = AppConstants.paymentMethodManual;
+          }
         }
         _selectedAccount = accounts.isNotEmpty
             ? accounts.firstWhere((a) => a.isDefault, orElse: () => accounts.first)
@@ -229,11 +238,19 @@ class _PaymentScreenState extends State<PaymentScreen> {
         });
         return;
       } else if (method == AppConstants.paymentMethodSplit) {
+        final walletAlreadyApplied =
+            existing?.isSplit == true && (existing?.walletAmount ?? 0) > 0;
         setState(() {
           _selectedMethod = method;
           _isProcessing = false;
-          _splitWalletDebited = false;
-          _walletPortion = _defaultSplitWalletPortion();
+          if (walletAlreadyApplied) {
+            _splitWalletDebited = true;
+            _walletPortion = existing!.walletAmount;
+          } else {
+            _splitWalletDebited = false;
+            _walletPortion = _defaultSplitWalletPortion();
+            _splitExternalMethod = null;
+          }
         });
         return;
       } else if (method == AppConstants.paymentMethodStripe) {
@@ -293,7 +310,11 @@ class _PaymentScreenState extends State<PaymentScreen> {
 
   Future<void> _processCardPayment() async {
     if (_payment == null || _payment!.stripeClientSecret == null) {
-      if (_selectedMethod != AppConstants.paymentMethodStripe) {
+      if (_selectedMethod == AppConstants.paymentMethodSplit && _splitWalletDebited) {
+        if (_splitExternalMethod != AppConstants.paymentMethodStripe) {
+          await _selectSplitExternalMethod(AppConstants.paymentMethodStripe);
+        }
+      } else if (_selectedMethod != AppConstants.paymentMethodStripe) {
         await _selectMethod(AppConstants.paymentMethodStripe);
       }
       if (_payment?.stripeClientSecret == null) {
@@ -443,9 +464,19 @@ class _PaymentScreenState extends State<PaymentScreen> {
 
   double get _externalDue {
     if (_selectedMethod == AppConstants.paymentMethodSplit) {
+      if (_splitWalletDebited && _payment != null) {
+        return _payment!.amountDueExternally;
+      }
       return (widget.booking.totalPrice - _walletPortion).clamp(0, widget.booking.totalPrice);
     }
     return widget.booking.totalPrice;
+  }
+
+  double get _walletPaidPortion {
+    if (_selectedMethod == AppConstants.paymentMethodSplit && _splitWalletDebited && _payment != null) {
+      return _payment!.walletAmount;
+    }
+    return 0;
   }
 
   Future<void> _applySplitWalletPortion() async {
@@ -471,10 +502,11 @@ class _PaymentScreenState extends State<PaymentScreen> {
         _payment = payment;
         _splitWalletDebited = true;
         _walletPortion = portion;
+        _splitExternalMethod = null;
       });
       showSuccessSnackBar(
         context,
-        'Rs. ${portion.toStringAsFixed(0)} deducted from wallet. Transfer the remainder via bank.',
+        'Rs. ${portion.toStringAsFixed(0)} deducted from wallet. Choose card or EasyPaisa for the remainder.',
       );
     } catch (e) {
       if (mounted) {
@@ -509,6 +541,50 @@ class _PaymentScreenState extends State<PaymentScreen> {
     );
   }
 
+  Future<void> _selectSplitExternalMethod(String method) async {
+    if (_payment == null || !_splitWalletDebited) return;
+    if (_splitExternalMethod == method &&
+        (method != AppConstants.paymentMethodStripe ||
+            _payment!.stripeClientSecret != null)) {
+      return;
+    }
+
+    setState(() => _isProcessing = true);
+    try {
+      final PaymentModel payment;
+      if (method == AppConstants.paymentMethodStripe) {
+        payment = await _paymentService.createSplitExternalCardPayment(
+          paymentId: _payment!.id,
+          externalAmount: _externalDue,
+        );
+        if (!kIsWeb) {
+          Stripe.publishableKey = PaymentService.stripePublishableKey;
+          await Stripe.instance.applySettings();
+        }
+      } else {
+        payment = await _paymentService.prepareSplitExternalManual(
+          paymentId: _payment!.id,
+        );
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _payment = payment;
+        _splitExternalMethod = method;
+        _expiryHandled = false;
+      });
+      _updateTime();
+      _timer?.cancel();
+      _startTimer();
+    } catch (e) {
+      if (mounted) {
+        showErrorSnackBar(context, e.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
+    }
+  }
+
   Widget _buildSplitSection() {
     final maxWallet = _splitWalletMax;
     return Column(
@@ -528,7 +604,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
               Text('Wallet portion',
                   style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 15)),
               const SizedBox(height: 4),
-              Text('Rs. ${_walletPortion.toStringAsFixed(0)} from wallet · Rs. ${_externalDue.toStringAsFixed(0)} via bank',
+              Text('Rs. ${_walletPortion.toStringAsFixed(0)} from wallet · Rs. ${_externalDue.toStringAsFixed(0)} remaining',
                   style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary)),
               Slider(
                 value: _walletPortion.clamp(1, maxWallet > 0 ? maxWallet : 1),
@@ -556,7 +632,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Wallet portion applied. Transfer Rs. ${_externalDue.toStringAsFixed(0)} and upload receipt below.',
+                        'Wallet portion applied. Choose how to pay Rs. ${_externalDue.toStringAsFixed(0)} below.',
                         style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.successColor),
                       ),
                     ),
@@ -567,9 +643,87 @@ class _PaymentScreenState extends State<PaymentScreen> {
         ),
         if (_splitWalletDebited) ...[
           const SizedBox(height: 16),
-          _buildManualTransferSection(),
+          _buildSplitExternalMethodSelector(),
+          if (_splitExternalMethod == AppConstants.paymentMethodStripe) ...[
+            const SizedBox(height: 16),
+            _buildCardSection(remainderAmount: _externalDue),
+          ] else if (_splitExternalMethod == AppConstants.paymentMethodManual) ...[
+            const SizedBox(height: 16),
+            _buildManualTransferSection(),
+          ],
         ],
       ],
+    );
+  }
+
+  Widget _buildSplitExternalMethodSelector() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Pay remaining Rs. ${_externalDue.toStringAsFixed(0)}',
+            style: GoogleFonts.poppins(fontWeight: FontWeight.w700, fontSize: 15)),
+        const SizedBox(height: 4),
+        Text(
+          'Choose card or bank / EasyPaisa for the balance after wallet',
+          style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary),
+        ),
+        const SizedBox(height: 12),
+        _splitExternalMethodTile(
+          method: AppConstants.paymentMethodStripe,
+          icon: Icons.credit_card,
+          title: 'Pay by Card',
+          subtitle: 'Stripe secure checkout · Rs. ${_externalDue.toStringAsFixed(0)}',
+        ),
+        const SizedBox(height: 10),
+        _splitExternalMethodTile(
+          method: AppConstants.paymentMethodManual,
+          icon: Icons.account_balance_outlined,
+          title: 'Bank / EasyPaisa / JazzCash',
+          subtitle: 'Transfer Rs. ${_externalDue.toStringAsFixed(0)} & upload receipt',
+        ),
+      ],
+    );
+  }
+
+  Widget _splitExternalMethodTile({
+    required String method,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+  }) {
+    final selected = _splitExternalMethod == method;
+    return InkWell(
+      onTap: _isProcessing ? null : () => _selectSplitExternalMethod(method),
+      borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+          border: Border.all(
+            color: selected ? CAppTheme.primaryColor : CAppTheme.borderColor,
+            width: selected ? 2 : 1,
+          ),
+          boxShadow: selected ? CAppTheme.softShadow : null,
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: CAppTheme.primaryColor),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
+                  Text(subtitle,
+                      style: GoogleFonts.poppins(fontSize: 12, color: CAppTheme.textSecondary)),
+                ],
+              ),
+            ),
+            if (selected) const Icon(Icons.check_circle, color: CAppTheme.primaryColor),
+          ],
+        ),
+      ),
     );
   }
 
@@ -636,6 +790,8 @@ class _PaymentScreenState extends State<PaymentScreen> {
                     const SizedBox(height: 16),
                   ],
                   _buildBookingSummary(),
+                  const SizedBox(height: 12),
+                  const RefundPolicyBanner(compact: true),
                   const SizedBox(height: 20),
                   _buildMethodSelector(),
                   const SizedBox(height: 20),
@@ -688,9 +844,12 @@ class _PaymentScreenState extends State<PaymentScreen> {
                 ),
                 if (!_isExpired && _payment != null)
                   Text(
-                    _selectedMethod == AppConstants.paymentMethodStripe
+                    _selectedMethod == AppConstants.paymentMethodSplit &&
+                            _splitExternalMethod == AppConstants.paymentMethodStripe
                         ? '30 min to complete card payment'
-                        : '24 hours to upload receipt',
+                        : _selectedMethod == AppConstants.paymentMethodStripe
+                            ? '30 min to complete card payment'
+                            : '24 hours to upload receipt',
                     style: GoogleFonts.poppins(
                       color: Colors.white.withValues(alpha: 0.85),
                       fontSize: 12,
@@ -719,7 +878,16 @@ class _PaymentScreenState extends State<PaymentScreen> {
               style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w700)),
           const SizedBox(height: 12),
           _row('Workspace', widget.booking.workspaceName),
-          _row('Date', DateFormat('MMM dd, yyyy').format(widget.booking.startDate)),
+          _row(
+            'Date & time',
+            widget.booking.timeSlotLabel != null &&
+                    widget.booking.timeSlotLabel!.isNotEmpty
+                ? DateFormat('MMM dd, yyyy · hh:mm a')
+                    .format(widget.booking.refundStartDate)
+                : DateFormat('MMM dd, yyyy').format(widget.booking.startDate),
+          ),
+          if (widget.booking.timeSlotLabel != null && widget.booking.timeSlotLabel!.isNotEmpty)
+            _row('Slot', widget.booking.timeSlotLabel!),
           _row('Amount', 'Rs. ${widget.booking.totalPrice.toStringAsFixed(0)}'),
         ],
       ),
@@ -764,7 +932,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
             icon: Icons.call_split_rounded,
             title: 'Split Payment',
             subtitle:
-                'Rs. from wallet + remainder via Bank / EasyPaisa (balance: Rs. ${_walletBalance.toStringAsFixed(0)})',
+                'Wallet + remainder via Card or Bank / EasyPaisa (balance: Rs. ${_walletBalance.toStringAsFixed(0)})',
           ),
           const SizedBox(height: 10),
         ] else if (widget.booking.totalPrice > 1) ...[
@@ -862,7 +1030,10 @@ class _PaymentScreenState extends State<PaymentScreen> {
     );
   }
 
-  Widget _buildCardSection() {
+  Widget _buildCardSection({double? remainderAmount}) {
+    final amountText = remainderAmount != null
+        ? 'Rs. ${remainderAmount.toStringAsFixed(0)}'
+        : 'Rs. ${widget.booking.totalPrice.toStringAsFixed(0)}';
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -871,7 +1042,9 @@ class _PaymentScreenState extends State<PaymentScreen> {
         boxShadow: CAppTheme.softShadow,
       ),
       child: Text(
-        'You will be redirected to secure card payment via Stripe.',
+        remainderAmount != null
+            ? 'Pay $amountText securely by card via Stripe (wallet portion already applied).'
+            : 'You will be redirected to secure card payment via Stripe.',
         style: GoogleFonts.poppins(fontSize: 14, color: CAppTheme.textSecondary),
       ),
     );
@@ -1027,21 +1200,53 @@ class _PaymentScreenState extends State<PaymentScreen> {
   }
 
   Widget _buildTotalCard() {
+    final isSplitWithWallet = _selectedMethod == AppConstants.paymentMethodSplit && _splitWalletDebited;
+    final remainderLabel = _splitExternalMethod == AppConstants.paymentMethodStripe
+        ? 'Pay by card'
+        : _splitExternalMethod == AppConstants.paymentMethodManual
+            ? 'Transfer via bank / EasyPaisa'
+            : 'Remaining amount';
+
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: CAppTheme.primaryColor.withValues(alpha: 0.06),
         borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      child: Column(
         children: [
-          Text('Total', style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w600)),
-          Text('PKR ${widget.booking.totalPrice.toStringAsFixed(0)}',
-              style: GoogleFonts.poppins(
-                  fontSize: 22, fontWeight: FontWeight.bold, color: CAppTheme.primaryColor)),
+          if (isSplitWithWallet) ...[
+            _totalRow('Paid from wallet', 'PKR ${_walletPaidPortion.toStringAsFixed(0)}',
+                color: CAppTheme.successColor),
+            const SizedBox(height: 8),
+            _totalRow(remainderLabel, 'PKR ${_externalDue.toStringAsFixed(0)}',
+                emphasized: true),
+            const SizedBox(height: 8),
+            _totalRow('Booking total', 'PKR ${widget.booking.totalPrice.toStringAsFixed(0)}'),
+          ] else
+            _totalRow('Total', 'PKR ${widget.booking.totalPrice.toStringAsFixed(0)}', emphasized: true),
         ],
       ),
+    );
+  }
+
+  Widget _totalRow(String label, String value, {bool emphasized = false, Color? color}) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label,
+            style: GoogleFonts.poppins(
+              fontSize: emphasized ? 16 : 14,
+              fontWeight: emphasized ? FontWeight.w600 : FontWeight.w500,
+              color: emphasized ? null : CAppTheme.textSecondary,
+            )),
+        Text(value,
+            style: GoogleFonts.poppins(
+              fontSize: emphasized ? 22 : 14,
+              fontWeight: FontWeight.bold,
+              color: color ?? (emphasized ? CAppTheme.primaryColor : CAppTheme.textPrimary),
+            )),
+      ],
     );
   }
 
@@ -1067,12 +1272,62 @@ class _PaymentScreenState extends State<PaymentScreen> {
       );
     }
 
-    final isManual = _selectedMethod == AppConstants.paymentMethodManual ||
-        _selectedMethod == AppConstants.paymentMethodSplit;
-
-    if (_selectedMethod == AppConstants.paymentMethodSplit && !_splitWalletDebited) {
-      return const SizedBox.shrink();
+    if (_selectedMethod == AppConstants.paymentMethodSplit) {
+      if (!_splitWalletDebited) return const SizedBox.shrink();
+      if (_splitExternalMethod == null) {
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+          decoration: BoxDecoration(
+            color: CAppTheme.primaryColor.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(CAppTheme.radiusLarge),
+          ),
+          child: Text(
+            'Apply wallet portion, then choose Card or Bank / EasyPaisa above.',
+            textAlign: TextAlign.center,
+            style: GoogleFonts.poppins(fontSize: 14, color: CAppTheme.textSecondary),
+          ),
+        );
+      }
+      if (_splitExternalMethod == AppConstants.paymentMethodStripe) {
+        return SizedBox(
+          width: double.infinity,
+          height: 54,
+          child: ElevatedButton(
+            onPressed: _isProcessing || _isExpired ? null : _processCardPayment,
+            child: _isProcessing
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white),
+                  )
+                : Text(
+                    'Pay Rs. ${_externalDue.toStringAsFixed(0)} by Card',
+                    style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w700),
+                  ),
+          ),
+        );
+      }
+      return SizedBox(
+        width: double.infinity,
+        height: 54,
+        child: ElevatedButton(
+          onPressed: _isProcessing || _isExpired ? null : _submitManualPayment,
+          child: _isProcessing
+              ? const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white),
+                )
+              : Text(
+                  'Submit Receipt',
+                  style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w700),
+                ),
+        ),
+      );
     }
+
+    final isManual = _selectedMethod == AppConstants.paymentMethodManual;
 
     return SizedBox(
       width: double.infinity,

@@ -336,6 +336,31 @@ class StorageService {
     return _supabase.storage.from('payment_receipts').getPublicUrl(filePath);
   }
 
+  Future<String> uploadWalletTopUpReceipt({
+    required String userId,
+    required Uint8List bytes,
+    required String fileName,
+  }) async {
+    const maxBytes = 5 * 1024 * 1024;
+    if (bytes.length > maxBytes) {
+      throw Exception('Receipt image must be smaller than 5 MB');
+    }
+
+    final ext = _imageExtension(fileName);
+    final safeName = '${DateTime.now().millisecondsSinceEpoch}.$ext';
+    final filePath = '$userId/topup/$safeName';
+
+    await _supabase.storage
+        .from('payment_receipts')
+        .uploadBinary(filePath, bytes)
+        .timeout(
+          const Duration(seconds: 60),
+          onTimeout: () => throw Exception('Receipt upload timed out'),
+        );
+
+    return _supabase.storage.from('payment_receipts').getPublicUrl(filePath);
+  }
+
   static bool isAllowedLegalDocument(String fileName) {
     final lower = fileName.toLowerCase();
     return lower.endsWith('.pdf') ||
