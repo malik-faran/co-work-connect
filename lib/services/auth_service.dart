@@ -50,7 +50,39 @@ class AuthService {
         throw Exception('Unable to create account. Please try again.');
       }
 
-      final userModel = UserModel(
+      // True duplicate: email already registered AND no new identity was created.
+      // Do not use identities-empty alone — some successful signups still report
+      // an empty list depending on Auth settings, which falsely showed "exists".
+      final identities = user.identities;
+      final looksLikeDuplicate =
+          identities != null && identities.isEmpty && response.session == null;
+      if (looksLikeDuplicate) {
+        // Confirm whether this auth user actually just got created for us.
+        // If a profile/auth row exists for this id, treat signup as success.
+        try {
+          final existing = await getUserById(user.id);
+          if (existing != null) {
+            return existing;
+          }
+        } catch (_) {}
+        throw Exception(
+          'An account with this email already exists. Please login instead.',
+        );
+      }
+
+      // Never fail the button after auth account creation — profile sync is
+      // best-effort (trigger / ensureUserProfile). Success must reach the UI.
+      try {
+        final profile = await ensureUserProfile(user);
+        if (profile != null) {
+          if (cnicImageUrl != null && profile.cnicImageUrl == null) {
+            return profile.copyUser(cnicImageUrl: cnicImageUrl);
+          }
+          return profile;
+        }
+      } catch (_) {}
+
+      return UserModel(
         id: user.id,
         email: trimmedEmail,
         name: name,
@@ -63,36 +95,17 @@ class AuthService {
         ownerApproved: role == AppConstants.roleOwner ? null : true,
         createdAt: DateTime.now(),
       );
-
-      try {
-        final existingUser = await _client
-            .from(AppConstants.collectionUsers)
-            .select('id')
-            .eq('id', user.id)
-            .maybeSingle();
-
-        if (existingUser != null) {
-          return await getUserById(user.id);
-        }
-
-        final userData = userModel.toUserMap();
-        userData.removeWhere((key, value) => value == null);
-        await _client.from(AppConstants.collectionUsers).insert(userData);
-      } catch (dbError) {
-        final errorMsg = dbError.toString();
-        if (errorMsg.contains('duplicate') || errorMsg.contains('already exists')) {
-          final existing = await getUserById(user.id);
-          if (existing != null) return existing;
-          throw Exception('Account already exists. Please try logging in.');
-        }
-        throw Exception(formatDatabaseError(errorMsg));
-      }
-
-      return userModel;
     } on AuthException catch (e) {
       throw Exception(formatAuthError(e.message));
     } catch (e) {
-      throw Exception('Error signing up: ${e.toString()}');
+      final msg = e.toString();
+      // If we already wrapped a clear auth error, keep it.
+      if (msg.contains('already exists') ||
+          msg.contains('Unable to create account') ||
+          msg.contains('Please login')) {
+        throw Exception(cleanErrorMessage(msg));
+      }
+      throw Exception('Error signing up: ${cleanErrorMessage(msg)}');
     }
   }
 

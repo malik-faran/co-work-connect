@@ -1,12 +1,21 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
-import { DollarSign, Building2, TrendingUp, RefreshCw } from 'lucide-react'
+import { DollarSign, Building2, TrendingUp, RefreshCw, Percent } from 'lucide-react'
 import Loading from '../components/Loading'
 import EmptyState from '../components/EmptyState'
 import { showError } from '../utils/toast'
 
 const OwnerRevenue = () => {
   const [ownerRevenues, setOwnerRevenues] = useState([])
+  const [platformStats, setPlatformStats] = useState({
+    platformRevenue: 0,
+    transactionVolume: 0,
+    bookingFees: 0,
+    collabFees: 0,
+    bookingGmv: 0,
+    collabGmv: 0,
+    feePercent: 5,
+  })
   const [loading, setLoading] = useState(true)
   const [sortBy, setSortBy] = useState('revenue') // 'revenue' or 'name'
 
@@ -17,8 +26,44 @@ const OwnerRevenue = () => {
   const fetchOwnerRevenues = async () => {
     try {
       setLoading(true)
-      
-      // Get all owners
+
+      const { data: feeSetting } = await supabase
+        .from('platform_settings')
+        .select('value')
+        .eq('key', 'platform_fee_percent')
+        .maybeSingle()
+      const feePercent = parseFloat(feeSetting?.value) || 5
+
+      const { data: completedPayments, error: payErr } = await supabase
+        .from('payments')
+        .select('id, amount, platform_fee_amount, owner_earning_amount, booking_id')
+        .eq('status', 'completed')
+        .eq('owner_earning_credited', true)
+
+      if (payErr) throw payErr
+
+      const { data: collabPayments, error: collabErr } = await supabase
+        .from('collaboration_payments')
+        .select('amount, platform_fee_amount')
+        .eq('status', 'released')
+
+      if (collabErr) throw collabErr
+
+      const bookingGmv = (completedPayments || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0)
+      const bookingFees = (completedPayments || []).reduce((s, p) => s + (parseFloat(p.platform_fee_amount) || 0), 0)
+      const collabGmv = (collabPayments || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0)
+      const collabFees = (collabPayments || []).reduce((s, p) => s + (parseFloat(p.platform_fee_amount) || 0), 0)
+
+      setPlatformStats({
+        platformRevenue: bookingFees + collabFees,
+        transactionVolume: bookingGmv + collabGmv,
+        bookingFees,
+        collabFees,
+        bookingGmv,
+        collabGmv,
+        feePercent,
+      })
+
       const { data: owners, error: ownersError } = await supabase
         .from('users')
         .select('id, name, email')
@@ -33,86 +78,78 @@ const OwnerRevenue = () => {
         return
       }
 
-      // Get all workspaces for these owners
-      const ownerIds = owners.map(o => o.id)
+      const bookingIds = [...new Set((completedPayments || []).map((p) => p.booking_id).filter(Boolean))]
+      let bookingOwnerMap = {}
+
+      if (bookingIds.length) {
+        const { data: bookings, error: bookingsError } = await supabase
+          .from('bookings')
+          .select('id, workspace_id')
+          .in('id', bookingIds)
+
+        if (bookingsError) throw bookingsError
+
+        const workspaceIds = [...new Set((bookings || []).map((b) => b.workspace_id).filter(Boolean))]
+        const { data: workspaces, error: wsError } = workspaceIds.length
+          ? await supabase.from('workspaces').select('id, owner_id, name').in('id', workspaceIds)
+          : { data: [], error: null }
+
+        if (wsError) throw wsError
+
+        const wsMap = Object.fromEntries((workspaces || []).map((w) => [w.id, w]))
+        bookingOwnerMap = Object.fromEntries(
+          (bookings || []).map((b) => [b.id, wsMap[b.workspace_id]?.owner_id])
+        )
+      }
+
+      const ownerEarnings = {}
+      const ownerBookingCounts = {}
+      const ownerWorkspaceIds = {}
+
+      for (const p of completedPayments || []) {
+        const ownerId = bookingOwnerMap[p.booking_id]
+        if (!ownerId) continue
+        ownerEarnings[ownerId] = (ownerEarnings[ownerId] || 0) + (parseFloat(p.owner_earning_amount) || 0)
+        ownerBookingCounts[ownerId] = (ownerBookingCounts[ownerId] || 0) + 1
+      }
+
       const { data: workspaces, error: workspacesError } = await supabase
         .from('workspaces')
         .select('id, owner_id, name')
-        .in('owner_id', ownerIds)
+        .in('owner_id', owners.map((o) => o.id))
 
       if (workspacesError) throw workspacesError
 
-      // Create a map of owner_id to workspace_ids
-      const ownerWorkspaceMap = {}
-      workspaces?.forEach(ws => {
-        if (!ownerWorkspaceMap[ws.owner_id]) {
-          ownerWorkspaceMap[ws.owner_id] = []
-        }
-        ownerWorkspaceMap[ws.owner_id].push(ws.id)
+      workspaces?.forEach((ws) => {
+        if (!ownerWorkspaceIds[ws.owner_id]) ownerWorkspaceIds[ws.owner_id] = []
+        ownerWorkspaceIds[ws.owner_id].push(ws.id)
       })
 
-      // Calculate revenue for each owner
-      const revenues = await Promise.all(
-        owners.map(async (owner) => {
-          const workspaceIds = ownerWorkspaceMap[owner.id] || []
-          
-          if (workspaceIds.length === 0) {
-            return {
-              ownerId: owner.id,
-              ownerName: owner.name,
-              ownerEmail: owner.email,
-              workspaceCount: 0,
-              totalRevenue: 0,
-              bookingCount: 0
-            }
-          }
+      const revenues = owners.map((owner) => ({
+        ownerId: owner.id,
+        ownerName: owner.name,
+        ownerEmail: owner.email,
+        workspaceCount: ownerWorkspaceIds[owner.id]?.length || 0,
+        totalRevenue: ownerEarnings[owner.id] || 0,
+        bookingCount: ownerBookingCounts[owner.id] || 0,
+      }))
 
-          // Get all bookings for this owner's workspaces
-          const { data: bookings, error: bookingsError } = await supabase
-            .from('bookings')
-            .select('total_price, status')
-            .in('workspace_id', workspaceIds)
-            .in('status', ['confirmed', 'completed'])
-
-          if (bookingsError) throw bookingsError
-
-          const totalRevenue = bookings?.reduce((sum, booking) => {
-            return sum + (parseFloat(booking.total_price) || 0)
-          }, 0) || 0
-
-          const bookingCount = bookings?.length || 0
-
-          return {
-            ownerId: owner.id,
-            ownerName: owner.name,
-            ownerEmail: owner.email,
-            workspaceCount: workspaceIds.length,
-            totalRevenue: totalRevenue,
-            bookingCount: bookingCount
-          }
-        })
-      )
-
-      // Sort by revenue or name
       revenues.sort((a, b) => {
-        if (sortBy === 'revenue') {
-          return b.totalRevenue - a.totalRevenue
-        } else {
-          return a.ownerName.localeCompare(b.ownerName)
-        }
+        if (sortBy === 'revenue') return b.totalRevenue - a.totalRevenue
+        return a.ownerName.localeCompare(b.ownerName)
       })
 
       setOwnerRevenues(revenues)
     } catch (error) {
-      console.error('Error fetching owner revenues:', error)
-      showError('Failed to load owner revenues: ' + error.message)
+      console.error('Error fetching platform revenue:', error)
+      showError('Failed to load platform revenue: ' + error.message)
     } finally {
       setLoading(false)
     }
   }
 
   if (loading) {
-    return <Loading message="Loading owner revenues..." />
+    return <Loading message="Loading platform revenue..." />
   }
 
   return (
@@ -143,14 +180,14 @@ const OwnerRevenue = () => {
             marginBottom: '12px',
             letterSpacing: '-0.5px'
           }}>
-            Owner Revenue Report
+            Platform Revenue
           </h1>
           <p style={{ 
             color: '#64748b', 
             fontSize: '16px',
             fontWeight: '500'
           }}>
-            View revenue breakdown by owner
+            Platform fee ({platformStats.feePercent}%) is separate from gross transaction volume. Top-ups have no fee.
           </p>
         </div>
         
@@ -211,6 +248,42 @@ const OwnerRevenue = () => {
           </button>
         </div>
       </div>
+
+      {/* Platform summary — fee vs volume */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+        gap: '16px',
+        marginBottom: '28px',
+      }}>
+        {[
+          { label: 'Platform Revenue', value: platformStats.platformRevenue, icon: Percent, color: '#10b981', sub: `${platformStats.feePercent}% fee collected` },
+          { label: 'Transaction Volume', value: platformStats.transactionVolume, icon: TrendingUp, color: '#3b82f6', sub: 'Gross paid (bookings + collab)' },
+          { label: 'Booking Fees', value: platformStats.bookingFees, icon: DollarSign, color: '#8b5cf6', sub: `GMV PKR ${platformStats.bookingGmv.toLocaleString()}` },
+          { label: 'Collaboration Fees', value: platformStats.collabFees, icon: DollarSign, color: '#f59e0b', sub: `GMV PKR ${platformStats.collabGmv.toLocaleString()}` },
+        ].map((card) => (
+          <div key={card.label} style={{
+            background: 'white',
+            padding: '20px',
+            borderRadius: '16px',
+            border: '1px solid #e2e8f0',
+            boxShadow: '0 2px 12px rgba(0,0,0,0.04)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              <card.icon size={20} color={card.color} />
+              <span style={{ fontSize: 13, color: '#64748b', fontWeight: 600 }}>{card.label}</span>
+            </div>
+            <div style={{ fontSize: 26, fontWeight: 800, color: '#1e293b' }}>
+              PKR {card.value.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            </div>
+            <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 6 }}>{card.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 16, color: '#1e293b' }}>
+        Owner wallet credits (after {platformStats.feePercent}% fee)
+      </h2>
 
       {/* Revenue Cards */}
       {ownerRevenues.length === 0 ? (
@@ -318,7 +391,7 @@ const OwnerRevenue = () => {
                   letterSpacing: '1px',
                   fontWeight: '600'
                 }}>
-                  Total Revenue
+                  Net Credited
                 </div>
               </div>
 
@@ -437,7 +510,7 @@ const OwnerRevenue = () => {
                 letterSpacing: '1px',
                 fontWeight: '600'
               }}>
-                Total Revenue
+                Total Owner Credits
               </div>
               <div style={{
                 fontSize: '32px',
@@ -459,7 +532,7 @@ const OwnerRevenue = () => {
                 letterSpacing: '1px',
                 fontWeight: '600'
               }}>
-                Average Revenue
+                Average Owner Credit
               </div>
               <div style={{
                 fontSize: '32px',

@@ -28,12 +28,25 @@ String formatAuthError(String error) {
     return 'Invalid email or password. Please check and try again.';
   } else if (lowerError.contains('user not found')) {
     return 'No account found with this email. Please sign up first.';
-  } else if (lowerError.contains('already') || lowerError.contains('exists') || lowerError.contains('user_already_registered')) {
+  } else if (lowerError.contains('user_already_registered') ||
+      lowerError.contains('already registered') ||
+      lowerError.contains('already been registered') ||
+      lowerError.contains('email address is already') ||
+      lowerError.contains('user already exists')) {
+    // Keep this narrow — matching bare "exists" / "already" incorrectly maps
+    // DB messages like "Key (phone)=() already exists" to fake signup failures.
     return 'An account with this email already exists. Please login instead.';
   } else if (lowerError.contains('password') || lowerError.contains('weak')) {
     return 'Password is too weak. Please use at least 6 characters.';
   } else if (lowerError.contains('network') || lowerError.contains('connection')) {
     return 'Network error. Please check your internet connection.';
+  } else if (lowerError.contains('database error saving new user') ||
+      lowerError.contains('unexpected_failure')) {
+    return 'Could not create your account on the server. Please try again in a minute, or contact support if this continues.';
+  } else if (lowerError.contains('socketexception') ||
+      lowerError.contains('failed host lookup') ||
+      lowerError.contains('no address associated with hostname')) {
+    return 'Cannot reach the server. Check mobile data/Wi‑Fi and try again.';
   }
   
   return cleanErrorMessage(error);

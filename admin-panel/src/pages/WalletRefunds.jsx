@@ -81,11 +81,16 @@ const WalletRefunds = () => {
   }
 
   const reject = async (id) => {
+    const reason = note.trim()
+    if (reason.length < 5) {
+      showError('Please enter a rejection reason (at least 5 characters) — the user will see this in their notification.')
+      return
+    }
     setProcessing(true)
     try {
       const { error } = await supabase.rpc('reject_refund_request', {
         p_refund_id: id,
-        p_admin_note: note.trim() || 'Refund request rejected',
+        p_admin_note: reason,
       })
       if (error) throw error
       showSuccess('Refund rejected')
@@ -165,7 +170,7 @@ const WalletRefunds = () => {
                   {selected?.id === r.id ? (
                     <>
                       <textarea
-                        placeholder="Note (optional)"
+                        placeholder="Note for user (required on reject — shown in their notification)"
                         value={note}
                         onChange={(e) => setNote(e.target.value)}
                         style={{ width: '100%', minHeight: '60px', padding: '10px', borderRadius: '8px', border: '1px solid #e2e8f0', marginBottom: '12px', boxSizing: 'border-box' }}

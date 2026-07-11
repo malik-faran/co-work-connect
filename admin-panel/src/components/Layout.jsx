@@ -29,6 +29,7 @@ import {
   Inbox,
   Briefcase,
   Search,
+  Smartphone,
 } from 'lucide-react'
 
 const ICON_MAP = {
@@ -54,6 +55,7 @@ const ICON_MAP = {
   Inbox,
   Briefcase,
   Search,
+  Smartphone,
 }
 
 const Layout = ({ user, setUser }) => {

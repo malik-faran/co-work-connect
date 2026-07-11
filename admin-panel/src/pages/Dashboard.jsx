@@ -259,6 +259,8 @@ const Dashboard = () => {
     totalNotifications: 0,
     totalChatRooms: 0,
     totalRevenue: 0,
+    platformRevenue: 0,
+    transactionVolume: 0,
     pendingOwnerRequests: 0,
     pendingWorkspaceRequests: 0,
     averageRating: 'N/A'
@@ -331,15 +333,33 @@ const Dashboard = () => {
         .from('chat_rooms')
         .select('*', { count: 'exact', head: true })
 
-      // Total revenue (from confirmed/completed bookings)
-      const { data: bookingsData } = await supabase
-        .from('bookings')
-        .select('total_price')
-        .in('status', ['confirmed', 'completed'])
+      // Platform revenue (5% fees) vs total transaction volume (gross paid for bookings + collab)
+      const { data: completedPayments } = await supabase
+        .from('payments')
+        .select('amount, platform_fee_amount')
+        .eq('status', 'completed')
+        .eq('owner_earning_credited', true)
 
-      const totalRevenue = bookingsData?.reduce((sum, booking) => {
-        return sum + (parseFloat(booking.total_price) || 0)
-      }, 0) || 0
+      const { data: releasedCollabPayments } = await supabase
+        .from('collaboration_payments')
+        .select('amount, platform_fee_amount')
+        .eq('status', 'released')
+
+      const bookingGmv = (completedPayments || []).reduce(
+        (sum, p) => sum + (parseFloat(p.amount) || 0), 0
+      )
+      const bookingFees = (completedPayments || []).reduce(
+        (sum, p) => sum + (parseFloat(p.platform_fee_amount) || 0), 0
+      )
+      const collabGmv = (releasedCollabPayments || []).reduce(
+        (sum, p) => sum + (parseFloat(p.amount) || 0), 0
+      )
+      const collabFees = (releasedCollabPayments || []).reduce(
+        (sum, p) => sum + (parseFloat(p.platform_fee_amount) || 0), 0
+      )
+
+      const platformRevenue = bookingFees + collabFees
+      const transactionVolume = bookingGmv + collabGmv
 
       const { data: reviewsData } = await supabase
         .from('reviews')
@@ -359,7 +379,9 @@ const Dashboard = () => {
         totalCollaborations: collabCount || 0,
         totalNotifications: notifCount || 0,
         totalChatRooms: chatCount || 0,
-        totalRevenue: totalRevenue,
+        totalRevenue: platformRevenue,
+        platformRevenue,
+        transactionVolume,
         pendingWorkspaceRequests: pendingWorkspaceData?.length || 0,
         averageRating: avgRating
       })
@@ -520,12 +542,21 @@ const Dashboard = () => {
       link: '/chat-monitoring'
     },
     { 
-      label: 'Total Revenue', 
-      value: `PKR ${stats.totalRevenue.toFixed(0)}`, 
+      label: 'Platform Revenue (5%)', 
+      value: `PKR ${stats.platformRevenue.toFixed(0)}`, 
       icon: DollarSign, 
       bgColor: '#d1fae5',
       iconColor: '#10b981',
       textColor: '#065f46',
+      link: '/owner-revenue'
+    },
+    { 
+      label: 'Transaction Volume', 
+      value: `PKR ${stats.transactionVolume.toFixed(0)}`, 
+      icon: TrendingUp, 
+      bgColor: '#eff6ff',
+      iconColor: '#3b82f6',
+      textColor: '#1e40af',
       link: '/owner-revenue'
     },
   ]
@@ -579,7 +610,7 @@ const Dashboard = () => {
             <TrendingUp size={24} color="#10b981" />
             <div>
               <div style={{ fontSize: '11px', color: '#64748b', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                Total Revenue
+                Platform Revenue (5%)
               </div>
               <div style={{ 
                 fontSize: '24px', 
@@ -589,7 +620,10 @@ const Dashboard = () => {
                 WebkitTextFillColor: 'transparent',
                 backgroundClip: 'text'
               }}>
-                PKR {stats.totalRevenue.toFixed(0)}
+                PKR {stats.platformRevenue.toFixed(0)}
+              </div>
+              <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: 4 }}>
+                Volume: PKR {stats.transactionVolume.toFixed(0)}
               </div>
             </div>
           </div>

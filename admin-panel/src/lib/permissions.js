@@ -41,6 +41,7 @@ export const ADMIN_ONLY_PATHS = [
   '/moderators',
   '/moderator-activity',
   '/platform-accounts',
+  '/app-release',
   '/workspaces',
   '/reviews',
   '/collaborations',
@@ -73,12 +74,13 @@ export function getMenuItems(role) {
     { path: '/moderators', label: 'Moderators', icon: 'Shield', roles: [ROLES.ADMIN], section: 'admin' },
     { path: '/moderator-activity', label: 'Activity History', icon: 'History', roles: [ROLES.ADMIN], section: 'admin' },
     { path: '/platform-accounts', label: 'Platform Accounts', icon: 'Landmark', roles: [ROLES.ADMIN], section: 'admin' },
+    { path: '/app-release', label: 'Android APK Release', icon: 'Smartphone', roles: [ROLES.ADMIN], section: 'admin' },
     { path: '/workspaces', label: 'All Workspaces', icon: 'Building2', roles: [ROLES.ADMIN], section: 'content' },
     { path: '/reviews', label: 'Reviews', icon: 'Star', roles: [ROLES.ADMIN], section: 'content' },
     { path: '/collaboration-hub', label: 'Collaboration Hub', icon: 'Briefcase', roles: STAFF_ROLES, badge: 'collabHeld', section: 'moderation' },
     { path: '/collaborations', label: 'Collaborations (legacy)', icon: 'UsersIcon', roles: [ROLES.ADMIN], section: 'content' },
     { path: '/chat-monitoring', label: 'Chat Monitoring', icon: 'MessageSquare', roles: [ROLES.ADMIN], section: 'moderation' },
-    { path: '/owner-revenue', label: 'Owner Revenue', icon: 'DollarSign', roles: [ROLES.ADMIN], section: 'finance' },
+    { path: '/owner-revenue', label: 'Platform Revenue', icon: 'DollarSign', roles: [ROLES.ADMIN], section: 'finance' },
   ]
 
   return all.filter((item) => item.roles.includes(role))
@@ -134,11 +136,12 @@ export function getPageMeta(pathname) {
     '/moderators': { title: 'Moderators', crumb: 'Administration' },
     '/moderator-activity': { title: 'Activity History', crumb: 'Administration' },
     '/platform-accounts': { title: 'Platform Accounts', crumb: 'Administration' },
+    '/app-release': { title: 'Android APK Release', crumb: 'Administration' },
     '/workspaces': { title: 'All Workspaces', crumb: 'Content' },
     '/reviews': { title: 'Reviews', crumb: 'Content' },
     '/collaborations': { title: 'Collaborations', crumb: 'Content' },
     '/chat-monitoring': { title: 'Chat Monitoring', crumb: 'Moderation' },
-    '/owner-revenue': { title: 'Owner Revenue', crumb: 'Finance' },
+    '/owner-revenue': { title: 'Platform Revenue', crumb: 'Finance' },
   }
   return map[pathname] || { title: 'Panel', crumb: 'CWC' }
 }

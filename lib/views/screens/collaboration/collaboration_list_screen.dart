@@ -40,6 +40,7 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
   int _unreadProjectNotifications = 0;
 
   List<CollaborationModel> _discover = [];
+  String? _discoverLoadError;
   List<Map<String, dynamic>> _openTeammates = [];
   List<CollaborationModel> _myPosts = [];
   List<CollaborationModel> _myTeams = [];
@@ -147,7 +148,15 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
     setState(() => _loading = true);
     final uid = context.read<AuthController>().currentUser?.id;
 
-    final discover = await _safe(() => _collab.getAllCollaborations(), <CollaborationModel>[]);
+    String? discoverError;
+    List<CollaborationModel> discover;
+    try {
+      discover = await _collab.getAllCollaborations();
+    } catch (e) {
+      discover = <CollaborationModel>[];
+      discoverError = e.toString().replaceFirst('Exception: ', '');
+      debugPrint('discover load failed: $e');
+    }
     final teammates =
         await _safe(() => _hub.getOpenTeammates(excludeUserId: uid), <Map<String, dynamic>>[]);
     final myPosts = uid != null
@@ -169,6 +178,7 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
     setState(() {
       // Don't show the viewer their own posts in Discover — those live in "My Posts".
       _discover = uid == null ? discover : discover.where((c) => c.userId != uid).toList();
+      _discoverLoadError = discoverError;
       _openTeammates = teammates;
       _myPosts = myPosts;
       _myTeams = myTeams;
@@ -341,6 +351,23 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
           ),
         ),
         const SizedBox(height: 10),
+        if (_discoverLoadError != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: CAppTheme.errorColor.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(CAppTheme.radiusMedium),
+                border: Border.all(color: CAppTheme.errorColor.withValues(alpha: 0.3)),
+              ),
+              child: Text(
+                'Could not load projects. Run supabase/58_collab_discover_rls_fix.sql in Supabase, then refresh.\n$_discoverLoadError',
+                style: GoogleFonts.poppins(fontSize: 12, height: 1.4, color: CAppTheme.errorColor),
+              ),
+            ),
+          ),
         SizedBox(
           height: 36,
           child: ListView.separated(
@@ -908,7 +935,7 @@ class _CollaborationListScreenState extends State<CollaborationListScreen>
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    'Open to Collaborate is off — your projects are hidden from Discover until you turn it on.',
+                    'Open to Collaborate is off — you won\'t appear in "Open Teammates" for invites. Your posted projects still show in Discover when set to Public.',
                     style: GoogleFonts.poppins(fontSize: 13, height: 1.45),
                   ),
                 ),

@@ -14,7 +14,7 @@ create table if not exists public.platform_settings (
 );
 
 insert into public.platform_settings (key, value)
-values ('platform_fee_percent', '10')
+values ('platform_fee_percent', '5')
 on conflict (key) do nothing;
 
 alter table public.platform_settings enable row level security;
@@ -102,7 +102,7 @@ set search_path = public
 as $$
   select coalesce(
     (select value::numeric from public.platform_settings where key = 'platform_fee_percent'),
-    10::numeric
+    5::numeric
   );
 $$;
 
@@ -666,5 +666,5 @@ alter table public.notifications
   ]::text[]));
 
 -- =========================================================================
--- DONE — Default platform fee is 10%. Change in platform_settings table.
+-- DONE — Default platform fee is 5%. Change in platform_settings table.
 -- =========================================================================

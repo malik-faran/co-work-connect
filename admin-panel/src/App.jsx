@@ -1,6 +1,7 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { useState, useEffect, useRef } from 'react'
 import Login from './pages/Login'
+import Landing from './pages/Landing'
 import Dashboard from './pages/Dashboard'
 import OwnerRequests from './pages/OwnerRequests'
 import Users from './pages/Users'
@@ -24,6 +25,7 @@ import CollaborationHub from './pages/CollaborationHub'
 import Reports from './pages/Reports'
 import OwnerPayouts from './pages/OwnerPayouts'
 import PlatformAccounts from './pages/PlatformAccounts'
+import AppRelease from './pages/AppRelease'
 import Layout from './components/Layout'
 import ProtectedRoute from './components/ProtectedRoute'
 import Loading from './components/Loading'
@@ -118,11 +120,13 @@ function App() {
   return (
     <Router>
       <Routes>
+        <Route path="/" element={<Landing user={user} />} />
+
         <Route
           path="/login"
           element={
             user ? (
-              <Navigate to="/dashboard" />
+              <Navigate to="/dashboard" replace />
             ) : (
               <Login
                 onLoginStart={handleLoginStart}
@@ -132,11 +136,16 @@ function App() {
             )
           }
         />
+
         <Route
-          path="/"
-          element={user ? <Layout user={user} setUser={setUser} /> : <Navigate to="/login" />}
+          element={
+            user ? (
+              <Layout user={user} setUser={setUser} />
+            ) : (
+              <Navigate to="/login" replace />
+            )
+          }
         >
-          <Route index element={<Navigate to="/dashboard" />} />
           <Route path="dashboard" element={guard(<Dashboard />)} />
           <Route path="staff-inbox" element={guard(<StaffInbox user={user} />)} />
           <Route path="owner-requests" element={guard(<OwnerRequests />)} />
@@ -160,7 +169,10 @@ function App() {
           <Route path="reports" element={guard(<Reports />)} />
           <Route path="collaboration-hub" element={guard(<CollaborationHub />)} />
           <Route path="platform-accounts" element={guard(<PlatformAccounts user={user} />)} />
+          <Route path="app-release" element={guard(<AppRelease user={user} />)} />
         </Route>
+
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Router>
   )

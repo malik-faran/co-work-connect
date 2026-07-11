@@ -23,7 +23,7 @@ class _OwnerWalletScreenState extends State<OwnerWalletScreen> {
   WalletModel? _wallet;
   List<WalletTransactionModel> _transactions = [];
   List<OwnerPaymentAccountModel> _accounts = [];
-  double _feePercent = 10;
+  double _feePercent = 5;
   bool _loading = true;
 
   @override

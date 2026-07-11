@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { Shield } from 'lucide-react'
 import { supabase, fetchStaffProfileWithTimeout } from '../lib/supabase'
 import { Btn, Field } from '../components/ui/PageShell'
@@ -123,6 +123,11 @@ const Login = ({ onLoginStart, onLoginSuccess, onLoginEnd }) => {
           <p style={{ marginTop: 20, fontSize: 12, color: 'var(--text-tertiary)', textAlign: 'center', lineHeight: 1.6 }}>
             App user and owner accounts cannot sign in here. Your database role must be
             {' '}<strong>admin</strong> or <strong>moderator</strong>.
+          </p>
+          <p style={{ marginTop: 12, textAlign: 'center' }}>
+            <Link to="/" style={{ fontSize: 13, color: 'var(--primary)', fontWeight: 600 }}>
+              ← Back to project home
+            </Link>
           </p>
         </div>
       </section>

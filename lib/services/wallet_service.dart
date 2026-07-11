@@ -203,7 +203,7 @@ class WalletService {
 
   Future<double> getPlatformFeePercent() async {
     final result = await _supabase.rpc('get_platform_fee_percent');
-    return (result as num?)?.toDouble() ?? 10;
+    return (result as num?)?.toDouble() ?? 5;
   }
 
   Future<void> requestOwnerPayout({

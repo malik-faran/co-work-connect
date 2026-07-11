@@ -1416,6 +1416,10 @@ class _NotificationCard extends StatelessWidget {
         return Icons.task_alt_rounded;
       case 'booking_cancelled':
         return Icons.event_busy_rounded;
+      case 'refund_approved':
+        return Icons.check_circle_outline_rounded;
+      case 'refund_rejected':
+        return Icons.cancel_outlined;
       case 'report_under_review':
         return Icons.hourglass_top_rounded;
       case 'report_resolved':
@@ -1461,6 +1465,10 @@ class _NotificationCard extends StatelessWidget {
       case 'booking_completed':
         return CAppTheme.primaryColor;
       case 'booking_cancelled':
+        return CAppTheme.errorColor;
+      case 'refund_approved':
+        return CAppTheme.successColor;
+      case 'refund_rejected':
         return CAppTheme.errorColor;
       case 'report_under_review':
         return CAppTheme.infoColor;

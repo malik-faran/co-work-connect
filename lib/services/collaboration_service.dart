@@ -26,50 +26,51 @@ class CollaborationService {
     }
   }
 
-  /// Get all open collaboration requests
+  /// Get all open collaboration requests visible in Discover.
   Future<List<CollaborationModel>> getAllCollaborations({
     String? collaborationType,
     String? projectType,
     List<String>? skillsFilter,
   }) async {
     try {
-      var query = _supabase
-          .from('collaborations')
-          .select()
-          .eq('status', 'recruiting');
+      List<dynamic> rows;
+      try {
+        rows = await _supabase.rpc('get_discover_collaborations');
+      } catch (rpcError) {
+        debugPrint('get_discover_collaborations RPC unavailable, falling back: $rpcError');
+        var query = _supabase
+            .from('collaborations')
+            .select()
+            .eq('status', 'recruiting');
 
-      // Apply additional filters
-      if (collaborationType != null) {
-        query = query.eq('collaboration_type', collaborationType);
+        if (collaborationType != null) {
+          query = query.eq('collaboration_type', collaborationType);
+        }
+        if (projectType != null) {
+          query = query.eq('project_type', projectType);
+        }
+
+        rows = await query.order('created_at', ascending: false);
       }
-
-      if (projectType != null) {
-        query = query.eq('project_type', projectType);
-      }
-
-      // Apply ordering and execute
-      final rows = await query.order('created_at', ascending: false);
 
       List<CollaborationModel> collaborations = rows
-          .map((c) => CollaborationModel.fromCollaborationMap(c))
+          .map((c) => CollaborationModel.fromCollaborationMap(
+                Map<String, dynamic>.from(c as Map),
+              ))
           .where((c) => c.visibility != 'invite_only' && !c.isInactive)
           .toList();
 
-      if (collaborations.isNotEmpty) {
-        final ownerIds = collaborations.map((c) => c.userId).toSet().toList();
-        final owners = await _supabase
-            .from('users')
-            .select('id, collaboration_enabled')
-            .inFilter('id', ownerIds);
-        final openOwners = owners
-            .where((o) => o['collaboration_enabled'] == true)
-            .map((o) => o['id'] as String)
-            .toSet();
-        collaborations =
-            collaborations.where((c) => openOwners.contains(c.userId)).toList();
+      if (collaborationType != null) {
+        collaborations = collaborations
+            .where((c) => c.collaborationType == collaborationType)
+            .toList();
+      }
+      if (projectType != null) {
+        collaborations = collaborations
+            .where((c) => c.projectType == projectType)
+            .toList();
       }
 
-      // Filter by skills if provided
       if (skillsFilter != null && skillsFilter.isNotEmpty) {
         collaborations = collaborations.where((collab) {
           return skillsFilter.any((skill) =>

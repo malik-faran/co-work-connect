@@ -38,6 +38,8 @@ class NotificationScopeHelper {
     'booking_cancelled',
     'booking_ending_soon',
     'booking_completed',
+    'refund_approved',
+    'refund_rejected',
     'payment_receipt',
     'payment_rejected',
     'report_under_review',
