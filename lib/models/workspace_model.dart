@@ -104,27 +104,11 @@ class WorkspaceModel {
     if (workspaceApproved != null) map['workspace_approved'] = workspaceApproved;
 
     if (categoryOptions.isNotEmpty) {
-      map['category_options'] = categoryOptions.map((e) {
-        if (e is WorkspaceCategoryOption) {
-          return e.toCategoryMap();
-        } else if (e is Map) {
-          return Map<String, dynamic>.from(e as Map<dynamic, dynamic>);
-        } else {
-          return <String, dynamic>{};
-        }
-      }).toList();
+      map['category_options'] = categoryOptions.map((e) => e.toCategoryMap()).toList();
     }
 
     if (timeSlots.isNotEmpty) {
-      map['time_slots'] = timeSlots.map((e) {
-        if (e is WorkspaceTimeSlotTemplate) {
-          return e.toTimeSlotMap();
-        } else if (e is Map) {
-          return Map<String, dynamic>.from(e as Map<dynamic, dynamic>);
-        } else {
-          return <String, dynamic>{};
-        }
-      }).toList();
+      map['time_slots'] = timeSlots.map((e) => e.toTimeSlotMap()).toList();
     }
 
     return map;
@@ -160,7 +144,7 @@ class WorkspaceModel {
             )
           : [],
       isAvailable:
-          getValueFromMap(map, 'is_available', 'isAvailable', true) as bool,
+          getValueFromMap(map, 'is_available', 'isAvailable', true),
       createdAt: getStringFromMap(map, 'created_at', 'createdAt') != null
           ? DateTime.parse(getStringFromMap(map, 'created_at', 'createdAt')!)
           : DateTime.now(),
@@ -170,37 +154,33 @@ class WorkspaceModel {
       workspaceType:
           getStringFromMap(map, 'workspace_type', 'workspaceType') ?? 'shared',
       categoryOptions:
-          getListFromMap(map, 'category_options', 'categoryOptions') != null
-          ? ((getListFromMap(map, 'category_options', 'categoryOptions') ?? [])
-                    as List)
-                .map(
-                  (e) => e is WorkspaceCategoryOption
-                      ? e
-                      : WorkspaceCategoryOption.fromCategoryMap(
-                          e is Map
-                              ? Map<String, dynamic>.from(
-                                  e as Map<dynamic, dynamic>,
-                                )
-                              : <String, dynamic>{},
-                        ),
-                )
-                .toList()
-          : const [],
-      timeSlots: getListFromMap(map, 'time_slots', 'timeSlots') != null
-          ? ((getListFromMap(map, 'time_slots', 'timeSlots') ?? []) as List)
-                .map(
-                  (e) => e is WorkspaceTimeSlotTemplate
-                      ? e
-                      : WorkspaceTimeSlotTemplate.fromTimeSlotMap(
-                          e is Map
-                              ? Map<String, dynamic>.from(
-                                  e as Map<dynamic, dynamic>,
-                                )
-                              : <String, dynamic>{},
-                        ),
-                )
-                .toList()
-          : const [],
+          getListFromMap(map, 'category_options', 'categoryOptions') is List
+              ? (getListFromMap(map, 'category_options', 'categoryOptions') as List)
+                    .map<WorkspaceCategoryOption>(
+                      (e) => e is WorkspaceCategoryOption
+                          ? e
+                          : WorkspaceCategoryOption.fromCategoryMap(
+                              e is Map
+                                  ? Map<String, dynamic>.from(e)
+                                  : <String, dynamic>{},
+                            ),
+                    )
+                    .toList()
+              : const <WorkspaceCategoryOption>[],
+      timeSlots:
+          getListFromMap(map, 'time_slots', 'timeSlots') is List
+              ? (getListFromMap(map, 'time_slots', 'timeSlots') as List)
+                    .map<WorkspaceTimeSlotTemplate>(
+                      (e) => e is WorkspaceTimeSlotTemplate
+                          ? e
+                          : WorkspaceTimeSlotTemplate.fromTimeSlotMap(
+                              e is Map
+                                  ? Map<String, dynamic>.from(e)
+                                  : <String, dynamic>{},
+                            ),
+                    )
+                    .toList()
+              : const <WorkspaceTimeSlotTemplate>[],
       openingTime:
           getStringFromMap(map, 'opening_time', 'openingTime') ?? '09:00',
       closingTime:

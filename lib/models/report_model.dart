@@ -44,8 +44,8 @@ class UserReportModel {
       workspaceId: map['workspace_id'],
       bookingId: map['booking_id'],
       evidenceUrls: evidence is List
-          ? evidence.map((e) => e.toString()).toList()
-          : const [],
+          ? evidence.map<String>((e) => e.toString()).toList()
+          : const <String>[],
       status: map['status'] ?? 'pending',
       staffAction: map['staff_action'],
       resolutionNote: map['resolution_note'],

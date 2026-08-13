@@ -2,8 +2,8 @@ import 'package:cwc/utils/helpers/model_helpers.dart';
 
 List<String> _stringList(Map<String, dynamic> map, String snake, String camel) {
   final raw = getListFromMap(map, snake, camel);
-  if (raw == null) return const [];
-  return List<String>.from(raw);
+  if (raw is List) return raw.map((e) => e.toString()).toList();
+  return const <String>[];
 }
 
 DateTime? _date(Map<String, dynamic> map, String snake, String camel) {

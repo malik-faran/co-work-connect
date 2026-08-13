@@ -9,6 +9,7 @@ import 'package:cwc/views/screens/owner/owner_bookings_screen.dart';
 import 'package:cwc/views/screens/payment/payment_screen.dart';
 import 'package:cwc/views/screens/user/booking_history_screen.dart';
 import 'package:cwc/views/screens/user/user_home_screen.dart';
+import 'package:cwc/views/screens/auth/login_screen.dart';
 import 'package:cwc/views/screens/auth/reset_password_screen.dart';
 
 import 'package:cwc/views/screens/collaboration/collaboration_detail_screen.dart';
@@ -29,6 +30,30 @@ class NavigationService {
       navigator.pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const ResetPasswordScreen()),
         (route) => false,
+      );
+    }
+
+    if (navigatorKey.currentState != null) {
+      push();
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) => push());
+    }
+  }
+
+  static void openLoginWithSuccess(String message) {
+    void push() {
+      final navigator = navigatorKey.currentState;
+      if (navigator == null) return;
+      navigator.pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+        (route) => false,
+      );
+      ScaffoldMessenger.of(navigator.context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 4),
+        ),
       );
     }
 

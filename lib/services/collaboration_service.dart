@@ -41,7 +41,7 @@ class CollaborationService {
         var query = _supabase
             .from('collaborations')
             .select()
-            .eq('status', 'recruiting');
+            .or('status.eq.recruiting,status.eq.open,status.eq.active,status.eq.in_progress,status.eq.launched');
 
         if (collaborationType != null) {
           query = query.eq('collaboration_type', collaborationType);

@@ -1,4 +1,4 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:cwc/models/user_model.dart';
 import 'package:cwc/services/supabase_service.dart';
@@ -15,7 +15,15 @@ class AuthService {
   /// Email is verified when Supabase has set `email_confirmed_at` / `confirmed_at`.
   bool get isEmailVerified {
     final u = _client.auth.currentUser;
-    return u?.emailConfirmedAt != null || u?.confirmedAt != null;
+    // ignore: deprecated_member_use
+    return u != null && (u.emailConfirmedAt != null || u.confirmedAt != null);
+  }
+
+  static String get emailRedirectUrl {
+    if (kIsWeb) {
+      return '${Uri.base.origin}/confirm-email';
+    }
+    return 'cwc://confirm-email';
   }
 
   Future<UserModel?> signUp({
@@ -35,6 +43,7 @@ class AuthService {
       final response = await _client.auth.signUp(
         email: trimmedEmail,
         password: password,
+        emailRedirectTo: emailRedirectUrl,
         data: {
           'role': role,
           'name': name,
@@ -127,21 +136,18 @@ class AuthService {
       );
 
       // Session fields (e.g. email_confirmed_at) are reliable on currentUser.
-      try {
-        await _client.auth.refreshSession().timeout(const Duration(seconds: 10));
-      } catch (_) {}
+      if (_client.auth.currentSession != null) {
+        try {
+          await _client.auth.refreshSession().timeout(const Duration(seconds: 10));
+        } catch (_) {}
+      }
 
       final user = _client.auth.currentUser;
       if (user == null) return null;
 
-      if (!_isEmailConfirmed(user)) {
-        throw Exception(
-          'Please verify your email before logging in. Check your inbox for the confirmation link.',
-        );
-      }
-
       return await ensureUserProfile(user);
     } on AuthException catch (e) {
+      debugPrint('Supabase signIn AuthException: ${e.message} (statusCode: ${e.statusCode})');
       throw Exception(formatAuthError(e.message));
     } catch (e) {
       if (e is Exception) rethrow;
@@ -149,8 +155,7 @@ class AuthService {
     }
   }
 
-  bool _isEmailConfirmed(User user) =>
-      user.emailConfirmedAt != null || user.confirmedAt != null;
+
 
   Future<void> signOut() async {
     try {
@@ -410,6 +415,7 @@ class AuthService {
       await _client.auth.resend(
         type: OtpType.signup,
         email: email.trim(),
+        emailRedirectTo: emailRedirectUrl,
       );
     } on AuthException catch (e) {
       throw Exception(formatAuthError(e.message));
@@ -420,6 +426,7 @@ class AuthService {
 
   /// Re-check email verification state (refreshes current session).
   Future<bool> refreshAndCheckVerified() async {
+    if (_client.auth.currentSession == null) return false;
     try {
       await _client.auth.refreshSession();
     } catch (_) {}

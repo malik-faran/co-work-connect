@@ -27,22 +27,56 @@ class SupabaseService {
     _initialized = true;
   }
 
-  /// Call after [AuthController] registers its auth listener (cold-start reset links).
+  static Uri? pendingAuthUri;
+
+  /// Call after [AuthController] registers its auth listener (cold-start reset/confirm links).
   static Future<void> processPendingAuthLinks() async {
-    if (kIsWeb) return;
+    if (kIsWeb) {
+      final uri = Uri.base;
+      if (_isAuthDeepLink(uri)) {
+        await _consumeAuthLink(uri);
+      }
+      return;
+    }
     await _consumeInitialAuthLink();
   }
 
   static bool _isAuthDeepLink(Uri uri) {
-    if (uri.scheme != 'cwc') return false;
-    return uri.host == 'reset-password' ||
-        uri.path.contains('reset-password');
+    final str = uri.toString();
+    return uri.scheme == 'cwc' ||
+        str.contains('reset-password') ||
+        str.contains('confirm-email') ||
+        str.contains('type=recovery') ||
+        str.contains('type=signup') ||
+        str.contains('type=email') ||
+        str.contains('type=invite') ||
+        str.contains('token') ||
+        str.contains('code=') ||
+        str.contains('access_token');
   }
 
   static Future<void> _consumeAuthLink(Uri? uri) async {
     if (uri == null || !_isAuthDeepLink(uri)) return;
+    pendingAuthUri = uri;
     try {
-      await Supabase.instance.client.auth.getSessionFromUrl(uri);
+      final qp = uri.queryParameters;
+      if (qp.containsKey('token_hash') && qp.containsKey('type')) {
+        final tokenHash = qp['token_hash']!;
+        final typeStr = qp['type']!;
+        final type = typeStr == 'recovery'
+            ? OtpType.recovery
+            : typeStr == 'signup'
+                ? OtpType.signup
+                : OtpType.email;
+        await Supabase.instance.client.auth.verifyOTP(
+          tokenHash: tokenHash,
+          type: type,
+        );
+      } else if (qp.containsKey('code')) {
+        await Supabase.instance.client.auth.exchangeCodeForSession(qp['code']!);
+      } else {
+        await Supabase.instance.client.auth.getSessionFromUrl(uri);
+      }
     } catch (_) {}
   }
 

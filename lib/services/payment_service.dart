@@ -134,12 +134,6 @@ class PaymentService {
           .eq('id', payment.bookingId)
           .maybeSingle();
 
-      final userData = await _supabase
-          .from('users')
-          .select('name')
-          .eq('id', payment.userId)
-          .maybeSingle();
-
       // Notify user — CWC team will verify (moderator handles in admin panel)
       final notificationService = NotificationService();
       await notificationService.createNotification(

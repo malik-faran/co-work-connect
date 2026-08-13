@@ -37,6 +37,7 @@ class _OwnerHomeScreenState extends State<OwnerHomeScreen> {
   int _unreadNotifications = 0;
 
   Future<void> _handleLogout() async {
+    final authController = context.read<AuthController>();
     final shouldLogout = await showDialog<bool>(
           context: context,
           builder: (context) => AlertDialog(
@@ -82,7 +83,7 @@ class _OwnerHomeScreenState extends State<OwnerHomeScreen> {
         false;
 
     if (shouldLogout) {
-      await context.read<AuthController>().signOut();
+      await authController.signOut();
       if (!mounted) return;
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(
@@ -261,7 +262,7 @@ class _OwnerHomeScreenState extends State<OwnerHomeScreen> {
               icon: Builder(
                 builder: (context) {
                   final user = context.watch<AuthController>().currentUser;
-                  final hasImage = user?.profileImageUrl != null && user!.profileImageUrl!.isNotEmpty;
+                  final hasImage = user?.profileImageUrl?.isNotEmpty == true;
                   return Container(
                     width: 36,
                     height: 36,

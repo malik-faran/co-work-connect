@@ -39,8 +39,8 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
   bool _isSlotsLoading = false;
   int _currentImageIndex = 0;
   WorkspaceCategoryOption? _selectedCategory;
-  List<WorkspaceTimeSlotTemplate> _selectedSlots = [];
-  List<String> _selectedSlotIds = [];
+  final List<WorkspaceTimeSlotTemplate> _selectedSlots = [];
+  final List<String> _selectedSlotIds = [];
   int _selectedSeats = 1;
   // Booking mode: 'hourly' | 'daily' | 'monthly'
   String _bookingMode = 'hourly';
@@ -341,6 +341,7 @@ class _WorkspaceDetailScreenState extends State<WorkspaceDetailScreen> {
           action: WorkspaceInteractionService.actionClick,
         );
       }
+      if (!mounted) return;
       final groupIds = _pendingBookings.map((b) => b.id).toList();
       Navigator.of(context).pop();
       Navigator.of(context).push(MaterialPageRoute(

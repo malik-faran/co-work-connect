@@ -38,8 +38,8 @@ class PlatformPaymentAccountModel {
       accountTitle: getStringFromMap(map, 'account_title', 'accountTitle') ?? '',
       accountNumber: getStringFromMap(map, 'account_number', 'accountNumber') ?? '',
       bankName: getStringFromMap(map, 'bank_name', 'bankName'),
-      isActive: getValueFromMap(map, 'is_active', 'isActive', true) as bool,
-      isDefault: getValueFromMap(map, 'is_default', 'isDefault', false) as bool,
+      isActive: getValueFromMap(map, 'is_active', 'isActive', true),
+      isDefault: getValueFromMap(map, 'is_default', 'isDefault', false),
     );
   }
 }

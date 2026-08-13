@@ -145,6 +145,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   }
 
   Future<void> _handleLogout() async {
+    final authController = context.read<AuthController>();
     final shouldLogout =
         await showDialog<bool>(
           context: context,
@@ -169,7 +170,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
         false;
 
     if (shouldLogout) {
-      await context.read<AuthController>().signOut();
+      await authController.signOut();
       if (!mounted) return;
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const RoleSelectionScreen()),

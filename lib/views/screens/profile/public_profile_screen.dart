@@ -502,7 +502,7 @@ class _PublicProfileScreenState extends State<PublicProfileScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               DropdownButtonFormField<CollaborationModel>(
-                value: selected,
+                initialValue: selected,
                 isExpanded: true,
                 decoration: const InputDecoration(labelText: 'Project'),
                 items: recruiting

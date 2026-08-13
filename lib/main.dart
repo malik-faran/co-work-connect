@@ -78,7 +78,7 @@ class _MyAppState extends State<MyApp> {
       ],
       child: MaterialApp(
         navigatorKey: NavigationService.navigatorKey,
-        title: 'CWL - Coworking Spaces',
+        title: 'Co-Work Connect',
         debugShowCheckedModeBanner: false,
         themeMode: ThemeMode.light,
         theme: CAppTheme.lightTheme,

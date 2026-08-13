@@ -4,7 +4,6 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:cwc/models/booking_model.dart';
-import 'package:cwc/utils/refund_policy.dart';
 import 'package:cwc/utils/themes/theme.dart';
 import 'package:cwc/views/widgets/refund_policy_banner.dart';
 

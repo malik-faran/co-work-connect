@@ -67,7 +67,7 @@ class _OwnerPaymentAccountsScreenState extends State<OwnerPaymentAccountsScreen>
               mainAxisSize: MainAxisSize.min,
               children: [
                 DropdownButtonFormField<String>(
-                  value: type,
+                  initialValue: type,
                   decoration: const InputDecoration(labelText: 'Account Type'),
                   items: const [
                     DropdownMenuItem(value: 'bank', child: Text('Bank')),
@@ -115,6 +115,7 @@ class _OwnerPaymentAccountsScreenState extends State<OwnerPaymentAccountsScreen>
     );
 
     if (ok != true) return;
+    if (!mounted) return;
     if (titleCtrl.text.trim().isEmpty || numberCtrl.text.trim().isEmpty) {
       showErrorSnackBar(context, 'Please fill all required fields');
       return;

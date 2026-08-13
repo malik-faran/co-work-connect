@@ -114,7 +114,7 @@ class _OwnerWalletScreenState extends State<OwnerWalletScreen> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<OwnerPaymentAccountModel>(
-                value: selected,
+                initialValue: selected,
                 isExpanded: true,
                 decoration: const InputDecoration(labelText: 'Payout account'),
                 items: _accounts

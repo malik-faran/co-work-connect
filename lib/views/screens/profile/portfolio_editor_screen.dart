@@ -367,7 +367,7 @@ class _PortfolioFormState extends State<_PortfolioForm> {
     _desc = TextEditingController(text: existing?.description ?? '');
     _url = TextEditingController(text: existing?.projectUrl ?? '');
     _skillInput = TextEditingController();
-    _skills = existing == null ? [] : List<String>.from(existing!.skills);
+    _skills = existing == null ? [] : List<String>.from(existing.skills);
     _imageUrl = existing?.imageUrl;
   }
 

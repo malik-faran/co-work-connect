@@ -16,36 +16,42 @@ class ChatService {
   final _supabase = SupabaseService.client;
   final _uuid = const Uuid();
 
-  /// Room IDs the user has removed from their chat list.
-  Future<Set<String>> getHiddenRoomIds(String userId) => _hiddenRoomIds(userId);
+  final Map<String, DateTime> _localDeletionTimes = {};
 
-  Future<Set<String>> _hiddenRoomIds(String userId) async {
+  /// Deletion timestamps for rooms deleted by the given user.
+  Future<Map<String, DateTime>> getDeletionTimes(String userId) async {
+    final map = <String, DateTime>{};
     try {
       final rows = await _supabase
           .from('chat_room_deletions')
-          .select('chat_room_id')
+          .select('chat_room_id, deleted_at')
           .eq('user_id', userId);
-      return rows
-          .map((r) => r['chat_room_id'] as String?)
-          .whereType<String>()
-          .toSet();
-    } catch (_) {
-      return {};
-    }
+      for (final r in rows) {
+        final id = r['chat_room_id'] as String?;
+        final delAt = r['deleted_at'] as String?;
+        if (id != null && delAt != null) {
+          final dt = DateTime.tryParse(delAt);
+          if (dt != null) map[id] = dt;
+        }
+      }
+    } catch (_) {}
+
+    _localDeletionTimes.forEach((key, value) {
+      if (key.startsWith('$userId:')) {
+        final roomId = key.substring(userId.length + 1);
+        final existing = map[roomId];
+        if (existing == null || value.isAfter(existing)) {
+          map[roomId] = value;
+        }
+      }
+    });
+    return map;
   }
 
-  Future<void> _restoreChatRoomForUser(String chatRoomId, String userId) async {
-    try {
-      await _supabase.rpc('restore_chat_room', params: {'p_room_id': chatRoomId});
-    } catch (_) {
-      try {
-        await _supabase
-            .from('chat_room_deletions')
-            .delete()
-            .eq('chat_room_id', chatRoomId)
-            .eq('user_id', userId);
-      } catch (_) {}
-    }
+  /// Room IDs the user has removed from their chat list (until a new message arrives).
+  Future<Set<String>> getHiddenRoomIds(String userId) async {
+    final delMap = await getDeletionTimes(userId);
+    return delMap.keys.toSet();
   }
 
   /// Get or create a chat room between two users
@@ -56,8 +62,6 @@ class ChatService {
     String? workspaceId,
   }) async {
     try {
-      final currentUserId = _supabase.auth.currentUser?.id;
-
       // Try to find existing chat room
       final existingRooms = await _supabase
           .from('chat_rooms')
@@ -66,11 +70,7 @@ class ChatService {
           .maybeSingle();
 
       if (existingRooms != null) {
-        final room = ChatRoomModel.fromChatRoomMap(existingRooms);
-        if (currentUserId != null) {
-          await _restoreChatRoomForUser(room.id, currentUserId);
-        }
-        return room;
+        return ChatRoomModel.fromChatRoomMap(existingRooms);
       }
 
       // Get user details for caching
@@ -114,7 +114,7 @@ class ChatService {
   /// Get all chat rooms for a user (direct + group rooms they belong to)
   Future<List<ChatRoomModel>> getUserChatRooms(String userId) async {
     try {
-      final hiddenIds = await _hiddenRoomIds(userId);
+      final delMap = await getDeletionTimes(userId);
 
       final rows = await _supabase
           .from('chat_rooms')
@@ -124,7 +124,12 @@ class ChatService {
 
       final rooms = rows
           .map((r) => ChatRoomModel.fromChatRoomMap(r))
-          .where((r) => !hiddenIds.contains(r.id))
+          .where((r) {
+            final delTime = delMap[r.id];
+            if (delTime == null) return true;
+            // Show only if a new message arrived AFTER deletion
+            return r.lastMessageAt != null && r.lastMessageAt!.isAfter(delTime);
+          })
           .toList();
 
       // Include group rooms where the user is a member.
@@ -146,7 +151,11 @@ class ChatService {
         rooms.addAll(
           groupRows
               .map((r) => ChatRoomModel.fromChatRoomMap(r))
-              .where((r) => !hiddenIds.contains(r.id)),
+              .where((r) {
+                final delTime = delMap[r.id];
+                if (delTime == null) return true;
+                return r.lastMessageAt != null && r.lastMessageAt!.isAfter(delTime);
+              }),
         );
       }
 
@@ -342,9 +351,16 @@ class ChatService {
     }
   }
 
-  /// Get messages for a chat room
+  /// Get messages for a chat room (filtered by user deletion timestamp if any)
   Future<List<ChatMessageModel>> getChatMessages(String chatRoomId, {int limit = 50}) async {
     try {
+      final userId = _supabase.auth.currentUser?.id;
+      DateTime? deletionTime;
+      if (userId != null) {
+        final delMap = await getDeletionTimes(userId);
+        deletionTime = delMap[chatRoomId];
+      }
+
       final rows = await _supabase
           .from('messages')
           .select()
@@ -352,9 +368,13 @@ class ChatService {
           .order('created_at', ascending: false)
           .limit(limit);
 
-      final messages = rows
+      var messages = rows
           .map((m) => ChatMessageModel.fromMessageMap(m))
           .toList();
+
+      if (deletionTime != null) {
+        messages = messages.where((m) => m.createdAt.isAfter(deletionTime!)).toList();
+      }
 
       // Reverse to show oldest first
       return messages.reversed.toList();
@@ -394,18 +414,30 @@ class ChatService {
     }
   }
 
-  /// Get stream of messages for real-time chat
+  /// Get stream of messages for real-time chat (filtered by user deletion timestamp)
   Stream<List<ChatMessageModel>> getMessagesStream(String chatRoomId) {
+    final userId = _supabase.auth.currentUser?.id;
     return _supabase
         .from('messages')
         .stream(primaryKey: ['id'])
         .eq('chat_room_id', chatRoomId)
         .order('created_at', ascending: false)
         .limit(50)
-        .map((data) {
-          final messages = data
+        .asyncMap((data) async {
+          DateTime? deletionTime;
+          if (userId != null) {
+            final delMap = await getDeletionTimes(userId);
+            deletionTime = delMap[chatRoomId];
+          }
+
+          var messages = data
               .map((m) => ChatMessageModel.fromMessageMap(m))
               .toList();
+
+          if (deletionTime != null) {
+            messages = messages.where((m) => m.createdAt.isAfter(deletionTime!)).toList();
+          }
+
           return messages.reversed.toList();
         });
   }
@@ -416,12 +448,23 @@ class ChatService {
         .from('chat_rooms')
         .stream(primaryKey: ['id'])
         .asyncMap((data) async {
-          final hiddenIds = await _hiddenRoomIds(userId);
+          final delMap = await getDeletionTimes(userId);
 
           final filteredData = data.where((room) {
             final id = room['id'] as String?;
-            if (id != null && hiddenIds.contains(id)) return false;
-            return room['user1_id'] == userId || room['user2_id'] == userId;
+            if (id == null) return false;
+            final isParticipant = room['user1_id'] == userId || room['user2_id'] == userId;
+            if (!isParticipant) return false;
+
+            final delTime = delMap[id];
+            if (delTime == null) return true;
+
+            final lastMsgStr = room['last_message_at'] as String?;
+            if (lastMsgStr == null) return false;
+            final lastMsgAt = DateTime.tryParse(lastMsgStr);
+            if (lastMsgAt == null) return false;
+
+            return lastMsgAt.isAfter(delTime);
           }).toList();
 
           filteredData.sort((a, b) {
@@ -483,24 +526,25 @@ class ChatService {
     }
   }
 
-  /// Hide a chat for the current user (stays hidden after refresh).
+  /// Hide a chat for the current user (stays hidden after refresh until a new message arrives).
   Future<void> deleteChatRoom(String chatRoomId) async {
+    final userId = _supabase.auth.currentUser?.id;
+    final now = DateTime.now();
+    if (userId != null) {
+      _localDeletionTimes['$userId:$chatRoomId'] = now;
+    }
+
     try {
       await _supabase.rpc('delete_chat_room', params: {'p_room_id': chatRoomId});
-    } catch (e) {
-      final userId = _supabase.auth.currentUser?.id;
-      if (userId == null) {
-        throw Exception('Failed to delete chat: not signed in');
-      }
+    } catch (_) {
+      if (userId == null) return;
       try {
         await _supabase.from('chat_room_deletions').upsert({
           'chat_room_id': chatRoomId,
           'user_id': userId,
-          'deleted_at': DateTime.now().toIso8601String(),
+          'deleted_at': now.toIso8601String(),
         }, onConflict: 'chat_room_id,user_id');
-      } catch (inner) {
-        throw Exception('Failed to delete chat: ${inner.toString()}');
-      }
+      } catch (_) {}
     }
   }
 }

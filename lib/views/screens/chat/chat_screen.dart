@@ -112,6 +112,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<void> _loadChatRoom() async {
     try {
       final chatRoom = await _chatService.getChatRoomById(widget.chatRoomId);
+      if (!mounted) return;
       if (chatRoom == null) {
         setState(() {
           _errorMessage = 'Chat room not found';

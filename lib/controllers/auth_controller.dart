@@ -8,6 +8,7 @@ import 'package:cwc/services/fcm_service.dart';
 import 'package:cwc/services/supabase_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' show User, AuthChangeEvent;
 import 'package:cwc/utils/constants/app_constants.dart';
+import 'package:cwc/utils/helpers/error_handler.dart';
 import 'package:cwc/services/navigation_service.dart';
 
 class AuthController with ChangeNotifier {
@@ -27,29 +28,79 @@ class AuthController with ChangeNotifier {
   bool get isAuthenticated => _currentUser != null;
   bool get isEmailVerified => _authService.isEmailVerified;
 
+  bool _isRecoveryUrl() {
+    final pending = SupabaseService.pendingAuthUri;
+    final pendingStr = pending?.toString() ?? '';
+    final webUrl = kIsWeb ? Uri.base.toString() : '';
+
+    if (pendingStr.contains('confirm-email') ||
+        pendingStr.contains('type=signup') ||
+        webUrl.contains('confirm-email') ||
+        webUrl.contains('type=signup')) {
+      return false;
+    }
+
+    return pendingStr.contains('type=recovery') ||
+        pendingStr.contains('reset-password') ||
+        webUrl.contains('type=recovery') ||
+        webUrl.contains('reset-password');
+  }
+
+  bool _isVerificationUrl() {
+    final pending = SupabaseService.pendingAuthUri;
+    final pendingStr = pending?.toString() ?? '';
+    final webUrl = kIsWeb ? Uri.base.toString() : '';
+    return pendingStr.contains('type=signup') ||
+        pendingStr.contains('confirm-email') ||
+        pendingStr.contains('type=email_change') ||
+        webUrl.contains('type=signup') ||
+        webUrl.contains('confirm-email') ||
+        webUrl.contains('type=email_change');
+  }
+
   Future<void> initialize() async {
     _isLoading = true;
     notifyListeners();
 
     try {
-      await _restoreSession();
+      if (_isRecoveryUrl()) {
+        _passwordRecoveryPending = true;
+        _currentUser = null;
+        notifyListeners();
+        NavigationService.openResetPassword();
+      } else {
+        await _restoreSession();
+      }
 
       _authSubscription?.cancel();
       _authSubscription =
           SupabaseService.client.auth.onAuthStateChange.listen((data) async {
-        if (data.event == AuthChangeEvent.passwordRecovery) {
+        if (data.event == AuthChangeEvent.passwordRecovery || _isRecoveryUrl()) {
           _passwordRecoveryPending = true;
+          _currentUser = null;
+          SupabaseService.pendingAuthUri = null;
           notifyListeners();
           NavigationService.openResetPassword();
           return;
         }
+
+        if (_isVerificationUrl()) {
+          SupabaseService.pendingAuthUri = null;
+          _currentUser = null;
+          try {
+            await _authService.signOut();
+          } catch (_) {}
+          notifyListeners();
+          NavigationService.openLoginWithSuccess('Email verified successfully! Please sign in.');
+          return;
+        }
+
+        if (_passwordRecoveryPending) return;
         if (_signInInProgress) return;
         await _applyAuthState(data.session?.user);
       });
 
-      if (!kIsWeb) {
-        await SupabaseService.processPendingAuthLinks();
-      }
+      await SupabaseService.processPendingAuthLinks();
     } catch (e) {
       _errorMessage = e.toString();
     } finally {
@@ -69,15 +120,10 @@ class AuthController with ChangeNotifier {
 
   Future<void> _applyAuthState(User? user) async {
     if (user != null && user.id.isNotEmpty) {
-      final confirmed = user.emailConfirmedAt ?? user.confirmedAt;
-      if (confirmed == null) {
-        _currentUser = null;
-      } else {
-        try {
-          _currentUser = await _authService.ensureUserProfile(user);
-        } catch (_) {
-          _currentUser = await _authService.getUserById(user.id);
-        }
+      try {
+        _currentUser = await _authService.ensureUserProfile(user);
+      } catch (_) {
+        _currentUser = await _authService.getUserById(user.id);
       }
     } else {
       _currentUser = null;
@@ -96,7 +142,7 @@ class AuthController with ChangeNotifier {
 
   void _syncNotificationListener() {
     final userId = _currentUser?.id;
-    if (userId != null && isEmailVerified) {
+    if (userId != null) {
       NotificationListenerService.instance.start(userId);
       BookingLifecycleService.instance.startPolling();
       if (!kIsWeb) {
@@ -135,6 +181,19 @@ class AuthController with ChangeNotifier {
         businessAddress: businessAddress,
         cnicImageUrl: cnicImageUrl,
       );
+
+      // Automatically sign in if session is not active yet
+      if (SupabaseService.client.auth.currentSession == null) {
+        try {
+          await _authService.signIn(email: email, password: password);
+          final uid = SupabaseService.client.auth.currentUser?.id;
+          if (uid != null) {
+            _currentUser = await _authService.getUserById(uid);
+          }
+        } catch (_) {}
+      }
+
+      _syncNotificationListener();
       _isLoading = false;
       notifyListeners();
       return _currentUser != null;
@@ -171,7 +230,8 @@ class AuthController with ChangeNotifier {
       }
       return _currentUser != null;
     } catch (e) {
-      _errorMessage = e.toString();
+      debugPrint('AuthController signIn error: $e');
+      _errorMessage = cleanErrorMessage(e.toString());
       return false;
     } finally {
       _signInInProgress = false;

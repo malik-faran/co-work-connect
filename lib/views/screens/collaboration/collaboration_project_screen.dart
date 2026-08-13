@@ -821,6 +821,7 @@ class _CollaborationProjectScreenState extends State<CollaborationProjectScreen>
       ),
     );
     if (result == null) return;
+    if (!mounted) return;
     if (result.assignedTo == null || result.dueDate == null) {
       _toast('Assignee and due date are required.', isError: true);
       return;
@@ -2595,7 +2596,7 @@ class _AddMilestoneSheetState extends State<_AddMilestoneSheet> {
                     if (members.isNotEmpty) ...[
                       const SizedBox(height: 12),
                       DropdownButtonFormField<CollaborationMember>(
-                        value: _assignee != null &&
+                        initialValue: _assignee != null &&
                                 members.any((m) => m.userId == _assignee!.userId)
                             ? members.firstWhere((m) => m.userId == _assignee!.userId)
                             : null,
@@ -2723,10 +2724,12 @@ class _AddTeammateSheetState extends State<_AddTeammateSheet> {
     try {
       final list = await widget.hub.getOpenTeammates();
       list.removeWhere((u) => widget.excludeIds.contains(u['id']));
-      if (mounted) setState(() {
-        _all = list;
-        _loading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _all = list;
+          _loading = false;
+        });
+      }
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }

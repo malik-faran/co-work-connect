@@ -55,7 +55,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   List<NotificationModel> _notifications = [];
   bool _isLoading = true;
   String? _errorMessage;
-  int _unreadCount = 0;
   final Set<String> _respondingInviteIds = {};
   final Map<String, InviteCardState> _inviteStates = {};
   final Set<String> _respondingMilestoneReviewIds = {};
@@ -147,10 +146,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       if (!mounted) return;
       setState(() {
         _notifications = notifications;
-        _unreadCount = NotificationScopeHelper.unreadCount(
-          notifications,
-          widget.scope,
-        );
         _isLoading = false;
         _hasLoadedOnce = true;
       });
@@ -181,10 +176,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         }
         setState(() {
           _notifications = notifications;
-          _unreadCount = NotificationScopeHelper.unreadCount(
-            notifications,
-            widget.scope,
-          );
           _isLoading = false;
           _hasLoadedOnce = true;
         });

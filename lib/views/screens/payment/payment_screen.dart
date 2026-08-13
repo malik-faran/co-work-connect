@@ -317,6 +317,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
       } else if (_selectedMethod != AppConstants.paymentMethodStripe) {
         await _selectMethod(AppConstants.paymentMethodStripe);
       }
+      if (!mounted) return;
       if (_payment?.stripeClientSecret == null) {
         showErrorSnackBar(context, 'Payment not initialized');
         return;
@@ -361,8 +362,10 @@ class _PaymentScreenState extends State<PaymentScreen> {
     } catch (e) {
       if (mounted) {
         final refreshed = await _paymentService.getPaymentByBookingId(widget.booking.id);
-        setState(() => _payment = refreshed ?? _payment);
-        showErrorSnackBar(context, _stripeErrorMessage(e));
+        if (mounted) {
+          setState(() => _payment = refreshed ?? _payment);
+          showErrorSnackBar(context, _stripeErrorMessage(e));
+        }
       }
     } finally {
       if (mounted) setState(() => _isProcessing = false);
@@ -424,6 +427,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
 
       if (!mounted) return;
       final updated = await _paymentService.getPaymentById(_payment!.id);
+      if (!mounted) return;
       if (updated != null) setState(() => _payment = updated);
       await showDialog(
         context: context,

@@ -2,7 +2,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
-import 'dart:typed_data';
 
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
@@ -1399,6 +1398,7 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
           file: _legalDocument!,
         );
       } catch (e) {
+        if (!mounted) return;
         setState(() => _isLoading = false);
         showErrorSnackBar(context, 'Legal document upload failed: $e');
         return;
@@ -1503,6 +1503,7 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
     );
 
     if (categoryOptions.isEmpty) {
+      if (!mounted) return;
       setState(() {
         _isLoading = false;
       });
@@ -1514,6 +1515,7 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
     }
 
     if (!_locationSet) {
+      if (!mounted) return;
       setState(() => _isLoading = false);
       showErrorSnackBar(context, 'Please pick workspace location on the map.');
       return;
@@ -1566,6 +1568,7 @@ class _AddWorkspaceScreenState extends State<AddWorkspaceScreen> {
     );
 
     try {
+      if (!mounted) return;
       final controller = Provider.of<WorkspaceController>(
         context,
         listen: false,

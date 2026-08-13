@@ -595,12 +595,14 @@ class _OwnerBookingsScreenState extends State<OwnerBookingsScreen>
   }
 
   Future<void> _showManualBookingDialog(BuildContext context, String ownerId) async {
+    final ownerName = context.read<AuthController>().currentUser?.name ?? 'Owner';
     final workspaceService = WorkspaceService();
     final notificationService = NotificationService();
     final workspaces = await workspaceService.getWorkspacesByOwnerId(ownerId);
     
+    if (!context.mounted) return;
     if (workspaces.isEmpty) {
-      if (mounted) showErrorSnackBar(context, 'No workspaces available. Please add a workspace first.');
+      showErrorSnackBar(context, 'No workspaces available. Please add a workspace first.');
       return;
     }
 
@@ -617,7 +619,7 @@ class _OwnerBookingsScreenState extends State<OwnerBookingsScreen>
     List<WorkspaceTimeSlotTemplate> availableSlots = [];
     Map<String, Map<String, int>> slotUsage = {};
 
-    if (!mounted) return;
+    if (!context.mounted) return;
     
     await showDialog(
       context: context,
@@ -999,7 +1001,6 @@ class _OwnerBookingsScreenState extends State<OwnerBookingsScreen>
                         user2Id: userId,
                         workspaceId: selectedWorkspace!.id,
                       );
-                      final ownerName = context.read<AuthController>().currentUser?.name ?? 'Owner';
                       await chatService.sendMessage(ChatMessageModel(
                         id: const Uuid().v4(),
                         chatRoomId: chatRoom.id,
@@ -1015,7 +1016,9 @@ class _OwnerBookingsScreenState extends State<OwnerBookingsScreen>
                     }
                     if (mounted) {
                       setState(() {});
-                      showSuccessSnackBar(context, 'Seat reserved for $userName successfully');
+                      if (context.mounted) {
+                        showSuccessSnackBar(context, 'Seat reserved for $userName successfully');
+                      }
                     }
                   } catch (e) {
                     setDialogState(() => isLoading = false);

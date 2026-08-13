@@ -49,6 +49,7 @@ class _ReviewDialogState extends State<ReviewDialog> {
       if (currentUser == null) return;
 
       final hasReviewed = await _reviewService.hasUserReviewedBooking(widget.booking.id);
+      if (!mounted) return;
       if (hasReviewed) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(

@@ -14,7 +14,8 @@ import 'package:cwc/utils/validators/form_validators.dart';
 import 'package:cwc/views/widgets/password_strength_indicator.dart';
 import 'package:cwc/views/widgets/terms_dialog.dart';
 import 'package:cwc/views/screens/auth/login_screen.dart';
-import 'package:cwc/views/screens/auth/email_verification_screen.dart';
+import 'package:cwc/views/screens/user/user_home_screen.dart';
+import 'package:cwc/utils/helpers/owner_navigation.dart';
 
 class SignupScreen extends StatefulWidget {
   final String role;
@@ -41,6 +42,7 @@ class _SignupScreenState extends State<SignupScreen> {
   bool _isLoading = false;
   String _passwordValue = '';
   XFile? _cnicImage;
+  AutovalidateMode _autovalidateMode = AutovalidateMode.disabled;
 
   bool get _isOwner => widget.role == AppConstants.roleOwner;
 
@@ -69,10 +71,10 @@ class _SignupScreenState extends State<SignupScreen> {
     final pwd = _passwordController.text;
     final confirm = _confirmPasswordController.text;
     return _acceptedTerms &&
-        FormValidators.name(name) == null &&
-        FormValidators.email(email) == null &&
-        PasswordValidator.isStrong(pwd) &&
-        pwd == confirm &&
+        name.isNotEmpty &&
+        email.isNotEmpty &&
+        pwd.isNotEmpty &&
+        confirm.isNotEmpty &&
         (!_isOwner || (_cnicImage != null && _phoneController.text.trim().isNotEmpty)) &&
         !_isLoading;
   }
@@ -86,6 +88,7 @@ class _SignupScreenState extends State<SignupScreen> {
   }
 
   Future<void> _handleSignup() async {
+    setState(() => _autovalidateMode = AutovalidateMode.onUserInteraction);
     if (!_formKey.currentState!.validate()) return;
     if (!_acceptedTerms) {
       showErrorSnackBar(context, 'Please accept the Workspace Usage and Platform Terms');
@@ -128,11 +131,14 @@ class _SignupScreenState extends State<SignupScreen> {
     setState(() => _isLoading = false);
 
     if (success) {
-      showSuccessSnackBar(context, 'Account created. Please verify your email.');
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (_) => EmailVerificationScreen(email: email),
-        ),
+      showSuccessSnackBar(context, 'Account created successfully!');
+      final user = authController.currentUser;
+      final Widget target = user?.role == AppConstants.roleOwner
+          ? ownerDestinationFor(user!)
+          : const UserHomeScreen();
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => target),
+        (route) => false,
       );
     } else {
       showErrorSnackBar(
@@ -199,7 +205,7 @@ class _SignupScreenState extends State<SignupScreen> {
                 padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
                 child: Form(
                   key: _formKey,
-                  autovalidateMode: AutovalidateMode.onUserInteraction,
+                  autovalidateMode: _autovalidateMode,
                   onChanged: () => setState(() {}),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,

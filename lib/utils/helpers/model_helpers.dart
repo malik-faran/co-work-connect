@@ -1,6 +1,6 @@
-/// Model Helpers
-/// Common utility functions for model serialization and type conversion
-/// Used across all model classes to avoid code duplication
+// Model Helpers
+// Common utility functions for model serialization and type conversion
+// Used across all model classes to avoid code duplication
 
 /// Safely converts any numeric value to double
 /// Handles int, double, num, and string types

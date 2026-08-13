@@ -1,94 +1,102 @@
 # Co-Work Connect
 
-A co-working space platform with:
-- Flutter mobile app for users and workspace owners
-- React/Vite admin panel for platform administration
+A comprehensive co-working space management platform featuring:
+- **Flutter Mobile App**: For workspace users and workspace owners (iOS & Android)
+- **React / Vite Admin Panel**: For platform administration and management
+- **Supabase Backend**: Realtime database, authentication, storage, and edge functions
+
+---
 
 ## Features
 
-- User authentication and role-based experience (user/owner)
-- Browse and view workspace details
-- Book workspaces and review booking history
-- Owner workspace management and booking oversight
-- Collaboration modules for team/workspace interactions
-- Notifications, chat, reviews, and payment flow screens
+- **User Authentication**: Role-based access (Users & Owners) with Supabase Auth
+- **Workspace Discovery**: Browse, filter, search, and view detailed workspace amenities & maps
+- **Booking Engine**: Book desks/offices with booking management & payment options
+- **Owner Dashboard**: Workspace management, analytics, wallet, and booking oversight
+- **Collaboration Hub**: Team creation, project management, and workspace networking
+- **Realtime Chat & Notifications**: Built-in messaging, FCM push notifications, and review system
+- **Admin Panel**: Platform analytics, user management, and system configuration
+
+---
 
 ## Tech Stack
 
-- Mobile App: Flutter, Dart
-- Admin Panel: React, Vite
-- Backend: Supabase (configured through environment variables)
+- **Mobile App**: Flutter, Dart, Supabase Flutter SDK
+- **Admin Panel**: React 18, Vite, Tailwind CSS / Lucide icons
+- **Backend**: Supabase (PostgreSQL, Realtime, Auth, Storage)
+
+---
 
 ## Getting Started
 
 ### Prerequisites
 
-- Flutter SDK installed
-- Dart SDK (usually included with Flutter)
-- Android Studio or VS Code with Flutter extensions
-- Git
+- [Flutter SDK](https://docs.flutter.dev/get-started/install) (v3.x or higher)
+- [Node.js](https://nodejs.org/) (v18+ recommended) & npm
+- Android Studio / VS Code with Flutter & Dart extensions
 
-### Installation
+---
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/malik-faran/co-work-connect.git
-   cd co-work-connect
-   ```
-2. Install mobile app dependencies:
-   ```bash
-   flutter pub get
-   ```
-3. Install admin panel dependencies:
-   ```bash
-   cd admin-panel
-   npm install
-   cd ..
-   ```
-4. Create your local environment file:
-   - Add a `.env` file in the project root.
-   - Set your required Supabase keys/URLs.
-5. Run the mobile app:
-   ```bash
-   flutter run
-   ```
-6. Run admin panel:
-   ```bash
-   cd admin-panel
-   npm run dev
-   ```
+### Setup Steps
 
-## Project Structure
-
-```text
-lib/
-  controllers/   # State/control logic
-  models/        # Data models
-  services/      # API/business services
-  utils/         # Constants, helpers, theme
-  views/         # Screens and UI
-
-admin-panel/
-  src/           # React source code
-  package.json   # Admin dependencies/scripts
-```
-
-## Useful Commands
-
+#### 1. Clone the Repository
 ```bash
-flutter pub get
-flutter analyze
-flutter test
-flutter clean
-cd admin-panel && npm run dev
+git clone https://github.com/malik-faran/co-work-connect.git
+cd co-work-connect
 ```
+
+#### 2. Setup & Run Mobile App (Flutter)
+```bash
+# Get Flutter dependencies
+flutter pub get
+
+# (Optional) Clean build cache if experiencing build issues
+flutter clean
+flutter pub get
+
+# Run on an attached device / emulator
+flutter run
+```
+
+#### 3. Setup & Run Admin Panel (React / Vite)
+```bash
+cd admin-panel
+
+# Install dependencies
+npm install
+
+# Run development server
+npm run dev
+```
+
+#### 4. Environment Configuration
+- Create a `.env` file in the project root for Flutter (Supabase URL & Anon Key).
+- Create a `.env` file inside `admin-panel/` with necessary Vite environment variables (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`).
+
+---
+
+## Maintenance & Build Commands
+
+| Action | Command |
+|---|---|
+| Fetch Flutter Dependencies | `flutter pub get` |
+| Clean Flutter Cache & Build | `flutter clean && flutter pub get` |
+| Run Flutter App | `flutter run` |
+| Build Android APK | `flutter build apk --release` |
+| Run Admin Panel | `cd admin-panel && npm run dev` |
+| Build Admin Panel | `cd admin-panel && npm run build` |
+
+---
 
 ## Security Notes
 
-- Do not commit `.env` or secret keys.
-- Keep API keys and service credentials in local environment variables.
+- **Never commit `.env` files** or production credentials to Git.
+- Keep Supabase service role keys secure and stored in server/edge environments only.
+
+---
 
 ## Repository
 
-- GitHub: https://github.com/malik-faran/co-work-connect
+- **GitHub Repository**: [https://github.com/malik-faran/co-work-connect](https://github.com/malik-faran/co-work-connect)
+
 

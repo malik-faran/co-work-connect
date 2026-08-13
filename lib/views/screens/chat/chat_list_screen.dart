@@ -25,7 +25,6 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
   final ChatService _chatService = ChatService();
   List<ChatRoomModel> _chatRooms = [];
   bool _isLoading = true;
-  bool _initialLoadCompleted = false;
   String? _errorMessage;
   StreamSubscription<List<ChatRoomModel>>? _chatRoomsStreamSubscription;
   final Map<String, String> _roleCache = {};
@@ -82,7 +81,6 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
         setState(() {
           _chatRooms = [];
           _isLoading = false;
-          _initialLoadCompleted = true;
           _errorMessage = 'Request timed out. Pull down to retry.';
         });
         return;
@@ -92,14 +90,12 @@ class _ChatListScreenState extends State<ChatListScreen> with WidgetsBindingObse
       setState(() {
         _chatRooms = chatRooms.where((r) => !_hiddenRoomIds.contains(r.id)).toList();
         _isLoading = false;
-        _initialLoadCompleted = true;
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _errorMessage = e.toString();
         _isLoading = false;
-        _initialLoadCompleted = true;
       });
     }
   }

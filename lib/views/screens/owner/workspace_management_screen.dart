@@ -1,5 +1,5 @@
-/// Workspace Management Screen
-/// Allows owners to edit and manage their workspace
+// Workspace Management Screen
+// Allows owners to edit and manage their workspace
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';

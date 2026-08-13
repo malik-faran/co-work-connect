@@ -56,7 +56,7 @@ class _SplashScreenState extends State<SplashScreen>
     if (auth.passwordRecoveryPending) return;
 
     Widget destination;
-    if (auth.isAuthenticated && auth.currentUser != null && auth.isEmailVerified) {
+    if (auth.isAuthenticated && auth.currentUser != null) {
       final user = auth.currentUser!;
       if (user.role == AppConstants.roleOwner) {
         destination = ownerDestinationFor(user);
