@@ -187,10 +187,8 @@ Please read the [Code of Conduct](https://github.com/malik-faran/co-work-connect
 
 ## 💬 Contact
 
-- **Project Owner**: Malik Farhan
+- **Project Owner**: Malik Faran
 - **GitHub**: [@malik-faran](https://github.com/malik-faran)
-- **Email**: malik.faran@co-work-connect.dev
-- **LinkedIn**: [linkedin.com/in/malik-faran](https://linkedin.com/in/malik-faran)
 
 ---
 
